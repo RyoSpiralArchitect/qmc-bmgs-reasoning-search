@@ -19,10 +19,14 @@ engineering research repoです。
 - `sobol_all`はSD 1.0/0.5の両方でsample-mean Pareto frontに残る唯一のprofileです。
 - fixed-verifier n=128ではrouting QMCが同じ700 callsから約6–7%多いdeep nodeを
   得ましたが、成功優位には変換できませんでした。追加breadthの99%は最深層です。
+- exploratory two-phase n=64は40.6% (26/64)で、routing-only 35.9%、Sobol-all
+  37.5%をpoint estimateで上回りました。区間は0を跨ぐため、fresh n=128を一度だけ
+  検証する候補であってwinnerではありません。
 
 結果の短い読み方は [D4 result capsule](docs/results/d4_result.md)、
 [fresh channel-ablation capsule](docs/results/channel_ablation_fresh_n256.md)、
-[fixed-verifier capsule](docs/results/fixed_verifier_n128.md)、設計原則は
+[fixed-verifier capsule](docs/results/fixed_verifier_n128.md)、
+[two-phase capsule](docs/results/two_phase_n64.md)、設計原則は
 [engineering north star](docs/engineering_north_star.md) を参照してください。
 
 ## Layout
@@ -68,9 +72,9 @@ dated evidenceとしてGitへ含め、各runの`manifest.json`でrecord数・byt
 
 ## Immediate roadmap
 
-1. action sourceをverifier 256でSobolからIIDへ切り替えるtwo-phaseを1条件だけ測る。
-2. fresh paired seed 640–703、n=64でsuccessとon/off-path telemetryを比較する。
-3. 改善しなければthreshold tuningを止め、credit-assignment ablationへ進む。
-4. 有望な作用点だけをchunk/contextual actionと実LLM/verifierへ接続する。
+1. threshold 256を固定したまま、fresh seeds 704–831のstandalone n=128を一度だけ測る。
+2. primaryは変えず、pre-hit on-path occupancyをpassive diagnosticとして追加する。
+3. 方向が再現しなければthreshold tuningを止め、credit-assignment ablationへ進む。
+4. 再現した作用点だけをchunk/contextual actionと実LLM/verifierへ接続する。
 
 自然言語reasoningへの一般化や一般的なQMC優位は、まだ主張しません。

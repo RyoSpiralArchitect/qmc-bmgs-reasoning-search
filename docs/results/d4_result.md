@@ -53,17 +53,19 @@ Sobolのrun間spread低下は支持されなかった。
 - 自然言語reasoning、chunk action、contextual embedding、一般的QMC理論へは一般化しない。
 - 内部数値・予算・serializationへの信頼度は高い。外的妥当性はまだ低い。
 
-## Next experiment
+## Current continuation
 
-contextual/chunk embeddingへ進む前に、QMCの作用点を分離する。
+その後のchannel ablationではrouting/action sourceを分離し、fixed-verifier n=128では
+Sobol routingが同じ700 verifier callsからdeep unique prefixを約6–7%多く得る一方、
+success superiorityには変換しないことを確認した。主なbottleneckはpath discoveryより、
+sparse reward下で正しいdeep branchへ再集中できないことだった。
 
-1. `iid_all`: gate / cluster / action perturbationをすべてIID。
-2. `sobol_all`: 現在のcombined Sobol条件。
-3. `sobol_routing_only`: gateとcluster quantileだけSobol、action perturbationはIID。
-4. `sobol_action_only`: gateとcluster quantileはIID、action perturbationだけSobol。
+そこでrequest 256までSobol action、257以降はIID actionへ切り替えるtwo-phaseを
+fresh n=64で診断した。成功point estimateはtwo-phase 40.6%、Sobol-all 37.5%、
+routing-only 35.9%だったが、両paired simultaneous intervalは0を跨ぐ。
 
-同じcandidate、aligned strata、pruning off、SD 0.5と1.0、D4、paired seedで比較する。
-Primaryはreadout success at fixed LM-node capのままにしつつ、fixed edge/verifier budgetも
-副budgetとして追加する。`sobol_action_only`がneutral/positiveで
-`sobol_routing_only`がnegativeなら、現在の損失はsemantic routingの過度な均等化に
-局在できる。その確認後にcontextual/chunk action embeddingへ進む。
+事前gateはfresh standalone n=128を一度だけ許可した。threshold 256とprimaryを固定し、
+seeds 704–831で方向とengineering profileの再現性を確認する。再現しなければthreshold
+tuningを終了し、credit-assignment ablationへ進む。詳細は
+[fixed-verifier capsule](fixed_verifier_n128.md)と
+[two-phase capsule](two_phase_n64.md)を参照。

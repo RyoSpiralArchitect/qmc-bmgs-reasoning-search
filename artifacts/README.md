@@ -7,11 +7,12 @@
 | `role_lock/d4/20260717_primary_precision_n256` | precision-triggered Primary extension | `report.md` |
 | `role_lock/d4/20260717_channel_ablation_fresh_n256` | fresh-cohort routing/action coordinate-source localization | `report.md` |
 | `role_lock/d4/20260718_fixed_verifier_n128` | fixed-verifier conversion and deep-breadth failure analysis | `report.md` |
+| `role_lock/d4/20260718_two_phase_n64` | exploratory late IID-action switch and validation gate | `report.md` |
 
 Each promoted directory tracks `report.md`, `summary.json`, `manifest.json`, and immutable
 `records.jsonl`. The first three runs were imported with explicit pre-repository provenance; the
-channel ablation and fixed-verifier runs record exact clean generation revisions. High-churn work
-stays under ignored `artifacts/work/` until promotion. Verify evidence with:
+channel ablation, fixed-verifier, and two-phase runs record exact clean generation revisions.
+High-churn work stays under ignored `artifacts/work/` until promotion. Verify evidence with:
 
 ```bash
 python scripts/verify_artifacts.py

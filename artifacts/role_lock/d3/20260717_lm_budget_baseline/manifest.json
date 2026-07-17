@@ -1,0 +1,31 @@
+{
+  "schema_version": "qmc-bmgs-artifact-manifest/v1",
+  "artifact_id": "role_lock_d3_20260717_lm_budget_baseline",
+  "provenance_status": "imported_pre_repository",
+  "exact_generation_revision_known": false,
+  "claim_scope": "oracle-aligned Role-Lock D3 benchmark",
+  "runtime_observed_during_migration": {
+    "python": "3.13.13",
+    "torch": "2.11.0"
+  },
+  "source_generator_sha256": {
+    "policy.py": "2ecc14a473d279cf29e134db5037d1d28e11a1ea72d4719224c9faf9abda5c42",
+    "role_lock.py": "1d2490eb8fbbcd18ca64655c74f7d0d8a97ff1ebac3660c54aa2770731cba6ee"
+  },
+  "files": {
+    "records.jsonl": {
+      "bytes": 3477659,
+      "records": 1536,
+      "sha256": "1e11c829bf978b61ceffc5b0dbd02b2f9f17be7ba13effe0a9137444f8688f6a"
+    },
+    "summary.json": {
+      "bytes": 33607,
+      "sha256": "3d6aaebcd256815dfdac49abc8bbb48d60678717b8e50b18b02b0cf49486f9a6"
+    },
+    "report.md": {
+      "bytes": 4792,
+      "sha256": "adc2efd21619fc0b78e611ad139f5cd639b5c031fc4c9936226313a3ac51042a"
+    }
+  },
+  "reproduction_command": "PYTHONPATH=src python -m qmc_bmgs.benchmarks.role_lock --depths 3 --seeds 32 --budgets 16,32,48,64 --random-partition-replicates 4 --verifier-budget-multiplier 16 --runs-jsonl artifacts/work/d3_lm_runs.jsonl --summary-json artifacts/work/d3_lm_summary.json"
+}

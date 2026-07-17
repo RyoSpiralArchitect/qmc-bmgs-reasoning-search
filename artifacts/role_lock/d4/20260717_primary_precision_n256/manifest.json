@@ -1,0 +1,32 @@
+{
+  "schema_version": "qmc-bmgs-artifact-manifest/v1",
+  "artifact_id": "role_lock_d4_20260717_primary_precision_n256",
+  "provenance_status": "imported_pre_repository",
+  "exact_generation_revision_known": false,
+  "claim_scope": "precision-triggered extension of the predeclared Role-Lock D4 Primary",
+  "runtime_observed_during_migration": {
+    "python": "3.13.13",
+    "torch": "2.11.0"
+  },
+  "source_generator_sha256": {
+    "policy.py": "2ecc14a473d279cf29e134db5037d1d28e11a1ea72d4719224c9faf9abda5c42",
+    "role_lock.py": "1d2490eb8fbbcd18ca64655c74f7d0d8a97ff1ebac3660c54aa2770731cba6ee",
+    "d4_noise_sweep.py": "9519ca7f96a5a76f8c2fd3178628ac0d0678812487490b96dc5d17f40d1642be"
+  },
+  "files": {
+    "records.jsonl": {
+      "bytes": 2131192,
+      "records": 512,
+      "sha256": "3a9789a97e622709f198bb5a7dcd3e24d2060e481c568ab731541edada36f517"
+    },
+    "summary.json": {
+      "bytes": 18408,
+      "sha256": "83774b3022c50e2e64ab85bdac1388685fd61b7092cc32edbabeae9353a665e1"
+    },
+    "report.md": {
+      "bytes": 4565,
+      "sha256": "4e13ebff35a8ca742775adbf37423231975f58ef1e615b4a57b201749e84c1a7"
+    }
+  },
+  "reproduction_command": "PYTHONPATH=src python -m qmc_bmgs.experiments.d4_noise_sweep --sd-scales 1.0 --budgets 384 --seeds 256 --stability-counts 8,16,32,64,128,256 --precision-extension-initial-replicates 64 --resume-from artifacts/role_lock/d4/20260717_noise_sweep_n64/records.jsonl --runs-jsonl artifacts/work/d4_primary_precision256_runs.jsonl --summary-json artifacts/work/d4_primary_precision256_summary.json --report-md artifacts/work/d4_primary_precision256_report.md"
+}

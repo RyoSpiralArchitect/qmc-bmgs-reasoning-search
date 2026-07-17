@@ -1,0 +1,13 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Local experiment products. Promoted, dated evidence under artifacts/role_lock
+# is tracked; new scratch trajectories stay here until promotion.
+artifacts/work/

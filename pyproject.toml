@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qmc-bmgs-reasoning-search"
+version = "0.1.0"
+description = "Engineering-oriented QMC/Bayesian token search experiments for LLM reasoning"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.9"]
+
+[project.scripts]
+qmc-bmgs-proto = "qmc_bmgs.policy:main"
+qmc-bmgs-benchmark = "qmc_bmgs.benchmarks.role_lock:main"
+qmc-bmgs-d4-sweep = "qmc_bmgs.experiments.d4_noise_sweep:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88

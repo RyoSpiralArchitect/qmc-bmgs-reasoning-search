@@ -49,6 +49,11 @@ sobol_action_only    = IID gate/cluster + Sobol action noise
 このablationでaction-onlyがneutral/positive、routing-onlyがnegativeなら、損失を
 semantic routingの過度な規則化へ局在できる。その後にchunk/contextual actionへ進む。
 
+Primary localizationは既存D4の発見cohortを再利用せず、fresh exploration seed
+256–511で固定する。SD 1.0をprimary、過去結果から選ばれたSD 0.5をengineering
+sensitivityとし、途中結果でreplicate数や条件を変更しない。routing/action/interactionは
+同一seed-block bootstrapのsimultaneous intervalで読む。
+
 ## Promotion rule
 
 新機構はtoyで「動く」だけでは昇格しません。少なくとも次を満たしてから実LLM段階へ

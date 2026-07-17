@@ -33,3 +33,14 @@ pruningはmask、物理compactionは別phaseとします。
 token input embeddingのclusterはoracle-aligned toyではpositive controlになりますが、
 自然言語reasoning roleの証拠ではありません。chunk、one-step hidden state、verifier
 featureへ進む前に、sampler/routing作用点のablationを終えます。
+
+## Uniform-channel localization
+
+channel ablationでは各nodeで、従来と同じ`2 + A`次元のscrambled Sobol点とIID点を
+毎selection一つずつ生成します。座標`0`はcoverage gate、`1`はcluster quantile、
+`2:`はaction perturbationです。4条件は座標ごとにどちらの点を使うかだけを変えます。
+
+これは3本の独立streamではなく、二つのjoint full-dimensional pointからの
+coordinate assignmentです。両endpointの旧挙動を保持し、unchanged coordinateを
+paired profile間で共有するpartial common-random-number設計です。両source生成を含む
+wall timeは計測用instrumentation costで、deployment sampler costとは扱いません。

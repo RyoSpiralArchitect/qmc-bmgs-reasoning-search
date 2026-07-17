@@ -48,6 +48,7 @@ def main() -> None:
         "qmc_bmgs.policy",
         "qmc_bmgs.benchmarks.role_lock",
         "qmc_bmgs.experiments.d4_noise_sweep",
+        "qmc_bmgs.experiments.channel_ablation",
     ):
         _run([sys.executable, "-m", module, "--self-test"], cwd=outside)
     print("repository validation: PASS")

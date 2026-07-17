@@ -51,6 +51,7 @@ from typing import Any, Iterable, Optional, Sequence
 
 import torch
 import torch.nn as nn
+from torch.quasirandom import SobolEngine
 
 from qmc_bmgs.policy import (
     NodeData,
@@ -70,11 +71,65 @@ NULL_MOVES = (8, 9, 10)
 
 
 @dataclass(frozen=True)
+class UniformSourcePlan:
+    """Select which matched uniform point supplies each search channel.
+
+    The coordinate mux always advances a full-dimensional Sobol point and a
+    full-dimensional IID point.  Choosing columns rather than creating smaller
+    engines preserves the two historical endpoint streams and intentionally
+    supplies common random numbers to matching channels across ablations.
+    """
+
+    coverage_gate: str
+    cluster_quantile: str
+    action_perturbation: str
+
+    def __post_init__(self) -> None:
+        valid = {"iid", "sobol"}
+        values = {
+            self.coverage_gate,
+            self.cluster_quantile,
+            self.action_perturbation,
+        }
+        if not values <= valid:
+            raise ValueError("uniform sources must be 'iid' or 'sobol'")
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "coverage_gate": self.coverage_gate,
+            "cluster_quantile": self.cluster_quantile,
+            "action_perturbation": self.action_perturbation,
+        }
+
+    def coordinate_sources(self, dimension: int) -> tuple[str, ...]:
+        if dimension < 3:
+            raise ValueError("selection point needs gate, route, and action columns")
+        return (
+            self.coverage_gate,
+            self.cluster_quantile,
+            *((self.action_perturbation,) * (dimension - 2)),
+        )
+
+
+@dataclass(frozen=True)
 class VariantSpec:
     name: str
-    sampler: str  # iid | sobol
+    sampler: str  # iid | sobol | hybrid
     strata: str  # none | embedding | random_size_matched | misleading
     pruning: bool
+    uniform_sources: Optional[UniformSourcePlan] = None
+
+    def __post_init__(self) -> None:
+        if self.sampler not in {"iid", "sobol", "hybrid"}:
+            raise ValueError("sampler must be iid, sobol, or hybrid")
+        if self.sampler == "hybrid" and self.uniform_sources is None:
+            raise ValueError("hybrid variants require explicit uniform sources")
+        if self.uniform_sources is not None:
+            sources = set(self.uniform_sources.as_dict().values())
+            if self.sampler in {"iid", "sobol"} and sources != {self.sampler}:
+                raise ValueError("pure sampler labels require a matching pure plan")
+            if self.sampler == "hybrid" and sources != {"iid", "sobol"}:
+                raise ValueError("hybrid sampler plans must use both source kinds")
 
 
 POLICY_VARIANTS = (
@@ -90,6 +145,38 @@ POLICY_VARIANTS = (
     VariantSpec("sobol_embedding_no_prune", "sobol", "embedding", False),
     VariantSpec("sobol_misleading_no_prune", "sobol", "misleading", False),
     VariantSpec("sobol_embedding_prune", "sobol", "embedding", True),
+)
+
+
+CHANNEL_ABLATION_VARIANTS = (
+    VariantSpec(
+        "iid_all",
+        "iid",
+        "embedding",
+        False,
+        UniformSourcePlan("iid", "iid", "iid"),
+    ),
+    VariantSpec(
+        "sobol_all",
+        "sobol",
+        "embedding",
+        False,
+        UniformSourcePlan("sobol", "sobol", "sobol"),
+    ),
+    VariantSpec(
+        "sobol_routing_only",
+        "hybrid",
+        "embedding",
+        False,
+        UniformSourcePlan("sobol", "sobol", "iid"),
+    ),
+    VariantSpec(
+        "sobol_action_only",
+        "hybrid",
+        "embedding",
+        False,
+        UniformSourcePlan("iid", "iid", "sobol"),
+    ),
 )
 
 
@@ -278,6 +365,53 @@ class RecordingEngine:
         return result
 
 
+class CoordinateMuxEngine:
+    """Mux matched full-dimensional Sobol/IID points by channel columns.
+
+    Both sources advance on every call, including pure endpoint conditions.
+    This keeps channel values synchronized across the four paired ablations.
+    The extra source generation is measurement instrumentation, not an estimate
+    of deployment-time sampler cost.
+    """
+
+    def __init__(
+        self,
+        dimension: int,
+        node_seed: int,
+        sources: UniformSourcePlan,
+        sobol_engine: Any,
+    ) -> None:
+        self.dimension = int(dimension)
+        self.sources = sources
+        coordinate_sources = sources.coordinate_sources(self.dimension)
+        self.sobol_mask = torch.tensor(
+            [source == "sobol" for source in coordinate_sources],
+            dtype=torch.bool,
+        )
+        self.sobol_engine = sobol_engine
+        self.iid_engine = IIDEngine(self.dimension, int(node_seed) ^ 0x1D1D1D)
+        self.last_draw: Optional[torch.Tensor] = None
+        self.last_sobol_draw: Optional[torch.Tensor] = None
+        self.last_iid_draw: Optional[torch.Tensor] = None
+        self.points_drawn = 0
+
+    def draw(self, n: int) -> torch.Tensor:
+        count = int(n)
+        if count < 1:
+            raise ValueError("draw count must be positive")
+        sobol = self.sobol_engine.draw(count)
+        iid = self.iid_engine.draw(count)
+        if sobol.shape != iid.shape or sobol.shape != (count, self.dimension):
+            raise AssertionError("uniform engines returned an unexpected shape")
+        result = iid.clone()
+        result[:, self.sobol_mask] = sobol[:, self.sobol_mask]
+        self.last_sobol_draw = sobol.detach().clone()
+        self.last_iid_draw = iid.detach().clone()
+        self.last_draw = result.detach().clone()
+        self.points_drawn += count
+        return result
+
+
 @dataclass
 class RunCounters:
     logical_lm_node_evals: int = 0
@@ -391,6 +525,7 @@ class BenchmarkPolicy(QMCBMGSReasoningPolicy):
         self.posterior_sd_scale = float(posterior_sd_scale)
         self.counters = RunCounters()
         self.root_coverage_cluster_counts: dict[int, int] = {}
+        self.root_action_selection_counts: dict[int, int] = {}
         self.lm_node_budget = 0
         self.verifier_budget = 0
         self.edge_budget = 0
@@ -484,7 +619,14 @@ class BenchmarkPolicy(QMCBMGSReasoningPolicy):
         node.cluster_visits = torch.zeros(node.num_clusters, dtype=torch.float64)
 
         dimension = 2 + node.num_actions
-        if self.variant.sampler == "iid":
+        if self.variant.uniform_sources is not None:
+            engine = CoordinateMuxEngine(
+                dimension,
+                node.node_seed,
+                self.variant.uniform_sources,
+                node.qmc_engine,
+            )
+        elif self.variant.sampler == "iid":
             engine: Any = IIDEngine(dimension, node.node_seed ^ 0x1D1D1D)
         else:
             engine = node.qmc_engine
@@ -526,6 +668,11 @@ class BenchmarkPolicy(QMCBMGSReasoningPolicy):
     def _sample_qmc_action_index(self, node: NodeData) -> int:
         self.counters.edge_selections += 1
         index = super()._sample_qmc_action_index(node)
+        if self.nodes.get(self.task.root) is node:
+            token_id = int(node.candidate_ids[index].item())
+            self.root_action_selection_counts[token_id] = (
+                self.root_action_selection_counts.get(token_id, 0) + 1
+            )
         engine = node.qmc_engine
         last = getattr(engine, "last_draw", None)
         coverage = False
@@ -795,7 +942,7 @@ def _search_diagnostics(policy: BenchmarkPolicy, task: RoleLockTask) -> dict[str
         )
     else:
         root_coverage_max_uniform_deviation = 0.0
-    return {
+    result: dict[str, Any] = {
         "nodes_created": len(policy.nodes),
         "tree_total_arms": total_arms,
         "tree_active_arms": active_arms,
@@ -805,15 +952,69 @@ def _search_diagnostics(policy: BenchmarkPolicy, task: RoleLockTask) -> dict[str
         "root_min_cluster_visits": root_min_cluster_visits,
         "root_candidate_fingerprint": root_candidate_fingerprint,
         "root_coverage_cluster_counts": root_coverage_counts,
-        "root_coverage_max_uniform_deviation": (
-            root_coverage_max_uniform_deviation
-        ),
+        "root_coverage_max_uniform_deviation": (root_coverage_max_uniform_deviation),
         # All ten non-BOS tokens are forced into every Role-Lock node.  Keep the
         # universe guarantee separate from whether the full path was expanded
         # and remains active by this particular run.
         "oracle_candidate_universe_guaranteed": True,
         "oracle_active_path_expanded": _candidate_path_available(policy, task),
     }
+    mux_engines = []
+    for node in policy.nodes.values():
+        recording_engine = node.qmc_engine
+        engine = getattr(recording_engine, "engine", None)
+        if isinstance(engine, CoordinateMuxEngine):
+            mux_engines.append(engine)
+    if mux_engines:
+        points = sum(engine.points_drawn for engine in mux_engines)
+        selected_sobol_scalars = sum(
+            engine.points_drawn * int(engine.sobol_mask.sum().item())
+            for engine in mux_engines
+        )
+        total_selected_scalars = sum(
+            engine.points_drawn * engine.dimension for engine in mux_engines
+        )
+        root_action_counts = (
+            [
+                int(
+                    policy.root_action_selection_counts.get(
+                        int(token_id),
+                        0,
+                    )
+                )
+                for token_id in root.candidate_ids.tolist()
+            ]
+            if root is not None
+            else []
+        )
+        root_action_total = sum(root_action_counts)
+        if root_action_total:
+            action_probability = torch.tensor(
+                root_action_counts, dtype=torch.float64
+            ) / float(root_action_total)
+            nonzero = action_probability > 0.0
+            root_action_entropy = float(
+                -(action_probability[nonzero] * action_probability[nonzero].log())
+                .sum()
+                .item()
+            )
+        else:
+            root_action_entropy = 0.0
+        result["uniform_source_usage"] = {
+            "mux_nodes_created": len(mux_engines),
+            "selection_points": points,
+            "sobol_full_points_generated": points,
+            "iid_full_points_generated": points,
+            "selected_sobol_scalar_values": selected_sobol_scalars,
+            "selected_iid_scalar_values": (
+                total_selected_scalars - selected_sobol_scalars
+            ),
+            "total_selected_scalar_values": total_selected_scalars,
+            "both_sources_advanced_every_draw": True,
+        }
+        result["root_action_selection_counts"] = root_action_counts
+        result["root_action_selection_entropy"] = root_action_entropy
+    return result
 
 
 def run_policy_variant(
@@ -829,9 +1030,7 @@ def run_policy_variant(
 ) -> dict[str, Any]:
     tokenizer = RoleLockTokenizer()
     model = RoleLockLM(task, seeds.model_seed)
-    config = config_override or benchmark_config(
-        task, variant, seeds.exploration_seed
-    )
+    config = config_override or benchmark_config(task, variant, seeds.exploration_seed)
     if int(config.seed) != int(seeds.exploration_seed):
         raise ValueError(
             "config.seed must equal seeds.exploration_seed so the randomization "
@@ -938,6 +1137,34 @@ def run_policy_variant(
             "prune_log": policy.prune_log,
         },
     }
+    if variant.uniform_sources is not None:
+        record["method"].update(
+            {
+                "sampler_layout": "matched_full_dimension_column_mux/v1",
+                "uniform_sources": variant.uniform_sources.as_dict(),
+                "channel_coordinates": {
+                    "coverage_gate": [0],
+                    "cluster_quantile": [1],
+                    "action_perturbation_start": 2,
+                },
+            }
+        )
+        record["randomization"] = {
+            "independent_unit": "exploration_seed",
+            "node_stream_seeded_from": "exploration_seed_and_exact_prefix",
+            "source_architecture": "matched_full_dimension_column_mux",
+            "sobol_scramble": True,
+            "iid_seed_transform": "node_seed XOR 0x1D1D1D",
+            "both_sources_advanced_every_draw": True,
+            "common_random_numbers": {
+                "across_profiles_for_unchanged_coordinates": True,
+                "scope": ("same exact prefix, exploration seed, and node draw index"),
+            },
+            "cost_scope": (
+                "dual-source generation is matched instrumentation, not a "
+                "deployment-time sampler-cost estimate"
+            ),
+        }
     record["deterministic_digest"] = canonical_record_digest(record)
     json.dumps(record, allow_nan=False)
     return record
@@ -1363,7 +1590,60 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     )
 
 
+def _assert_coordinate_mux_contract() -> None:
+    dimension = 7
+    seed = 12345
+    count = 32
+    plans = {
+        variant.name: variant.uniform_sources for variant in CHANNEL_ABLATION_VARIANTS
+    }
+    expected = {
+        "iid_all": UniformSourcePlan("iid", "iid", "iid"),
+        "sobol_all": UniformSourcePlan("sobol", "sobol", "sobol"),
+        "sobol_routing_only": UniformSourcePlan("sobol", "sobol", "iid"),
+        "sobol_action_only": UniformSourcePlan("iid", "iid", "sobol"),
+    }
+    assert plans == expected
+
+    draws: dict[str, torch.Tensor] = {}
+    sequential_draws: dict[str, torch.Tensor] = {}
+    for name, plan in plans.items():
+        assert plan is not None
+        engine = CoordinateMuxEngine(
+            dimension,
+            seed,
+            plan,
+            SobolEngine(dimension=dimension, scramble=True, seed=seed),
+        )
+        draws[name] = engine.draw(count)
+        assert engine.points_drawn == count
+        assert engine.last_sobol_draw is not None
+        assert engine.last_iid_draw is not None
+        sequential_engine = CoordinateMuxEngine(
+            dimension,
+            seed,
+            plan,
+            SobolEngine(dimension=dimension, scramble=True, seed=seed),
+        )
+        sequential_draws[name] = torch.cat(
+            [sequential_engine.draw(1) for _ in range(count)], dim=0
+        )
+        assert torch.equal(draws[name], sequential_draws[name])
+
+    legacy_iid = IIDEngine(dimension, seed ^ 0x1D1D1D).draw(count)
+    legacy_sobol = SobolEngine(dimension=dimension, scramble=True, seed=seed).draw(
+        count
+    )
+    assert torch.equal(draws["iid_all"], legacy_iid)
+    assert torch.equal(draws["sobol_all"], legacy_sobol)
+    assert torch.equal(draws["iid_all"][:, 2:], draws["sobol_routing_only"][:, 2:])
+    assert torch.equal(draws["iid_all"][:, :2], draws["sobol_action_only"][:, :2])
+    assert torch.equal(draws["sobol_all"][:, :2], draws["sobol_routing_only"][:, :2])
+    assert torch.equal(draws["sobol_all"][:, 2:], draws["sobol_action_only"][:, 2:])
+
+
 def _run_self_test() -> None:
+    _assert_coordinate_mux_contract()
     task = RoleLockTask(3)
     registry = CandidateRegistry()
     seeds = SeedPlan(exploration_seed=5, partition_seed=1005, task_seed=3)
@@ -1371,6 +1651,10 @@ def _run_self_test() -> None:
     sobol = next(v for v in POLICY_VARIANTS if v.name == "sobol_embedding_no_prune")
     first = run_policy_variant(task, sobol, seeds, 32, registry)
     second = run_policy_variant(task, sobol, seeds, 32, registry)
+    assert (
+        first["deterministic_digest"]
+        == "ef1012c3711816085334d7a3aab41679b8335e5bb7c93b753655b949d62bd0a4"
+    )
     assert first["deterministic_digest"] == second["deterministic_digest"]
     assert first["budget"]["overshoot"] == 0
     assert first["usage"]["logical_lm_node_evals"] <= 32
@@ -1384,6 +1668,44 @@ def _run_self_test() -> None:
     assert first["usage"]["verifier_requests"] <= first["budget"]["verifier_limit"]
     assert first["search"]["oracle_candidate_universe_guaranteed"] is True
 
+    iid_legacy = next(v for v in POLICY_VARIANTS if v.name == "iid_embedding_no_prune")
+    legacy_endpoints = {
+        "iid_all": run_policy_variant(task, iid_legacy, seeds, 32, registry),
+        "sobol_all": first,
+    }
+    assert (
+        legacy_endpoints["iid_all"]["deterministic_digest"]
+        == "42363f978b001552459118948e1cab5937d0495345795b5a2f290137b3254204"
+    )
+    channel_records = {
+        variant.name: run_policy_variant(task, variant, seeds, 32, registry)
+        for variant in CHANNEL_ABLATION_VARIANTS
+    }
+    for name, legacy in legacy_endpoints.items():
+        channel = channel_records[name]
+        legacy_usage = {k: v for k, v in legacy["usage"].items() if k != "wall_time_s"}
+        channel_usage = {
+            k: v for k, v in channel["usage"].items() if k != "wall_time_s"
+        }
+        assert channel["outcome"] == legacy["outcome"]
+        assert channel_usage == legacy_usage
+        channel_search = dict(channel["search"])
+        channel_search.pop("uniform_source_usage")
+        channel_search.pop("root_action_selection_counts")
+        channel_search.pop("root_action_selection_entropy")
+        assert channel_search == legacy["search"]
+    fingerprints = {
+        row["search"]["root_candidate_fingerprint"] for row in channel_records.values()
+    }
+    assert len(fingerprints) == 1
+    for variant in CHANNEL_ABLATION_VARIANTS:
+        row = channel_records[variant.name]
+        assert row["method"]["uniform_sources"] == variant.uniform_sources.as_dict()
+        usage = row["search"]["uniform_source_usage"]
+        assert usage["selection_points"] == row["usage"]["edge_selections"]
+        assert usage["sobol_full_points_generated"] == usage["selection_points"]
+        assert usage["iid_full_points_generated"] == usage["selection_points"]
+
     random_variant = next(
         v for v in POLICY_VARIANTS if v.name == "sobol_random_size_matched_no_prune"
     )
@@ -1394,6 +1716,10 @@ def _run_self_test() -> None:
 
     no_strata = next(v for v in POLICY_VARIANTS if v.name == "sobol_global_no_prune")
     no_strata_record = run_policy_variant(task, no_strata, seeds, 16, registry)
+    assert (
+        no_strata_record["deterministic_digest"]
+        == "ec9570ad3097ea987553875ae73110443e5e9a2a3dab7faacee4be97382237c9"
+    )
     assert no_strata_record["usage"]["coverage_route_selections"] == 0
     assert no_strata_record["usage"]["prune_checks"] == 0
 

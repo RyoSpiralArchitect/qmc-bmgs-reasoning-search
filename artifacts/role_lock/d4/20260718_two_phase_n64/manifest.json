@@ -5,6 +5,8 @@
   "exact_generation_revision_known": true,
   "generation_git_commit": "c0e28985182d36e21e4350809406fb1afac79c26",
   "generation_git_tree": "6e30f636b38a25e2fc9a0c2add108e5ca26171c7",
+  "canonical_equivalent_commit": "c22eb815c7a08bc32b47de78962ca44fe78e93aa",
+  "canonical_equivalence": "the canonical cherry-pick has the exact generation tree 6e30f636b38a25e2fc9a0c2add108e5ca26171c7",
   "generation_date": "2026-07-18",
   "claim_scope": "fresh-cohort exploratory Role-Lock D4 two-phase action-source switch only",
   "design": {

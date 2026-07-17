@@ -530,6 +530,11 @@ class BenchmarkPolicy(QMCBMGSReasoningPolicy):
         self.verifier_budget = 0
         self.edge_budget = 0
         self.stop_reason = "not_started"
+        # Kept outside RunCounters so the historical benchmark record schema and
+        # its golden digests remain unchanged.  Fixed-verifier experiments opt in
+        # to serializing this request-indexed time-to-hit diagnostic.
+        self.first_success_verifier_request: Optional[int] = None
+        self.blocked_verifier_calls = 0
         self.prune_log: list[dict[str, Any]] = []
         self._partition_singletons = self._select_partition_singletons()
         super().__init__(
@@ -640,6 +645,7 @@ class BenchmarkPolicy(QMCBMGSReasoningPolicy):
 
     def _terminal_verifier(self, tokens: tuple[int, ...]) -> float:
         if self.counters.verifier_requests >= self.verifier_budget:
+            self.blocked_verifier_calls += 1
             return 0.0
         self.counters.verifier_requests += 1
         self.counters.verifier_evaluations += 1
@@ -649,6 +655,7 @@ class BenchmarkPolicy(QMCBMGSReasoningPolicy):
 
     def _cutoff_verifier(self, tokens: tuple[int, ...]) -> float:
         if self.counters.verifier_requests >= self.verifier_budget:
+            self.blocked_verifier_calls += 1
             return 0.0
         self.counters.verifier_requests += 1
         self.counters.verifier_evaluations += 1
@@ -664,6 +671,8 @@ class BenchmarkPolicy(QMCBMGSReasoningPolicy):
         )
         if score > 0.0 and self.counters.first_success_lm_eval is None:
             self.counters.first_success_lm_eval = self.counters.logical_lm_node_evals
+        if score > 0.0 and self.first_success_verifier_request is None:
+            self.first_success_verifier_request = self.counters.verifier_requests
 
     def _sample_qmc_action_index(self, node: NodeData) -> int:
         self.counters.edge_selections += 1
@@ -838,6 +847,47 @@ class BenchmarkPolicy(QMCBMGSReasoningPolicy):
             _, reason = self.search_step_budgeted(root_tokens)
             if reason in ("lm_budget_frontier", "edge_budget"):
                 self.stop_reason = reason
+                break
+        return self.stop_reason
+
+    def run_to_fixed_verifier_budget(
+        self,
+        root_tokens: Sequence[int],
+        *,
+        verifier_budget: int,
+        lm_node_ceiling: int,
+        edge_ceiling: int,
+    ) -> str:
+        """Run to an exact verifier cap with LM/edge limits as guards.
+
+        Verifier exhaustion is checked first because it is the experimental
+        resource.  A simultaneous guard boundary therefore cannot relabel a
+        successful primary-budget stop.  The data-quality contract still
+        requires strictly positive guard headroom, so any tie is invalid.
+        """
+        if min(verifier_budget, lm_node_ceiling, edge_ceiling) < 1:
+            raise ValueError("fixed-verifier limits must be positive")
+        self.verifier_budget = int(verifier_budget)
+        self.lm_node_budget = int(lm_node_ceiling)
+        self.edge_budget = int(edge_ceiling)
+        self.stop_reason = "running"
+
+        while True:
+            if self.counters.verifier_requests >= self.verifier_budget:
+                self.stop_reason = "verifier_budget"
+                break
+            if self.counters.logical_lm_node_evals >= self.lm_node_budget:
+                self.stop_reason = "lm_integrity_ceiling"
+                break
+            if self.counters.edge_selections >= self.edge_budget:
+                self.stop_reason = "edge_integrity_ceiling"
+                break
+            _, reason = self.search_step_budgeted(root_tokens)
+            if reason == "lm_budget_frontier":
+                self.stop_reason = "lm_integrity_ceiling_frontier"
+                break
+            if reason == "edge_budget":
+                self.stop_reason = "edge_integrity_ceiling"
                 break
         return self.stop_reason
 

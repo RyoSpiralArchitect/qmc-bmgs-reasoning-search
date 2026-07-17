@@ -57,6 +57,9 @@ sensitivityとし、途中結果でreplicate数や条件を変更しない。rou
 full resultでは成功main effectは未確定だったが、Sobol routing条件は同じLM-node capへ
 少ないverifier/edge workで到達した。次は表現を増やさず、fresh seed 512–639・verifier
 cap 700で、この再訪削減が追加nodeとsuccessへ変換されるかを測る。
+1111はLM saturationではなくconservative integrity ceilingとし、実到達可能prefix上限
+820より前に止まらないためのguardとして扱う。全runでverifier exactly 700、LM<1111、
+edge≤2800かつedge<3500を満たさなければ、valid rowだけを選ばず実験全体を失敗とする。
 
 ## Promotion rule
 

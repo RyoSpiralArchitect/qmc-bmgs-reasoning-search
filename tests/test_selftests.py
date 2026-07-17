@@ -5,6 +5,9 @@ import unittest
 from qmc_bmgs.benchmarks.role_lock import _run_self_test as benchmark_self_test
 from qmc_bmgs.experiments.channel_ablation import _self_test as channel_self_test
 from qmc_bmgs.experiments.d4_noise_sweep import _self_test as d4_self_test
+from qmc_bmgs.experiments.fixed_verifier_budget import (
+    _self_test as fixed_verifier_self_test,
+)
 from qmc_bmgs.policy import QMCBMGSConfig
 from qmc_bmgs.policy import _run_self_test as policy_self_test
 from qmc_bmgs.records import canonical_record_digest
@@ -25,6 +28,9 @@ class RepositorySelfTests(unittest.TestCase):
 
     def test_channel_ablation_self_test(self) -> None:
         channel_self_test()
+
+    def test_fixed_verifier_self_test(self) -> None:
+        fixed_verifier_self_test()
 
     def test_record_digest_ignores_wall_time_only(self) -> None:
         first = {"usage": {"wall_time_s": 1.0, "calls": 3}, "value": 4}

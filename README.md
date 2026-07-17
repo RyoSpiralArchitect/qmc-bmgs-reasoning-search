@@ -42,6 +42,7 @@ PYTHONPATH=src python -m qmc_bmgs.policy --self-test
 PYTHONPATH=src python -m qmc_bmgs.benchmarks.role_lock --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.d4_noise_sweep --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.channel_ablation --self-test
+PYTHONPATH=src python -m qmc_bmgs.experiments.fixed_verifier_budget --self-test
 python scripts/validate.py
 ```
 
@@ -53,9 +54,10 @@ qmc-bmgs-proto --self-test
 qmc-bmgs-benchmark --smoke
 qmc-bmgs-d4-sweep --smoke
 qmc-bmgs-channel-ablation --smoke
+qmc-bmgs-fixed-verifier --smoke
 ```
 
-通常のrun出力は`artifacts/work/`へ保存されます。初期3実験のcanonical raw JSONLは
+通常のrun出力は`artifacts/work/`へ保存されます。promoteしたcanonical raw JSONLは
 dated evidenceとしてGitへ含め、各runの`manifest.json`でrecord数・byte数・SHA-256を
 固定します。今後のrawは昇格判断までは追跡しません。
 

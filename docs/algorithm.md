@@ -44,3 +44,15 @@ channel ablationでは各nodeで、従来と同じ`2 + A`次元のscrambled Sobo
 coordinate assignmentです。両endpointの旧挙動を保持し、unchanged coordinateを
 paired profile間で共有するpartial common-random-number設計です。両source生成を含む
 wall timeは計測用instrumentation costで、deployment sampler costとは扱いません。
+
+## Fixed-verifier conversion
+
+次段ではsearch中のverifier feedbackを正確に700回へ固定し、LM node、prefix token、
+edgeを結果として測ります。1111 LM nodesはsaturationではなく緩いintegrity guardです。
+EOSをterminal leafとして展開しない現候補集合のD4 reachable prefix boundは820です。
+正常な700 simulationは各1 verifier、最大4 edgesなので、edgeは2800以下でなければ
+なりません。3500 edge ceilingは性能予算ではなく配管異常用のguardです。
+
+700回到達後のgreedy readoutはsearch verifier feedbackを消費しないdeterministic
+evaluationとして1回別計上します。したがってfixed-verifierはequal total computeでは
+なく、verifier-to-node conversionを測る実験です。

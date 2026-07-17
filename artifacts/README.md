@@ -5,10 +5,12 @@
 | `role_lock/d3/20260717_lm_budget_baseline` | aligned strata positive control and controls | `report.md` |
 | `role_lock/d4/20260717_noise_sweep_n64` | IID vs combined Sobol across SD scale and LM cap | `report.md` |
 | `role_lock/d4/20260717_primary_precision_n256` | precision-triggered Primary extension | `report.md` |
+| `role_lock/d4/20260717_channel_ablation_fresh_n256` | fresh-cohort routing/action coordinate-source localization | `report.md` |
 
 Each promoted directory tracks `report.md`, `summary.json`, `manifest.json`, and immutable
-`records.jsonl`. These first pre-repository runs are small enough to preserve in Git; new high-churn
-work stays under ignored `artifacts/work/` until promotion. Verify evidence with:
+`records.jsonl`. The first three runs were imported with explicit pre-repository provenance; the
+channel ablation records its exact clean generation revision. High-churn work stays under ignored
+`artifacts/work/` until promotion. Verify evidence with:
 
 ```bash
 python scripts/verify_artifacts.py

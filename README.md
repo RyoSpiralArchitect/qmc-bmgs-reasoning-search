@@ -14,11 +14,12 @@ engineering research repoです。
 - D4ではcombined Sobol engineがcoverageを約10倍均一化し、同じLM-node capへ
   少ないedge/verifier workで到達しました。
 - しかしPrimary n=256ではIID 40.2%、Sobol 30.1%。Sobol優位は出ませんでした。
-- QMCをsemantic routingとposterior perturbationへ分離するcoordinate-mux
-  ablationを実装し、smoke/data-quality gateまで通しました。性能判断はfresh seedの
-  fixed full cohortを待ちます。
+- fresh n=256 channel ablationでは成功差は未確定だったが、`sobol_all`はIIDより
+  verifier/edge workを約15%減らしつつ成功率point estimateを+2.0pp保ちました。
+- `sobol_all`はSD 1.0/0.5の両方でsample-mean Pareto frontに残る唯一のprofileです。
 
-結果の短い読み方は [D4 result capsule](docs/results/d4_result.md)、設計原則は
+結果の短い読み方は [D4 result capsule](docs/results/d4_result.md) と
+[fresh channel-ablation capsule](docs/results/channel_ablation_fresh_n256.md)、設計原則は
 [engineering north star](docs/engineering_north_star.md) を参照してください。
 
 ## Layout
@@ -60,8 +61,8 @@ dated evidenceとしてGitへ含め、各runの`manifest.json`でrecord数・byt
 
 ## Immediate roadmap
 
-1. 上記4条件をfresh paired seed 256–511、SD 1.0/0.5、D4 cap 384で固定実行する。
-2. LM-node capだけでなくedge/verifier budgetでもcompute-matchする。
+1. `iid_all` / `sobol_all` / `sobol_routing_only`をfixed verifier cap 700で比較する。
+2. fresh paired seed 512–639、SD 1.0、LM ceiling 1111でresource conversionを測る。
 3. 有望な作用点だけをchunk action・contextual representationへ接続する。
 4. KV-cacheとcandidate refreshを導入し、実LLM/verifierで測る。
 

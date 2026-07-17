@@ -54,6 +54,10 @@ Primary localizationは既存D4の発見cohortを再利用せず、fresh explora
 sensitivityとし、途中結果でreplicate数や条件を変更しない。routing/action/interactionは
 同一seed-block bootstrapのsimultaneous intervalで読む。
 
+full resultでは成功main effectは未確定だったが、Sobol routing条件は同じLM-node capへ
+少ないverifier/edge workで到達した。次は表現を増やさず、fresh seed 512–639・verifier
+cap 700で、この再訪削減が追加nodeとsuccessへ変換されるかを測る。
+
 ## Promotion rule
 
 新機構はtoyで「動く」だけでは昇格しません。少なくとも次を満たしてから実LLM段階へ

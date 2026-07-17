@@ -17,9 +17,12 @@ engineering research repoです。
 - fresh n=256 channel ablationでは成功差は未確定だったが、`sobol_all`はIIDより
   verifier/edge workを約15%減らしつつ成功率point estimateを+2.0pp保ちました。
 - `sobol_all`はSD 1.0/0.5の両方でsample-mean Pareto frontに残る唯一のprofileです。
+- fixed-verifier n=128ではrouting QMCが同じ700 callsから約6–7%多いdeep nodeを
+  得ましたが、成功優位には変換できませんでした。追加breadthの99%は最深層です。
 
-結果の短い読み方は [D4 result capsule](docs/results/d4_result.md) と
-[fresh channel-ablation capsule](docs/results/channel_ablation_fresh_n256.md)、設計原則は
+結果の短い読み方は [D4 result capsule](docs/results/d4_result.md)、
+[fresh channel-ablation capsule](docs/results/channel_ablation_fresh_n256.md)、
+[fixed-verifier capsule](docs/results/fixed_verifier_n128.md)、設計原則は
 [engineering north star](docs/engineering_north_star.md) を参照してください。
 
 ## Layout
@@ -63,9 +66,9 @@ dated evidenceとしてGitへ含め、各runの`manifest.json`でrecord数・byt
 
 ## Immediate roadmap
 
-1. `iid_all` / `sobol_all` / `sobol_routing_only`をfixed verifier cap 700で比較する。
-2. fresh paired seed 512–639、SD 1.0、LM ceiling 1111でresource conversionを測る。
-3. 有望な作用点だけをchunk action・contextual representationへ接続する。
-4. KV-cacheとcandidate refreshを導入し、実LLM/verifierで測る。
+1. action sourceをverifier 256でSobolからIIDへ切り替えるtwo-phaseを1条件だけ測る。
+2. fresh paired seed 640–703、n=64でsuccessとon/off-path telemetryを比較する。
+3. 改善しなければthreshold tuningを止め、credit-assignment ablationへ進む。
+4. 有望な作用点だけをchunk/contextual actionと実LLM/verifierへ接続する。
 
 自然言語reasoningへの一般化や一般的なQMC優位は、まだ主張しません。

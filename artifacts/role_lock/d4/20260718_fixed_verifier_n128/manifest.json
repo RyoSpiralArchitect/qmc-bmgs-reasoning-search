@@ -1,0 +1,94 @@
+{
+  "schema_version": "qmc-bmgs-artifact-manifest/v1",
+  "artifact_id": "role_lock_d4_20260718_fixed_verifier_n128",
+  "provenance_status": "generated_from_clean_repository_revision",
+  "exact_generation_revision_known": true,
+  "generation_git_commit": "083022ba84b9bef17e85434128c5d5b28d27460c",
+  "generation_git_tree": "29202323e55df05c4c1c1833fb6bfc13bd1f8bda",
+  "generation_date": "2026-07-18",
+  "claim_scope": "fresh-cohort Role-Lock D4 verifier-to-node conversion only",
+  "design": {
+    "run_mode": "full",
+    "methods": [
+      "iid_all",
+      "sobol_all",
+      "sobol_routing_only"
+    ],
+    "posterior_sd_scale": 1.0,
+    "verifier_cap": 700,
+    "lm_node_integrity_ceiling": 1111,
+    "reachable_nonterminal_prefix_bound": 820,
+    "edge_integrity_ceiling": 3500,
+    "normal_edge_bound": 2800,
+    "exploration_seed_start": 512,
+    "exploration_seed_end_inclusive": 639,
+    "independent_randomization_unit": "exploration_seed",
+    "records": 384,
+    "paired_groups": 128,
+    "matched_primary_budget": "700 search verifier feedback calls",
+    "post_search_readout_evaluations": 1,
+    "post_search_readout_budget_scope": "outside the search verifier budget",
+    "source_architecture": "matched_full_dimension_column_mux",
+    "common_random_numbers": "unchanged coordinates share matched node-local source points"
+  },
+  "runtime": {
+    "python": "3.13.13",
+    "torch": "2.11.0"
+  },
+  "source_generator_sha256": {
+    "policy.py": "a6aa9575176af59c5e5e588474d20f41b671a3d3ecd724b69a3ce50f9076dde1",
+    "role_lock.py": "fa6974eb6749cea2b617c92f2f48f9454d37db1c9e5475deb86ce8b682121af9",
+    "fixed_verifier_budget.py": "433b0493f91db503b8c5640cbc5e1cdfb9df3bdd6c99069393f94d3c02645e45",
+    "records.py": "25ff3288f48aad398871eac6b0ae4a335a5733d6601efcadfecbe49da127e2c4"
+  },
+  "files": {
+    "records.jsonl": {
+      "bytes": 2109153,
+      "records": 384,
+      "sha256": "f2f611724c0fc5b77783e5fbe078f27aabdebb854aaab50b33932432e1ed782c"
+    },
+    "summary.json": {
+      "bytes": 13274,
+      "sha256": "f0a12d92e963354330aec0f9aa62f2b965cfc9f0e2351e72b7f9d15dbd946855"
+    },
+    "report.md": {
+      "bytes": 1535,
+      "sha256": "4851ac103b0539d7118f76fe3bd4a11acc50018c24dacd949f2e0dff8930c638"
+    }
+  },
+  "data_quality_status": "PASS",
+  "reproduction_command": "PYTHONPATH=src python -m qmc_bmgs.experiments.fixed_verifier_budget",
+  "actual_execution": {
+    "parallel_shards": [
+      {
+        "seed_start": 512,
+        "seed_end_inclusive": 543,
+        "records": 96,
+        "sha256": "601ca371a0fb9a83c4262e2a35b72fa013b436f75665eda3a94a76e3dabd2451"
+      },
+      {
+        "seed_start": 544,
+        "seed_end_inclusive": 575,
+        "records": 96,
+        "sha256": "3d8921677afe3951a67f5342c1013f9184c775a5e2967e5a0c3687c4513b371f"
+      },
+      {
+        "seed_start": 576,
+        "seed_end_inclusive": 607,
+        "records": 96,
+        "sha256": "20436e73a456fa3f4f343257bf81e54c9f48f46ddb0d4aad7ee0ea4759cdcb7d"
+      },
+      {
+        "seed_start": 608,
+        "seed_end_inclusive": 639,
+        "records": 96,
+        "sha256": "493795742d223c161b441faa11a395eda10412fe76005e6e84b7cf7d4284501a"
+      }
+    ],
+    "shard_union_verified_exact": true,
+    "shard_byte_concatenation_equals_promoted_raw": true,
+    "final_disk_reload_and_summary_regeneration": "PASS",
+    "independent_stdlib_raw_audit": "PASS",
+    "independent_bootstrap_and_exact_test_audit": "PASS"
+  }
+}

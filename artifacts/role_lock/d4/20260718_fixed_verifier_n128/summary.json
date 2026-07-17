@@ -1,0 +1,510 @@
+{
+  "cells": [
+    {
+      "best_observed_success_count": 55,
+      "best_observed_success_rate": 0.4296875,
+      "first_success_censored_count": 73,
+      "first_success_observed_count": 55,
+      "mean_first_success_verifier_request_among_hits": 366.96363636363634,
+      "mean_nodes_created": 373.28125,
+      "mean_restricted_first_success_index": 557.46875,
+      "mean_root_coverage_max_uniform_deviation": 0.02549653425861779,
+      "mean_usage": {
+        "edge_selections": 2543.015625,
+        "full_prefix_tokens": 1395.8671875,
+        "logical_lm_node_evals": 373.28125,
+        "verifier_requests": 700.0
+      },
+      "method": "iid_all",
+      "minimum_edge_guard_headroom": 880,
+      "minimum_lm_guard_headroom": 710,
+      "readout_success_count": 55,
+      "readout_success_rate": 0.4296875,
+      "readout_success_wilson_95": [
+        0.3472117133263662,
+        0.516260671149596
+      ],
+      "replicates": 128,
+      "restricted_first_success_definition": "request index for observed hits; verifier_cap + 1 for censored runs"
+    },
+    {
+      "best_observed_success_count": 46,
+      "best_observed_success_rate": 0.359375,
+      "first_success_censored_count": 82,
+      "first_success_observed_count": 46,
+      "mean_first_success_verifier_request_among_hits": 300.7608695652174,
+      "mean_nodes_created": 399.6640625,
+      "mean_restricted_first_success_index": 557.1640625,
+      "mean_root_coverage_max_uniform_deviation": 0.0020128131879077905,
+      "mean_usage": {
+        "edge_selections": 2543.2734375,
+        "full_prefix_tokens": 1501.1328125,
+        "logical_lm_node_evals": 399.6640625,
+        "verifier_requests": 700.0
+      },
+      "method": "sobol_all",
+      "minimum_edge_guard_headroom": 868,
+      "minimum_lm_guard_headroom": 680,
+      "readout_success_count": 46,
+      "readout_success_rate": 0.359375,
+      "readout_success_wilson_95": [
+        0.2814673057552586,
+        0.4454774631966657
+      ],
+      "replicates": 128,
+      "restricted_first_success_definition": "request index for observed hits; verifier_cap + 1 for censored runs"
+    },
+    {
+      "best_observed_success_count": 53,
+      "best_observed_success_rate": 0.4140625,
+      "first_success_censored_count": 75,
+      "first_success_observed_count": 53,
+      "mean_first_success_verifier_request_among_hits": 360.4339622641509,
+      "mean_nodes_created": 396.2578125,
+      "mean_restricted_first_success_index": 559.984375,
+      "mean_root_coverage_max_uniform_deviation": 0.0020128131879077905,
+      "mean_usage": {
+        "edge_selections": 2542.203125,
+        "full_prefix_tokens": 1487.6015625,
+        "logical_lm_node_evals": 396.2578125,
+        "verifier_requests": 700.0
+      },
+      "method": "sobol_routing_only",
+      "minimum_edge_guard_headroom": 876,
+      "minimum_lm_guard_headroom": 690,
+      "readout_success_count": 53,
+      "readout_success_rate": 0.4140625,
+      "readout_success_wilson_95": [
+        0.33245150577514415,
+        0.5006814085843652
+      ],
+      "replicates": 128,
+      "restricted_first_success_definition": "request index for observed hits; verifier_cap + 1 for censored runs"
+    }
+  ],
+  "data_quality": {
+    "checks": {
+      "candidate_manifest_identical": true,
+      "complete_method_by_seed_grid": true,
+      "deterministic_digests": true,
+      "exact_verifier_caps_and_positive_guard_headroom": true,
+      "expected_record_count": true,
+      "first_success_index_valid": true,
+      "paired_group_identity": true,
+      "pruning_disabled": true,
+      "schema_and_strict_json": true,
+      "source_and_config_propagated": true,
+      "task_and_success_encoding": true,
+      "uniform_draw_accounting": true,
+      "unique_composite_keys": true,
+      "usage_accounting": true
+    },
+    "details": {
+      "duplicate_count": 0,
+      "error_counts": {
+        "budget_contract": 0,
+        "candidate_contract": 0,
+        "config_propagation": 0,
+        "digest": 0,
+        "evaluation_scope": 0,
+        "first_success": 0,
+        "paired_group": 0,
+        "pruning": 0,
+        "randomization_metadata": 0,
+        "schema": 0,
+        "source_contract": 0,
+        "strict_json": 0,
+        "task_and_success_encoding": 0,
+        "uniform_draw_accounting": 0,
+        "usage_accounting": 0
+      },
+      "expected_records": 384,
+      "minimum_edge_guard_headroom": 868,
+      "minimum_lm_guard_headroom": 680,
+      "missing_count": 0,
+      "observed_records": 384,
+      "paired_groups": 128,
+      "root_fingerprints": [
+        "efeceea4fa57c3ba8f79c78148ffd8f46d0e3725cf4e52ba42827300f72911d8"
+      ],
+      "unexpected_count": 0
+    },
+    "failures": [],
+    "status": "PASS"
+  },
+  "design": {
+    "cohort_scope": "fresh_from_all_prior_role_lock_cohorts",
+    "edge_ceiling": 3500,
+    "engineering_conversion_outcome": "logical_lm_node_evals",
+    "exploration_seed_ids": [
+      512,
+      513,
+      514,
+      515,
+      516,
+      517,
+      518,
+      519,
+      520,
+      521,
+      522,
+      523,
+      524,
+      525,
+      526,
+      527,
+      528,
+      529,
+      530,
+      531,
+      532,
+      533,
+      534,
+      535,
+      536,
+      537,
+      538,
+      539,
+      540,
+      541,
+      542,
+      543,
+      544,
+      545,
+      546,
+      547,
+      548,
+      549,
+      550,
+      551,
+      552,
+      553,
+      554,
+      555,
+      556,
+      557,
+      558,
+      559,
+      560,
+      561,
+      562,
+      563,
+      564,
+      565,
+      566,
+      567,
+      568,
+      569,
+      570,
+      571,
+      572,
+      573,
+      574,
+      575,
+      576,
+      577,
+      578,
+      579,
+      580,
+      581,
+      582,
+      583,
+      584,
+      585,
+      586,
+      587,
+      588,
+      589,
+      590,
+      591,
+      592,
+      593,
+      594,
+      595,
+      596,
+      597,
+      598,
+      599,
+      600,
+      601,
+      602,
+      603,
+      604,
+      605,
+      606,
+      607,
+      608,
+      609,
+      610,
+      611,
+      612,
+      613,
+      614,
+      615,
+      616,
+      617,
+      618,
+      619,
+      620,
+      621,
+      622,
+      623,
+      624,
+      625,
+      626,
+      627,
+      628,
+      629,
+      630,
+      631,
+      632,
+      633,
+      634,
+      635,
+      636,
+      637,
+      638,
+      639
+    ],
+    "independent_randomization_unit": "exploration_seed",
+    "lm_node_ceiling": 1111,
+    "matched_primary_budget": "verifier_requests",
+    "methods": [
+      "iid_all",
+      "sobol_all",
+      "sobol_routing_only"
+    ],
+    "posterior_sd_scale": 1.0,
+    "primary_contrasts": [
+      "sobol_all_minus_iid_all",
+      "sobol_routing_only_minus_iid_all"
+    ],
+    "primary_outcome": "readout_success_at_exact_verifier_cap",
+    "prior_experiment_seed_overlap": 0,
+    "run_mode": "full",
+    "task": "role_lock_d4",
+    "verifier_cap": 700
+  },
+  "engineering_decision": {
+    "claim_rule": "call resource conversion positive only when the paired LM-node interval is above zero; do not call success superiority unless the paired success interval is above zero",
+    "profiles": {
+      "sobol_all": {
+        "lm_node_conversion_direction": "positive",
+        "success_direction": "inconclusive"
+      },
+      "sobol_routing_only": {
+        "lm_node_conversion_direction": "positive",
+        "success_direction": "inconclusive"
+      }
+    },
+    "verifier_cap": 700
+  },
+  "limitations": [
+    "This is an oracle-aligned static-token Role-Lock toy task.",
+    "The LM and edge ceilings are guards, not matched resource budgets.",
+    "Dual-source wall time is instrumentation cost, not deployment cost.",
+    "The restricted first-hit metric encodes censored runs as cap + 1.",
+    "The matched budget covers 700 search verifier feedback calls; one deterministic post-search readout evaluation is outside it.",
+    "Uncertainty remains a nonstationary proxy, not an exact posterior."
+  ],
+  "planned_pairwise_contrasts": [
+    {
+      "candidate": "sobol_all",
+      "discordance": {
+        "both_failure": 45,
+        "both_success": 18,
+        "candidate_only": 28,
+        "reference_only": 37
+      },
+      "holm_adjusted_p": 0.6421682713699912,
+      "label": "combined_sobol_vs_iid",
+      "mcnemar_p": 0.3210841356849956,
+      "mean_best_observed_success_delta": -0.0703125,
+      "mean_resource_delta": {
+        "edge_selections": {
+          "mean": 0.2578125,
+          "paired_bootstrap_95": [
+            -6.578125,
+            6.9453125
+          ]
+        },
+        "full_prefix_tokens": {
+          "mean": 105.265625,
+          "paired_bootstrap_95": [
+            82.328125,
+            126.984375
+          ]
+        },
+        "logical_lm_node_evals": {
+          "mean": 26.3828125,
+          "paired_bootstrap_95": [
+            20.3046875,
+            32.078125
+          ]
+        }
+      },
+      "mean_restricted_first_success_index_delta": -0.3046875,
+      "mean_success_delta": -0.0703125,
+      "paired_blocks": 128,
+      "paired_bootstrap_best_observed_95": [
+        -0.1875,
+        0.0546875
+      ],
+      "paired_bootstrap_restricted_first_success_95": [
+        -55.09375,
+        55.3046875
+      ],
+      "paired_bootstrap_success_95": [
+        -0.1953125,
+        0.046875
+      ],
+      "paired_bootstrap_success_95_simultaneous": [
+        -0.203125,
+        0.0625
+      ],
+      "reference": "iid_all",
+      "role": "primary"
+    },
+    {
+      "candidate": "sobol_routing_only",
+      "discordance": {
+        "both_failure": 50,
+        "both_success": 30,
+        "candidate_only": 23,
+        "reference_only": 25
+      },
+      "holm_adjusted_p": 0.8854334972865132,
+      "label": "sobol_routing_only_vs_iid",
+      "mcnemar_p": 0.8854334972865132,
+      "mean_best_observed_success_delta": -0.015625,
+      "mean_resource_delta": {
+        "edge_selections": {
+          "mean": -0.8125,
+          "paired_bootstrap_95": [
+            -6.9140625,
+            4.9921875
+          ]
+        },
+        "full_prefix_tokens": {
+          "mean": 91.734375,
+          "paired_bootstrap_95": [
+            73.7421875,
+            109.5234375
+          ]
+        },
+        "logical_lm_node_evals": {
+          "mean": 22.9765625,
+          "paired_bootstrap_95": [
+            18.2265625,
+            27.578125
+          ]
+        }
+      },
+      "mean_restricted_first_success_index_delta": 2.515625,
+      "mean_success_delta": -0.015625,
+      "paired_blocks": 128,
+      "paired_bootstrap_best_observed_95": [
+        -0.125,
+        0.0859375
+      ],
+      "paired_bootstrap_restricted_first_success_95": [
+        -42.53125,
+        46.375
+      ],
+      "paired_bootstrap_success_95": [
+        -0.125,
+        0.09375
+      ],
+      "paired_bootstrap_success_95_simultaneous": [
+        -0.1484375,
+        0.1171875
+      ],
+      "reference": "iid_all",
+      "role": "primary"
+    },
+    {
+      "candidate": "sobol_all",
+      "discordance": {
+        "both_failure": 48,
+        "both_success": 19,
+        "candidate_only": 27,
+        "reference_only": 34
+      },
+      "holm_adjusted_p": null,
+      "label": "combined_sobol_vs_routing_only",
+      "mcnemar_p": 0.4426260049464714,
+      "mean_best_observed_success_delta": -0.0546875,
+      "mean_resource_delta": {
+        "edge_selections": {
+          "mean": 1.0703125,
+          "paired_bootstrap_95": [
+            -5.59375,
+            7.9765625
+          ]
+        },
+        "full_prefix_tokens": {
+          "mean": 13.53125,
+          "paired_bootstrap_95": [
+            -9.4140625,
+            36.59375
+          ]
+        },
+        "logical_lm_node_evals": {
+          "mean": 3.40625,
+          "paired_bootstrap_95": [
+            -2.34375,
+            9.0703125
+          ]
+        }
+      },
+      "mean_restricted_first_success_index_delta": -2.8203125,
+      "mean_success_delta": -0.0546875,
+      "paired_blocks": 128,
+      "paired_bootstrap_best_observed_95": [
+        -0.171875,
+        0.0625
+      ],
+      "paired_bootstrap_restricted_first_success_95": [
+        -54.796875,
+        50.125
+      ],
+      "paired_bootstrap_success_95": [
+        -0.1796875,
+        0.0625
+      ],
+      "reference": "sobol_routing_only",
+      "role": "secondary_mechanism"
+    }
+  ],
+  "primary_endpoints": [
+    {
+      "candidate": "sobol_all",
+      "exact_mcnemar_p": 0.3210841356849956,
+      "holm_adjusted_p_primary_family": 0.6421682713699912,
+      "mean_delta": -0.0703125,
+      "outcome": "readout_success",
+      "paired_bootstrap_95_simultaneous": [
+        -0.203125,
+        0.0625
+      ],
+      "reference": "iid_all",
+      "verifier_cap": 700
+    },
+    {
+      "candidate": "sobol_routing_only",
+      "exact_mcnemar_p": 0.8854334972865132,
+      "holm_adjusted_p_primary_family": 0.8854334972865132,
+      "mean_delta": -0.015625,
+      "outcome": "readout_success",
+      "paired_bootstrap_95_simultaneous": [
+        -0.1484375,
+        0.1171875
+      ],
+      "reference": "iid_all",
+      "verifier_cap": 700
+    }
+  ],
+  "record_type": "fixed_verifier_summary",
+  "schema_version": "qmc-bmgs-fixed-verifier/v1",
+  "simultaneous_interval_method": "paired exploration-seed bootstrap; 95th percentile of maximum absolute deviation across the two IID-referenced risk differences"
+}

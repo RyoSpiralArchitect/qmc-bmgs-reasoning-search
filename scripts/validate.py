@@ -50,6 +50,7 @@ def main() -> None:
         "qmc_bmgs.experiments.d4_noise_sweep",
         "qmc_bmgs.experiments.channel_ablation",
         "qmc_bmgs.experiments.fixed_verifier_budget",
+        "qmc_bmgs.experiments.two_phase_sampler",
     ):
         _run([sys.executable, "-m", module, "--self-test"], cwd=outside)
     print("repository validation: PASS")

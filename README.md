@@ -46,6 +46,7 @@ PYTHONPATH=src python -m qmc_bmgs.benchmarks.role_lock --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.d4_noise_sweep --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.channel_ablation --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.fixed_verifier_budget --self-test
+PYTHONPATH=src python -m qmc_bmgs.experiments.two_phase_sampler --self-test
 python scripts/validate.py
 ```
 
@@ -58,6 +59,7 @@ qmc-bmgs-benchmark --smoke
 qmc-bmgs-d4-sweep --smoke
 qmc-bmgs-channel-ablation --smoke
 qmc-bmgs-fixed-verifier --smoke
+qmc-bmgs-two-phase --smoke
 ```
 
 通常のrun出力は`artifacts/work/`へ保存されます。promoteしたcanonical raw JSONLは

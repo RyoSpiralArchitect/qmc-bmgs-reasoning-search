@@ -383,17 +383,79 @@ class CoordinateMuxEngine:
     ) -> None:
         self.dimension = int(dimension)
         self.sources = sources
-        coordinate_sources = sources.coordinate_sources(self.dimension)
-        self.sobol_mask = torch.tensor(
-            [source == "sobol" for source in coordinate_sources],
-            dtype=torch.bool,
-        )
+        self.sobol_mask = self._mask_for(sources)
         self.sobol_engine = sobol_engine
         self.iid_engine = IIDEngine(self.dimension, int(node_seed) ^ 0x1D1D1D)
         self.last_draw: Optional[torch.Tensor] = None
         self.last_sobol_draw: Optional[torch.Tensor] = None
         self.last_iid_draw: Optional[torch.Tensor] = None
         self.points_drawn = 0
+        self.selected_sobol_scalar_values = 0
+        self.selected_iid_scalar_values = 0
+        self.source_plan_points: dict[str, int] = {}
+        self.reconfiguration_count = 0
+
+    def _mask_for(self, sources: UniformSourcePlan) -> torch.Tensor:
+        coordinate_sources = sources.coordinate_sources(self.dimension)
+        return torch.tensor(
+            [source == "sobol" for source in coordinate_sources],
+            dtype=torch.bool,
+        )
+
+    @staticmethod
+    def _plan_key(sources: UniformSourcePlan) -> str:
+        return "/".join(
+            (
+                sources.coverage_gate,
+                sources.cluster_quantile,
+                sources.action_perturbation,
+            )
+        )
+
+    def set_sources(self, sources: UniformSourcePlan) -> None:
+        """Change selected columns without replacing or rewinding either stream."""
+        if sources == self.sources:
+            return
+        new_mask = self._mask_for(sources)
+        self.sources = sources
+        self.sobol_mask = new_mask
+        self.reconfiguration_count += 1
+
+    @staticmethod
+    def _tensor_digest(value: Optional[torch.Tensor]) -> Optional[str]:
+        if value is None:
+            return None
+        raw = bytes(
+            value.detach().cpu().contiguous().view(torch.uint8).reshape(-1).tolist()
+        )
+        return hashlib.sha256(raw).hexdigest()
+
+    def stream_state_digest(self) -> str:
+        """Hash stream positions/state while intentionally excluding the mux mask."""
+        payload = {
+            "points_drawn": self.points_drawn,
+            "selected_sobol_scalar_values": self.selected_sobol_scalar_values,
+            "selected_iid_scalar_values": self.selected_iid_scalar_values,
+            "source_plan_points": dict(sorted(self.source_plan_points.items())),
+            "sobol_num_generated": int(
+                getattr(self.sobol_engine, "num_generated", self.points_drawn)
+            ),
+            "sobol_quasi": self._tensor_digest(
+                getattr(self.sobol_engine, "quasi", None)
+            ),
+            "sobol_shift": self._tensor_digest(
+                getattr(self.sobol_engine, "shift", None)
+            ),
+            "sobol_state": self._tensor_digest(
+                getattr(self.sobol_engine, "sobolstate", None)
+            ),
+            "iid_generator": self._tensor_digest(self.iid_engine.generator.get_state()),
+            "last_draw": self._tensor_digest(self.last_draw),
+            "last_sobol_draw": self._tensor_digest(self.last_sobol_draw),
+            "last_iid_draw": self._tensor_digest(self.last_iid_draw),
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
 
     def draw(self, n: int) -> torch.Tensor:
         count = int(n)
@@ -409,6 +471,14 @@ class CoordinateMuxEngine:
         self.last_iid_draw = iid.detach().clone()
         self.last_draw = result.detach().clone()
         self.points_drawn += count
+        sobol_scalars = count * int(self.sobol_mask.sum().item())
+        total_scalars = count * self.dimension
+        self.selected_sobol_scalar_values += sobol_scalars
+        self.selected_iid_scalar_values += total_scalars - sobol_scalars
+        plan_key = self._plan_key(self.sources)
+        self.source_plan_points[plan_key] = (
+            self.source_plan_points.get(plan_key, 0) + count
+        )
         return result
 
 
@@ -519,6 +589,7 @@ class BenchmarkPolicy(QMCBMGSReasoningPolicy):
         if not math.isfinite(posterior_sd_scale) or posterior_sd_scale <= 0.0:
             raise ValueError("posterior_sd_scale must be finite and positive")
         self.variant = variant
+        self.active_uniform_sources = variant.uniform_sources
         self.task = task
         self.seeds = seeds
         self.registry = registry
@@ -535,6 +606,7 @@ class BenchmarkPolicy(QMCBMGSReasoningPolicy):
         # to serializing this request-indexed time-to-hit diagnostic.
         self.first_success_verifier_request: Optional[int] = None
         self.blocked_verifier_calls = 0
+        self.uniform_source_switch_log: list[dict[str, Any]] = []
         self.prune_log: list[dict[str, Any]] = []
         self._partition_singletons = self._select_partition_singletons()
         super().__init__(
@@ -624,11 +696,11 @@ class BenchmarkPolicy(QMCBMGSReasoningPolicy):
         node.cluster_visits = torch.zeros(node.num_clusters, dtype=torch.float64)
 
         dimension = 2 + node.num_actions
-        if self.variant.uniform_sources is not None:
+        if self.active_uniform_sources is not None:
             engine = CoordinateMuxEngine(
                 dimension,
                 node.node_seed,
-                self.variant.uniform_sources,
+                self.active_uniform_sources,
                 node.qmc_engine,
             )
         elif self.variant.sampler == "iid":
@@ -642,6 +714,77 @@ class BenchmarkPolicy(QMCBMGSReasoningPolicy):
         if oracle is not None and not bool((node.candidate_ids == oracle).any()):
             self.counters.candidate_misses += 1
         return node
+
+    def set_uniform_sources(
+        self,
+        sources: UniformSourcePlan,
+        *,
+        verifier_request: int,
+        reason: str,
+    ) -> None:
+        """Switch mux routing in place while preserving all node-local streams."""
+        if self.active_uniform_sources is None:
+            raise RuntimeError("uniform-source switching requires coordinate muxes")
+        if int(verifier_request) != self.counters.verifier_requests:
+            raise ValueError("switch request must match the completed verifier count")
+        if sources == self.active_uniform_sources:
+            raise ValueError("uniform-source switch must change at least one channel")
+
+        engines: list[CoordinateMuxEngine] = []
+        for node in self.nodes.values():
+            engine = getattr(node.qmc_engine, "engine", None)
+            if not isinstance(engine, CoordinateMuxEngine):
+                raise AssertionError("expected every existing node to use a mux engine")
+            if engine.sources != self.active_uniform_sources:
+                raise AssertionError("existing mux source plans drifted before switch")
+            engines.append(engine)
+        points_before = sum(engine.points_drawn for engine in engines)
+        stream_state_before = [engine.stream_state_digest() for engine in engines]
+        engine_identity_before = [
+            (id(engine.sobol_engine), id(engine.iid_engine)) for engine in engines
+        ]
+        reconfigurations_before = [engine.reconfiguration_count for engine in engines]
+        previous = self.active_uniform_sources
+        for engine in engines:
+            engine.set_sources(sources)
+        points_after = sum(engine.points_drawn for engine in engines)
+        stream_state_after = [engine.stream_state_digest() for engine in engines]
+        if points_after != points_before:
+            raise AssertionError("source switching consumed or rewound uniform points")
+        if stream_state_after != stream_state_before:
+            raise AssertionError("source switching changed an underlying stream state")
+        if engine_identity_before != [
+            (id(engine.sobol_engine), id(engine.iid_engine)) for engine in engines
+        ]:
+            raise AssertionError("source switching replaced an underlying engine")
+        if any(engine.sources != sources for engine in engines):
+            raise AssertionError("source switching did not reach every existing node")
+        if any(
+            engine.reconfiguration_count != previous_count + 1
+            for engine, previous_count in zip(engines, reconfigurations_before)
+        ):
+            raise AssertionError("existing muxes were not reconfigured exactly once")
+        self.active_uniform_sources = sources
+        self.uniform_source_switch_log.append(
+            {
+                "completed_verifier_requests": int(verifier_request),
+                "reason": str(reason),
+                "from": previous.as_dict(),
+                "to": sources.as_dict(),
+                "existing_nodes_reconfigured": len(engines),
+                "selection_points_before": points_before,
+                "selection_points_after": points_after,
+                "stream_points_unchanged": True,
+                "stream_state_digest_before": hashlib.sha256(
+                    json.dumps(stream_state_before).encode()
+                ).hexdigest(),
+                "stream_state_digest_after": hashlib.sha256(
+                    json.dumps(stream_state_after).encode()
+                ).hexdigest(),
+                "stream_state_unchanged": True,
+                "tree_nodes_preserved": len(self.nodes),
+            }
+        )
 
     def _terminal_verifier(self, tokens: tuple[int, ...]) -> float:
         if self.counters.verifier_requests >= self.verifier_budget:
@@ -954,7 +1097,12 @@ def _candidate_path_available(policy: BenchmarkPolicy, task: RoleLockTask) -> bo
     return True
 
 
-def _search_diagnostics(policy: BenchmarkPolicy, task: RoleLockTask) -> dict[str, Any]:
+def _search_diagnostics(
+    policy: BenchmarkPolicy,
+    task: RoleLockTask,
+    *,
+    include_temporal_source_details: bool = False,
+) -> dict[str, Any]:
     total_arms = sum(node.num_actions for node in policy.nodes.values())
     active_arms = sum(int(node.active.sum().item()) for node in policy.nodes.values())
     cluster_pairs_explored = sum(
@@ -1018,12 +1166,18 @@ def _search_diagnostics(policy: BenchmarkPolicy, task: RoleLockTask) -> dict[str
     if mux_engines:
         points = sum(engine.points_drawn for engine in mux_engines)
         selected_sobol_scalars = sum(
-            engine.points_drawn * int(engine.sobol_mask.sum().item())
-            for engine in mux_engines
+            engine.selected_sobol_scalar_values for engine in mux_engines
         )
-        total_selected_scalars = sum(
-            engine.points_drawn * engine.dimension for engine in mux_engines
+        selected_iid_scalars = sum(
+            engine.selected_iid_scalar_values for engine in mux_engines
         )
+        total_selected_scalars = selected_sobol_scalars + selected_iid_scalars
+        source_plan_points: dict[str, int] = {}
+        for engine in mux_engines:
+            for plan, plan_points in engine.source_plan_points.items():
+                source_plan_points[plan] = source_plan_points.get(plan, 0) + int(
+                    plan_points
+                )
         root_action_counts = (
             [
                 int(
@@ -1050,18 +1204,28 @@ def _search_diagnostics(policy: BenchmarkPolicy, task: RoleLockTask) -> dict[str
             )
         else:
             root_action_entropy = 0.0
-        result["uniform_source_usage"] = {
+        source_usage = {
             "mux_nodes_created": len(mux_engines),
             "selection_points": points,
             "sobol_full_points_generated": points,
             "iid_full_points_generated": points,
             "selected_sobol_scalar_values": selected_sobol_scalars,
-            "selected_iid_scalar_values": (
-                total_selected_scalars - selected_sobol_scalars
-            ),
+            "selected_iid_scalar_values": selected_iid_scalars,
             "total_selected_scalar_values": total_selected_scalars,
             "both_sources_advanced_every_draw": True,
         }
+        if include_temporal_source_details:
+            source_usage.update(
+                {
+                    "selection_points_by_source_plan": dict(
+                        sorted(source_plan_points.items())
+                    ),
+                    "mux_reconfigurations": sum(
+                        engine.reconfiguration_count for engine in mux_engines
+                    ),
+                }
+            )
+        result["uniform_source_usage"] = source_usage
         result["root_action_selection_counts"] = root_action_counts
         result["root_action_selection_entropy"] = root_action_entropy
     return result

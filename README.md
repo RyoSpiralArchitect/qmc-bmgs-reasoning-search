@@ -28,7 +28,8 @@ engineering research repoです。
 [fixed-verifier capsule](docs/results/fixed_verifier_n128.md)、
 [two-phase selection capsule](docs/results/two_phase_n64.md)、
 [standalone validation capsule](docs/results/two_phase_validation_n128.md)、設計原則は
-[engineering north star](docs/engineering_north_star.md) を参照してください。
+[engineering north star](docs/engineering_north_star.md)、次の固定比較は
+[credit-assignment contract](docs/credit_assignment_contract.md) を参照してください。
 
 ## Layout
 
@@ -53,6 +54,7 @@ PYTHONPATH=src python -m qmc_bmgs.experiments.channel_ablation --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.fixed_verifier_budget --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.two_phase_sampler --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.two_phase_validation --self-test
+PYTHONPATH=src python -m qmc_bmgs.experiments.credit_assignment --self-test
 python scripts/validate.py
 ```
 
@@ -67,6 +69,7 @@ qmc-bmgs-channel-ablation --smoke
 qmc-bmgs-fixed-verifier --smoke
 qmc-bmgs-two-phase --smoke
 qmc-bmgs-two-phase-validation --smoke
+qmc-bmgs-credit-assignment --smoke
 ```
 
 通常のrun出力は`artifacts/work/`へ保存されます。promoteしたcanonical raw JSONLは

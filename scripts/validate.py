@@ -52,6 +52,7 @@ def main() -> None:
         "qmc_bmgs.experiments.fixed_verifier_budget",
         "qmc_bmgs.experiments.two_phase_sampler",
         "qmc_bmgs.experiments.two_phase_validation",
+        "qmc_bmgs.experiments.credit_assignment",
     ):
         _run([sys.executable, "-m", module, "--self-test"], cwd=outside)
     print("repository validation: PASS")

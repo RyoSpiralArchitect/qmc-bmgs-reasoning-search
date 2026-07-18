@@ -19,6 +19,9 @@ from qmc_bmgs.benchmarks.role_lock import (
     benchmark_config,
 )
 from qmc_bmgs.experiments.channel_ablation import _self_test as channel_self_test
+from qmc_bmgs.experiments.credit_assignment import (
+    _self_test as credit_assignment_self_test,
+)
 from qmc_bmgs.experiments.d4_noise_sweep import _self_test as d4_self_test
 from qmc_bmgs.experiments.fixed_verifier_budget import (
     _self_test as fixed_verifier_self_test,
@@ -58,6 +61,9 @@ class RepositorySelfTests(unittest.TestCase):
 
     def test_two_phase_validation_self_test(self) -> None:
         two_phase_validation_self_test()
+
+    def test_credit_assignment_self_test(self) -> None:
+        credit_assignment_self_test()
 
     def test_mux_source_switch_preserves_both_streams(self) -> None:
         all_sobol = UniformSourcePlan("sobol", "sobol", "sobol")

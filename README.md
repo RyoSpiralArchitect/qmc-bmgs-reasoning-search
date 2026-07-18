@@ -51,6 +51,7 @@ PYTHONPATH=src python -m qmc_bmgs.experiments.d4_noise_sweep --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.channel_ablation --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.fixed_verifier_budget --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.two_phase_sampler --self-test
+PYTHONPATH=src python -m qmc_bmgs.experiments.two_phase_validation --self-test
 python scripts/validate.py
 ```
 
@@ -64,6 +65,7 @@ qmc-bmgs-d4-sweep --smoke
 qmc-bmgs-channel-ablation --smoke
 qmc-bmgs-fixed-verifier --smoke
 qmc-bmgs-two-phase --smoke
+qmc-bmgs-two-phase-validation --smoke
 ```
 
 通常のrun出力は`artifacts/work/`へ保存されます。promoteしたcanonical raw JSONLは
@@ -73,8 +75,8 @@ dated evidenceとしてGitへ含め、各runの`manifest.json`でrecord数・byt
 ## Immediate roadmap
 
 1. threshold 256を固定したまま、fresh seeds 704–831のstandalone n=128を一度だけ測る。
-2. primaryは変えず、pre-hit on-path occupancyをpassive diagnosticとして追加する。
-3. 方向が再現しなければthreshold tuningを止め、credit-assignment ablationへ進む。
-4. 再現した作用点だけをchunk/contextual actionと実LLM/verifierへ接続する。
+2. primaryは変えず、request 257–384のpre-hit occupancyをpassive diagnosticとして読む。
+3. 両対照への方向が再現すればsamplerを固定してbounded task transferへ進む。
+4. 再現しなければthreshold tuningを止め、credit-assignment ablationへ進む。
 
 自然言語reasoningへの一般化や一般的なQMC優位は、まだ主張しません。

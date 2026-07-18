@@ -20,6 +20,7 @@ qmc-bmgs-d4-sweep = "qmc_bmgs.experiments.d4_noise_sweep:main"
 qmc-bmgs-channel-ablation = "qmc_bmgs.experiments.channel_ablation:main"
 qmc-bmgs-fixed-verifier = "qmc_bmgs.experiments.fixed_verifier_budget:main"
 qmc-bmgs-two-phase = "qmc_bmgs.experiments.two_phase_sampler:main"
+qmc-bmgs-two-phase-validation = "qmc_bmgs.experiments.two_phase_validation:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

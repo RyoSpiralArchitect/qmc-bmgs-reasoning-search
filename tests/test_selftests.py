@@ -26,6 +26,9 @@ from qmc_bmgs.experiments.fixed_verifier_budget import (
 from qmc_bmgs.experiments.two_phase_sampler import (
     _self_test as two_phase_self_test,
 )
+from qmc_bmgs.experiments.two_phase_validation import (
+    _self_test as two_phase_validation_self_test,
+)
 from qmc_bmgs.policy import QMCBMGSConfig
 from qmc_bmgs.policy import _run_self_test as policy_self_test
 from qmc_bmgs.records import canonical_record_digest
@@ -52,6 +55,9 @@ class RepositorySelfTests(unittest.TestCase):
 
     def test_two_phase_self_test(self) -> None:
         two_phase_self_test()
+
+    def test_two_phase_validation_self_test(self) -> None:
+        two_phase_validation_self_test()
 
     def test_mux_source_switch_preserves_both_streams(self) -> None:
         all_sobol = UniformSourcePlan("sobol", "sobol", "sobol")

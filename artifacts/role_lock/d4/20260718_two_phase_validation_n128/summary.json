@@ -1,0 +1,1417 @@
+{
+  "cells": [
+    {
+      "after_first_hit_descriptive": {
+        "conditioning_warning": "conditioned on a post-treatment success event; not a causal contrast",
+        "mean_correct_stage_eos_trials_per_remaining_request": 0.02688215943448754,
+        "mean_nonroot_oracle_prefix_visit_share": 0.18655810797455996,
+        "runs_with_hit": 46,
+        "runs_with_remaining_nonroot_visits": 46,
+        "runs_with_remaining_verifier_requests": 46
+      },
+      "best_observed_success_count": 46,
+      "best_observed_success_rate": 0.359375,
+      "checkpoint_curve_descriptive": [
+        {
+          "best_observed_success_count": 3,
+          "completed_verifier_requests": 64,
+          "mean_correct_stage_eos_trials": 0.046875,
+          "mean_edges": 230.4453125,
+          "mean_nodes_created": 97.3515625,
+          "mean_nonroot_oracle_prefix_visit_share": 0.09279675589249149,
+          "readout_success_count": 3,
+          "readout_success_rate": 0.0234375
+        },
+        {
+          "best_observed_success_count": 4,
+          "completed_verifier_requests": 128,
+          "mean_correct_stage_eos_trials": 0.140625,
+          "mean_edges": 461.484375,
+          "mean_nodes_created": 158.8125,
+          "mean_nonroot_oracle_prefix_visit_share": 0.09255387003994298,
+          "readout_success_count": 4,
+          "readout_success_rate": 0.03125
+        },
+        {
+          "best_observed_success_count": 14,
+          "completed_verifier_requests": 256,
+          "mean_correct_stage_eos_trials": 0.46875,
+          "mean_edges": 924.8671875,
+          "mean_nodes_created": 246.4609375,
+          "mean_nonroot_oracle_prefix_visit_share": 0.09388675727855547,
+          "readout_success_count": 14,
+          "readout_success_rate": 0.109375
+        },
+        {
+          "best_observed_success_count": 30,
+          "completed_verifier_requests": 384,
+          "mean_correct_stage_eos_trials": 1.171875,
+          "mean_edges": 1390.78125,
+          "mean_nodes_created": 307.25,
+          "mean_nonroot_oracle_prefix_visit_share": 0.09676345650967297,
+          "readout_success_count": 30,
+          "readout_success_rate": 0.234375
+        },
+        {
+          "best_observed_success_count": 36,
+          "completed_verifier_requests": 512,
+          "mean_correct_stage_eos_trials": 2.296875,
+          "mean_edges": 1855.328125,
+          "mean_nodes_created": 353.140625,
+          "mean_nonroot_oracle_prefix_visit_share": 0.10195175048606105,
+          "readout_success_count": 36,
+          "readout_success_rate": 0.28125
+        },
+        {
+          "best_observed_success_count": 46,
+          "completed_verifier_requests": 700,
+          "mean_correct_stage_eos_trials": 4.703125,
+          "mean_edges": 2540.609375,
+          "mean_nodes_created": 404.1328125,
+          "mean_nonroot_oracle_prefix_visit_share": 0.11079784393322968,
+          "readout_success_count": 46,
+          "readout_success_rate": 0.359375
+        }
+      ],
+      "first_success_censored_count": 82,
+      "first_success_observed_count": 46,
+      "mean_final_telemetry": {
+        "mean_immediate_repeat_edge_count": 259.46875,
+        "mean_probe_selection_count": 509.2890625,
+        "mean_root_coverage_max_uniform_deviation": 0.0018934461388159672,
+        "mean_token_reselection_edge_count": 446.578125,
+        "nodes_by_depth": [
+          1.0,
+          9.0,
+          77.046875,
+          317.0859375
+        ],
+        "off_oracle_prefix_nodes_by_depth": [
+          0.0,
+          8.0,
+          76.046875,
+          316.0859375
+        ],
+        "on_oracle_prefix_nodes_by_depth": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "oracle_action_visits_by_stage": [
+          151.484375,
+          40.1953125,
+          13.3203125,
+          4.703125
+        ]
+      },
+      "mean_first_success_verifier_request_among_hits": 350.04347826086956,
+      "mean_late_depth_telemetry": {
+        "nodes_created_by_depth": [
+          0.0,
+          0.0,
+          10.28125,
+          147.390625
+        ],
+        "oracle_action_visits_by_stage": [
+          101.59375,
+          29.640625,
+          10.828125,
+          4.234375
+        ]
+      },
+      "mean_late_phase_metrics": {
+        "late_correct_stage_eos_trials": 4.234375,
+        "late_correct_stage_eos_trials_per_verifier_request": 0.00953688063063063,
+        "late_immediate_repeat_edge_share": 0.10100864593820189,
+        "late_nonroot_oracle_prefix_visit_share": 0.12024544224510991,
+        "late_nonroot_oracle_prefix_visits": 142.0625,
+        "late_probe_reselection_edge_share": 0.053569787361518156,
+        "late_probe_selection_share": 0.202250593092967
+      },
+      "mean_restricted_first_success_index": 574.875,
+      "mean_usage": {
+        "edge_selections": 2540.609375,
+        "full_prefix_tokens": 1518.484375,
+        "logical_lm_node_evals": 404.1328125,
+        "verifier_requests": 700.0
+      },
+      "method": "sobol_all",
+      "minimum_edge_guard_headroom": 877,
+      "minimum_lm_guard_headroom": 678,
+      "readout_success_count": 46,
+      "readout_success_rate": 0.359375,
+      "readout_success_wilson_95": [
+        0.2814673057552586,
+        0.4454774631966657
+      ],
+      "replicates": 128
+    },
+    {
+      "after_first_hit_descriptive": {
+        "conditioning_warning": "conditioned on a post-treatment success event; not a causal contrast",
+        "mean_correct_stage_eos_trials_per_remaining_request": 0.02827052838073428,
+        "mean_nonroot_oracle_prefix_visit_share": 0.191336329656801,
+        "runs_with_hit": 52,
+        "runs_with_remaining_nonroot_visits": 52,
+        "runs_with_remaining_verifier_requests": 52
+      },
+      "best_observed_success_count": 52,
+      "best_observed_success_rate": 0.40625,
+      "checkpoint_curve_descriptive": [
+        {
+          "best_observed_success_count": 6,
+          "completed_verifier_requests": 64,
+          "mean_correct_stage_eos_trials": 0.0625,
+          "mean_edges": 230.1015625,
+          "mean_nodes_created": 96.078125,
+          "mean_nonroot_oracle_prefix_visit_share": 0.09321073187512931,
+          "readout_success_count": 6,
+          "readout_success_rate": 0.046875
+        },
+        {
+          "best_observed_success_count": 12,
+          "completed_verifier_requests": 128,
+          "mean_correct_stage_eos_trials": 0.265625,
+          "mean_edges": 460.5859375,
+          "mean_nodes_created": 156.1015625,
+          "mean_nonroot_oracle_prefix_visit_share": 0.09546338620930728,
+          "readout_success_count": 12,
+          "readout_success_rate": 0.09375
+        },
+        {
+          "best_observed_success_count": 22,
+          "completed_verifier_requests": 256,
+          "mean_correct_stage_eos_trials": 1.0,
+          "mean_edges": 926.3671875,
+          "mean_nodes_created": 241.4453125,
+          "mean_nonroot_oracle_prefix_visit_share": 0.10095054116248883,
+          "readout_success_count": 22,
+          "readout_success_rate": 0.171875
+        },
+        {
+          "best_observed_success_count": 34,
+          "completed_verifier_requests": 384,
+          "mean_correct_stage_eos_trials": 2.109375,
+          "mean_edges": 1393.140625,
+          "mean_nodes_created": 300.203125,
+          "mean_nonroot_oracle_prefix_visit_share": 0.10680151806875758,
+          "readout_success_count": 34,
+          "readout_success_rate": 0.265625
+        },
+        {
+          "best_observed_success_count": 38,
+          "completed_verifier_requests": 512,
+          "mean_correct_stage_eos_trials": 3.5234375,
+          "mean_edges": 1858.8671875,
+          "mean_nodes_created": 344.8828125,
+          "mean_nonroot_oracle_prefix_visit_share": 0.11185237679588922,
+          "readout_success_count": 38,
+          "readout_success_rate": 0.296875
+        },
+        {
+          "best_observed_success_count": 52,
+          "completed_verifier_requests": 700,
+          "mean_correct_stage_eos_trials": 6.1484375,
+          "mean_edges": 2542.859375,
+          "mean_nodes_created": 393.84375,
+          "mean_nonroot_oracle_prefix_visit_share": 0.11899283207672512,
+          "readout_success_count": 52,
+          "readout_success_rate": 0.40625
+        }
+      ],
+      "first_success_censored_count": 76,
+      "first_success_observed_count": 52,
+      "mean_final_telemetry": {
+        "mean_immediate_repeat_edge_count": 261.3515625,
+        "mean_probe_selection_count": 516.6328125,
+        "mean_root_coverage_max_uniform_deviation": 0.0018934461388159672,
+        "mean_token_reselection_edge_count": 451.2421875,
+        "nodes_by_depth": [
+          1.0,
+          9.0,
+          76.25,
+          307.59375
+        ],
+        "off_oracle_prefix_nodes_by_depth": [
+          0.0,
+          8.0,
+          75.25,
+          306.59375
+        ],
+        "on_oracle_prefix_nodes_by_depth": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "oracle_action_visits_by_stage": [
+          159.390625,
+          45.53125,
+          16.0703125,
+          6.1484375
+        ]
+      },
+      "mean_first_success_verifier_request_among_hits": 323.3269230769231,
+      "mean_late_depth_telemetry": {
+        "nodes_created_by_depth": [
+          0.0,
+          0.0,
+          10.4296875,
+          141.96875
+        ],
+        "oracle_action_visits_by_stage": [
+          107.28125,
+          33.25,
+          12.5078125,
+          5.1484375
+        ]
+      },
+      "mean_late_phase_metrics": {
+        "late_correct_stage_eos_trials": 5.1484375,
+        "late_correct_stage_eos_trials_per_verifier_request": 0.011595579954954955,
+        "late_immediate_repeat_edge_share": 0.10168691247416993,
+        "late_nonroot_oracle_prefix_visit_share": 0.12900551405126823,
+        "late_nonroot_oracle_prefix_visits": 153.0390625,
+        "late_probe_reselection_edge_share": 0.05510382293625913,
+        "late_probe_selection_share": 0.20532845548457815
+      },
+      "mean_restricted_first_success_index": 547.5703125,
+      "mean_usage": {
+        "edge_selections": 2542.859375,
+        "full_prefix_tokens": 1478.125,
+        "logical_lm_node_evals": 393.84375,
+        "verifier_requests": 700.0
+      },
+      "method": "sobol_routing_only",
+      "minimum_edge_guard_headroom": 870,
+      "minimum_lm_guard_headroom": 689,
+      "readout_success_count": 52,
+      "readout_success_rate": 0.40625,
+      "readout_success_wilson_95": [
+        0.3251030219432171,
+        0.4928601573580657
+      ],
+      "replicates": 128
+    },
+    {
+      "after_first_hit_descriptive": {
+        "conditioning_warning": "conditioned on a post-treatment success event; not a causal contrast",
+        "mean_correct_stage_eos_trials_per_remaining_request": 0.022670207673119776,
+        "mean_nonroot_oracle_prefix_visit_share": 0.1648402146411384,
+        "runs_with_hit": 48,
+        "runs_with_remaining_nonroot_visits": 48,
+        "runs_with_remaining_verifier_requests": 48
+      },
+      "best_observed_success_count": 48,
+      "best_observed_success_rate": 0.375,
+      "checkpoint_curve_descriptive": [
+        {
+          "best_observed_success_count": 3,
+          "completed_verifier_requests": 64,
+          "mean_correct_stage_eos_trials": 0.046875,
+          "mean_edges": 230.4453125,
+          "mean_nodes_created": 97.3515625,
+          "mean_nonroot_oracle_prefix_visit_share": 0.09279675589249149,
+          "readout_success_count": 3,
+          "readout_success_rate": 0.0234375
+        },
+        {
+          "best_observed_success_count": 4,
+          "completed_verifier_requests": 128,
+          "mean_correct_stage_eos_trials": 0.140625,
+          "mean_edges": 461.484375,
+          "mean_nodes_created": 158.8125,
+          "mean_nonroot_oracle_prefix_visit_share": 0.09255387003994298,
+          "readout_success_count": 4,
+          "readout_success_rate": 0.03125
+        },
+        {
+          "best_observed_success_count": 14,
+          "completed_verifier_requests": 256,
+          "mean_correct_stage_eos_trials": 0.46875,
+          "mean_edges": 924.8671875,
+          "mean_nodes_created": 246.4609375,
+          "mean_nonroot_oracle_prefix_visit_share": 0.09388675727855547,
+          "readout_success_count": 14,
+          "readout_success_rate": 0.109375
+        },
+        {
+          "best_observed_success_count": 23,
+          "completed_verifier_requests": 384,
+          "mean_correct_stage_eos_trials": 1.0859375,
+          "mean_edges": 1389.4453125,
+          "mean_nodes_created": 305.6328125,
+          "mean_nonroot_oracle_prefix_visit_share": 0.09668061769147226,
+          "readout_success_count": 23,
+          "readout_success_rate": 0.1796875
+        },
+        {
+          "best_observed_success_count": 29,
+          "completed_verifier_requests": 512,
+          "mean_correct_stage_eos_trials": 2.078125,
+          "mean_edges": 1854.515625,
+          "mean_nodes_created": 350.328125,
+          "mean_nonroot_oracle_prefix_visit_share": 0.10079652277158374,
+          "readout_success_count": 29,
+          "readout_success_rate": 0.2265625
+        },
+        {
+          "best_observed_success_count": 48,
+          "completed_verifier_requests": 700,
+          "mean_correct_stage_eos_trials": 4.125,
+          "mean_edges": 2537.34375,
+          "mean_nodes_created": 400.359375,
+          "mean_nonroot_oracle_prefix_visit_share": 0.10720630946661105,
+          "readout_success_count": 48,
+          "readout_success_rate": 0.375
+        }
+      ],
+      "first_success_censored_count": 80,
+      "first_success_observed_count": 48,
+      "mean_final_telemetry": {
+        "mean_immediate_repeat_edge_count": 258.390625,
+        "mean_probe_selection_count": 504.2890625,
+        "mean_root_coverage_max_uniform_deviation": 0.0018934461388159672,
+        "mean_token_reselection_edge_count": 445.265625,
+        "nodes_by_depth": [
+          1.0,
+          9.0,
+          76.9296875,
+          313.4296875
+        ],
+        "off_oracle_prefix_nodes_by_depth": [
+          0.0,
+          8.0,
+          75.9296875,
+          312.4296875
+        ],
+        "on_oracle_prefix_nodes_by_depth": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "oracle_action_visits_by_stage": [
+          148.1640625,
+          37.8671875,
+          12.0234375,
+          4.125
+        ]
+      },
+      "mean_first_success_verifier_request_among_hits": 398.7291666666667,
+      "mean_late_depth_telemetry": {
+        "nodes_created_by_depth": [
+          0.0,
+          0.0,
+          10.1640625,
+          143.734375
+        ],
+        "oracle_action_visits_by_stage": [
+          98.2734375,
+          27.3125,
+          9.53125,
+          3.65625
+        ]
+      },
+      "mean_late_phase_metrics": {
+        "late_correct_stage_eos_trials": 3.65625,
+        "late_correct_stage_eos_trials_per_verifier_request": 0.008234797297297296,
+        "late_immediate_repeat_edge_share": 0.10053453099909718,
+        "late_nonroot_oracle_prefix_visit_share": 0.1145943554217414,
+        "late_nonroot_oracle_prefix_visits": 135.1171875,
+        "late_probe_reselection_edge_share": 0.052583446677777895,
+        "late_probe_selection_share": 0.19954835167951535
+      },
+      "mean_restricted_first_success_index": 587.6484375,
+      "mean_usage": {
+        "edge_selections": 2537.34375,
+        "full_prefix_tokens": 1503.5078125,
+        "logical_lm_node_evals": 400.359375,
+        "verifier_requests": 700.0
+      },
+      "method": "two_phase_action_256",
+      "minimum_edge_guard_headroom": 865,
+      "minimum_lm_guard_headroom": 681,
+      "readout_success_count": 48,
+      "readout_success_rate": 0.375,
+      "readout_success_wilson_95": [
+        0.29592429097646555,
+        0.4613599480919116
+      ],
+      "replicates": 128
+    }
+  ],
+  "data_quality": {
+    "base_contract": {
+      "checks": {
+        "candidate_manifest_identical": true,
+        "complete_method_by_seed_grid": true,
+        "deterministic_digests": true,
+        "exact_verifier_caps_and_positive_guard_headroom": true,
+        "expected_record_count": true,
+        "first_success_and_snapshot": true,
+        "paired_group_identity": true,
+        "phase_one_behavior_identity": true,
+        "pruning_disabled": true,
+        "randomization_and_evaluation_scope": true,
+        "schema_and_strict_json": true,
+        "source_and_config_propagated": true,
+        "switch_preserves_tree_and_streams": true,
+        "task_and_success_encoding": true,
+        "telemetry_contract_and_accounting": true,
+        "uniform_draw_accounting": true,
+        "unique_composite_keys": true,
+        "usage_accounting": true
+      },
+      "details": {
+        "duplicate_count": 0,
+        "error_counts": {
+          "budget_contract": 0,
+          "candidate_contract": 0,
+          "checkpoint_accounting": 0,
+          "checkpoint_final_match": 0,
+          "checkpoint_source_accounting": 0,
+          "config_propagation": 0,
+          "digest": 0,
+          "first_success": 0,
+          "first_success_snapshot": 0,
+          "paired_group": 0,
+          "phase_metrics": 0,
+          "phase_one_behavior_identity": 0,
+          "pruning": 0,
+          "randomization_and_evaluation_scope": 0,
+          "schema": 0,
+          "source_contract": 0,
+          "strict_json": 0,
+          "switch_contract": 0,
+          "task_and_success_encoding": 0,
+          "telemetry_contract": 0,
+          "uniform_draw_accounting": 0,
+          "usage_accounting": 0
+        },
+        "expected_records": 384,
+        "minimum_edge_guard_headroom": 865,
+        "minimum_lm_guard_headroom": 678,
+        "missing_count": 0,
+        "observed_records": 384,
+        "paired_groups": 128,
+        "root_fingerprints": [
+          "efeceea4fa57c3ba8f79c78148ffd8f46d0e3725cf4e52ba42827300f72911d8"
+        ],
+        "unexpected_count": 0
+      },
+      "failures": [],
+      "status": "PASS"
+    },
+    "checks": {
+      "base_two_phase_contract": true,
+      "complete_unique_paired_blocks": true,
+      "prehit_recomputed_exactly": true,
+      "selection_cohort_excluded": true,
+      "strict_validation_extension": true
+    },
+    "details": {
+      "duplicate_composite_keys": 0,
+      "expected_records": 384,
+      "extension_error_counts": {},
+      "minimum_edge_guard_headroom": 865,
+      "minimum_lm_guard_headroom": 678,
+      "observed_records": 384,
+      "paired_groups": 128
+    },
+    "failures": [],
+    "status": "PASS"
+  },
+  "design": {
+    "bootstrap_samples": 5000,
+    "checkpoint_requests": [
+      64,
+      128,
+      256,
+      384,
+      512,
+      700
+    ],
+    "cohort_id": "role_lock_d4_two_phase_standalone_validation_n128",
+    "cohort_pooling": false,
+    "cohort_role": "standalone_validation",
+    "diagnostic_bootstrap_seed": 313,
+    "edge_ceiling": 3500,
+    "exploration_seed_ids": [
+      704,
+      705,
+      706,
+      707,
+      708,
+      709,
+      710,
+      711,
+      712,
+      713,
+      714,
+      715,
+      716,
+      717,
+      718,
+      719,
+      720,
+      721,
+      722,
+      723,
+      724,
+      725,
+      726,
+      727,
+      728,
+      729,
+      730,
+      731,
+      732,
+      733,
+      734,
+      735,
+      736,
+      737,
+      738,
+      739,
+      740,
+      741,
+      742,
+      743,
+      744,
+      745,
+      746,
+      747,
+      748,
+      749,
+      750,
+      751,
+      752,
+      753,
+      754,
+      755,
+      756,
+      757,
+      758,
+      759,
+      760,
+      761,
+      762,
+      763,
+      764,
+      765,
+      766,
+      767,
+      768,
+      769,
+      770,
+      771,
+      772,
+      773,
+      774,
+      775,
+      776,
+      777,
+      778,
+      779,
+      780,
+      781,
+      782,
+      783,
+      784,
+      785,
+      786,
+      787,
+      788,
+      789,
+      790,
+      791,
+      792,
+      793,
+      794,
+      795,
+      796,
+      797,
+      798,
+      799,
+      800,
+      801,
+      802,
+      803,
+      804,
+      805,
+      806,
+      807,
+      808,
+      809,
+      810,
+      811,
+      812,
+      813,
+      814,
+      815,
+      816,
+      817,
+      818,
+      819,
+      820,
+      821,
+      822,
+      823,
+      824,
+      825,
+      826,
+      827,
+      828,
+      829,
+      830,
+      831
+    ],
+    "fixed_validation_decision_evaluable": true,
+    "fresh_seed_range_inclusive": [
+      704,
+      831
+    ],
+    "independent_randomization_unit": "exploration_seed",
+    "lm_node_ceiling": 1111,
+    "matched_primary_budget": "verifier_requests",
+    "methods": [
+      "sobol_all",
+      "sobol_routing_only",
+      "two_phase_action_256"
+    ],
+    "phase_one_request_numbers": [
+      1,
+      256
+    ],
+    "phase_two_request_numbers": [
+      257,
+      700
+    ],
+    "posterior_sd_scale": 1.0,
+    "primary_contrasts": [
+      "two_phase_action_256_minus_sobol_routing_only",
+      "two_phase_action_256_minus_sobol_all"
+    ],
+    "primary_outcome": "readout_success_at_exact_verifier_cap",
+    "run_mode": "validation_n128",
+    "selection_artifact_id": "role_lock_d4_20260718_two_phase_n64",
+    "selection_cohort_size": 64,
+    "selection_records_in_primary_analysis": false,
+    "selection_seed_range_inclusive": [
+      640,
+      703
+    ],
+    "selection_validation_seed_overlap": 0,
+    "switch_after_completed_verifier_request": 256,
+    "task": "role_lock_d4",
+    "threshold_selection": "posthoc_from_preceding_fixed_verifier_curve",
+    "threshold_sweep": false,
+    "validation_cohort_size": 128,
+    "verifier_cap": 700
+  },
+  "limitations": [
+    "The switch threshold was selected from the preceding n=64 cohort.",
+    "The n=64 selection cohort is not pooled into this primary analysis.",
+    "This is an oracle-aligned static-token Role-Lock toy task.",
+    "Pre-hit telemetry is oracle-informed, outcome-conditioned, and descriptive.",
+    "Equal verifier calls are not equal total compute or deployment wall time.",
+    "Uncertainty remains a nonstationary proxy, not an exact posterior."
+  ],
+  "planned_pairwise_contrasts": [
+    {
+      "candidate": "two_phase_action_256",
+      "checkpoint_success_deltas_descriptive": [
+        {
+          "completed_verifier_requests": 64,
+          "mean_delta": -0.0234375
+        },
+        {
+          "completed_verifier_requests": 128,
+          "mean_delta": -0.0625
+        },
+        {
+          "completed_verifier_requests": 256,
+          "mean_delta": -0.0625
+        },
+        {
+          "completed_verifier_requests": 384,
+          "mean_delta": -0.0859375
+        },
+        {
+          "completed_verifier_requests": 512,
+          "mean_delta": -0.0703125
+        },
+        {
+          "completed_verifier_requests": 700,
+          "mean_delta": -0.03125
+        }
+      ],
+      "discordance": {
+        "both_failure": 61,
+        "both_success": 33,
+        "candidate_only": 15,
+        "reference_only": 19
+      },
+      "holm_adjusted_p": 1.0,
+      "label": "two_phase_vs_routing_only",
+      "mcnemar_p": 0.6075913612730801,
+      "mean_best_observed_success_delta": -0.03125,
+      "mean_resource_delta": {
+        "edge_selections": {
+          "mean": -5.515625,
+          "paired_bootstrap_95": [
+            -11.6875,
+            0.875
+          ]
+        },
+        "full_prefix_tokens": {
+          "mean": 25.3828125,
+          "paired_bootstrap_95": [
+            4.1171875,
+            46.7734375
+          ]
+        },
+        "logical_lm_node_evals": {
+          "mean": 6.515625,
+          "paired_bootstrap_95": [
+            0.953125,
+            12.1015625
+          ]
+        }
+      },
+      "mean_restricted_first_success_index_delta": 40.078125,
+      "mean_success_delta": -0.03125,
+      "mechanism_deltas_descriptive": {
+        "late_correct_stage_eos_trials": {
+          "mean": -1.4921875,
+          "paired_bootstrap_95_nominal": [
+            -3.2421875,
+            0.3359375
+          ]
+        },
+        "late_correct_stage_eos_trials_per_verifier_request": {
+          "mean": -0.0033607826576576576,
+          "paired_bootstrap_95_nominal": [
+            -0.00731981981981982,
+            0.0005278716216216218
+          ]
+        },
+        "late_immediate_repeat_edge_share": {
+          "mean": -0.001152381475072753,
+          "paired_bootstrap_95_nominal": [
+            -0.0023927880328968483,
+            8.066119907152748e-05
+          ]
+        },
+        "late_nonroot_oracle_prefix_visit_share": {
+          "mean": -0.014411158629526818,
+          "paired_bootstrap_95_nominal": [
+            -0.03143376878375736,
+            0.002016695358805814
+          ]
+        },
+        "late_nonroot_oracle_prefix_visits": {
+          "mean": -17.921875,
+          "paired_bootstrap_95_nominal": [
+            -39.4296875,
+            2.9296875
+          ]
+        },
+        "late_probe_reselection_edge_share": {
+          "mean": -0.0025203762584812355,
+          "paired_bootstrap_95_nominal": [
+            -0.005212064710394358,
+            0.0001329960586992968
+          ]
+        },
+        "late_probe_selection_share": {
+          "mean": -0.005780103805062803,
+          "paired_bootstrap_95_nominal": [
+            -0.01201765357951114,
+            0.00036066198523656634
+          ]
+        }
+      },
+      "paired_blocks": 128,
+      "paired_bootstrap_restricted_first_success_95": [
+        -8.78125,
+        87.5078125
+      ],
+      "paired_bootstrap_success_95_nominal": [
+        -0.125,
+        0.0625
+      ],
+      "paired_bootstrap_success_95_simultaneous": [
+        -0.1328125,
+        0.0703125
+      ],
+      "reference": "sobol_routing_only",
+      "role": "primary_engineering_substrate"
+    },
+    {
+      "candidate": "two_phase_action_256",
+      "checkpoint_success_deltas_descriptive": [
+        {
+          "completed_verifier_requests": 64,
+          "mean_delta": 0.0
+        },
+        {
+          "completed_verifier_requests": 128,
+          "mean_delta": 0.0
+        },
+        {
+          "completed_verifier_requests": 256,
+          "mean_delta": 0.0
+        },
+        {
+          "completed_verifier_requests": 384,
+          "mean_delta": -0.0546875
+        },
+        {
+          "completed_verifier_requests": 512,
+          "mean_delta": -0.0546875
+        },
+        {
+          "completed_verifier_requests": 700,
+          "mean_delta": 0.015625
+        }
+      ],
+      "discordance": {
+        "both_failure": 62,
+        "both_success": 28,
+        "candidate_only": 20,
+        "reference_only": 18
+      },
+      "holm_adjusted_p": 1.0,
+      "label": "two_phase_vs_sobol_all",
+      "mcnemar_p": 0.8714146793645341,
+      "mean_best_observed_success_delta": 0.015625,
+      "mean_resource_delta": {
+        "edge_selections": {
+          "mean": -3.265625,
+          "paired_bootstrap_95": [
+            -7.078125,
+            0.7109375
+          ]
+        },
+        "full_prefix_tokens": {
+          "mean": -14.9765625,
+          "paired_bootstrap_95": [
+            -23.296875,
+            -6.296875
+          ]
+        },
+        "logical_lm_node_evals": {
+          "mean": -3.7734375,
+          "paired_bootstrap_95": [
+            -5.9609375,
+            -1.6171875
+          ]
+        }
+      },
+      "mean_restricted_first_success_index_delta": 12.7734375,
+      "mean_success_delta": 0.015625,
+      "mechanism_deltas_descriptive": {
+        "late_correct_stage_eos_trials": {
+          "mean": -0.578125,
+          "paired_bootstrap_95_nominal": [
+            -1.4609375,
+            0.328125
+          ]
+        },
+        "late_correct_stage_eos_trials_per_verifier_request": {
+          "mean": -0.0013020833333333333,
+          "paired_bootstrap_95_nominal": [
+            -0.003395974099099099,
+            0.0006686373873873873
+          ]
+        },
+        "late_immediate_repeat_edge_share": {
+          "mean": -0.0004741149391047024,
+          "paired_bootstrap_95_nominal": [
+            -0.0015674732586109638,
+            0.0006366408319708163
+          ]
+        },
+        "late_nonroot_oracle_prefix_visit_share": {
+          "mean": -0.005651086823368513,
+          "paired_bootstrap_95_nominal": [
+            -0.013567165948464506,
+            0.0018913573707701975
+          ]
+        },
+        "late_nonroot_oracle_prefix_visits": {
+          "mean": -6.9453125,
+          "paired_bootstrap_95_nominal": [
+            -16.234375,
+            2.3125
+          ]
+        },
+        "late_probe_reselection_edge_share": {
+          "mean": -0.000986340683740259,
+          "paired_bootstrap_95_nominal": [
+            -0.0023204589290916375,
+            0.0002753055329454885
+          ]
+        },
+        "late_probe_selection_share": {
+          "mean": -0.0027022414134516724,
+          "paired_bootstrap_95_nominal": [
+            -0.005550040580535601,
+            0.00010673198105024938
+          ]
+        }
+      },
+      "paired_blocks": 128,
+      "paired_bootstrap_restricted_first_success_95": [
+        -12.6875,
+        38.6328125
+      ],
+      "paired_bootstrap_success_95_nominal": [
+        -0.078125,
+        0.109375
+      ],
+      "paired_bootstrap_success_95_simultaneous": [
+        -0.0859375,
+        0.1171875
+      ],
+      "reference": "sobol_all",
+      "role": "primary_switch_effect"
+    },
+    {
+      "candidate": "sobol_all",
+      "checkpoint_success_deltas_descriptive": [
+        {
+          "completed_verifier_requests": 64,
+          "mean_delta": -0.0234375
+        },
+        {
+          "completed_verifier_requests": 128,
+          "mean_delta": -0.0625
+        },
+        {
+          "completed_verifier_requests": 256,
+          "mean_delta": -0.0625
+        },
+        {
+          "completed_verifier_requests": 384,
+          "mean_delta": -0.03125
+        },
+        {
+          "completed_verifier_requests": 512,
+          "mean_delta": -0.015625
+        },
+        {
+          "completed_verifier_requests": 700,
+          "mean_delta": -0.046875
+        }
+      ],
+      "discordance": {
+        "both_failure": 49,
+        "both_success": 19,
+        "candidate_only": 27,
+        "reference_only": 33
+      },
+      "holm_adjusted_p": null,
+      "label": "sobol_all_vs_routing_only",
+      "mcnemar_p": 0.5189580031896518,
+      "mean_best_observed_success_delta": -0.046875,
+      "mean_resource_delta": {
+        "edge_selections": {
+          "mean": -2.25,
+          "paired_bootstrap_95": [
+            -9.5,
+            4.5546875
+          ]
+        },
+        "full_prefix_tokens": {
+          "mean": 40.359375,
+          "paired_bootstrap_95": [
+            17.4296875,
+            63.109375
+          ]
+        },
+        "logical_lm_node_evals": {
+          "mean": 10.2890625,
+          "paired_bootstrap_95": [
+            4.421875,
+            16.2265625
+          ]
+        }
+      },
+      "mean_restricted_first_success_index_delta": 27.3046875,
+      "mean_success_delta": -0.046875,
+      "mechanism_deltas_descriptive": {
+        "late_correct_stage_eos_trials": {
+          "mean": -0.9140625,
+          "paired_bootstrap_95_nominal": [
+            -2.921875,
+            1.109375
+          ]
+        },
+        "late_correct_stage_eos_trials_per_verifier_request": {
+          "mean": -0.0020586993243243245,
+          "paired_bootstrap_95_nominal": [
+            -0.00659839527027027,
+            0.002498592342342343
+          ]
+        },
+        "late_immediate_repeat_edge_share": {
+          "mean": -0.0006782665359680506,
+          "paired_bootstrap_95_nominal": [
+            -0.002316032065436547,
+            0.0009344356753849741
+          ]
+        },
+        "late_nonroot_oracle_prefix_visit_share": {
+          "mean": -0.008760071806158306,
+          "paired_bootstrap_95_nominal": [
+            -0.027540102148216873,
+            0.00939232102889529
+          ]
+        },
+        "late_nonroot_oracle_prefix_visits": {
+          "mean": -10.9765625,
+          "paired_bootstrap_95_nominal": [
+            -34.3203125,
+            12.2421875
+          ]
+        },
+        "late_probe_reselection_edge_share": {
+          "mean": -0.0015340355747409764,
+          "paired_bootstrap_95_nominal": [
+            -0.004495148008589493,
+            0.0013768406673027402
+          ]
+        },
+        "late_probe_selection_share": {
+          "mean": -0.0030778623916111305,
+          "paired_bootstrap_95_nominal": [
+            -0.009989818712243897,
+            0.003613248118672687
+          ]
+        }
+      },
+      "paired_blocks": 128,
+      "paired_bootstrap_restricted_first_success_95": [
+        -26.375,
+        83.2421875
+      ],
+      "paired_bootstrap_success_95_nominal": [
+        -0.1640625,
+        0.0703125
+      ],
+      "reference": "sobol_routing_only",
+      "role": "secondary_descriptive_control"
+    }
+  ],
+  "pre_hit_fixed_window_descriptive": {
+    "cells": [
+      {
+        "eligible_pre_hit_runs": 114,
+        "first_hit_position_counts": {
+          "after_window": 16,
+          "before_window": 14,
+          "inside_window": 16,
+          "not_observed": 82
+        },
+        "mean_metrics": {
+          "correct_stage_eos_trials_per_request": {
+            "defined_runs": 114,
+            "mean": 0.0
+          },
+          "correct_stage_total_visits_per_request": {
+            "defined_runs": 114,
+            "mean": 0.0058019246888638
+          },
+          "edge_selections_per_request": {
+            "defined_runs": 114,
+            "mean": 3.6244550564535776
+          },
+          "nonroot_oracle_prefix_visit_share": {
+            "defined_runs": 114,
+            "mean": 0.08269948553325444
+          },
+          "nonroot_oracle_prefix_visits_per_request": {
+            "defined_runs": 114,
+            "mean": 0.21717920555407405
+          }
+        },
+        "method": "sobol_all",
+        "positive_exposure_runs": 114,
+        "replicates": 128,
+        "total_eligible_pre_hit_requests": 13637
+      },
+      {
+        "eligible_pre_hit_runs": 106,
+        "first_hit_position_counts": {
+          "after_window": 18,
+          "before_window": 22,
+          "inside_window": 12,
+          "not_observed": 76
+        },
+        "mean_metrics": {
+          "correct_stage_eos_trials_per_request": {
+            "defined_runs": 106,
+            "mean": 0.0
+          },
+          "correct_stage_total_visits_per_request": {
+            "defined_runs": 106,
+            "mean": 0.006708486198462613
+          },
+          "edge_selections_per_request": {
+            "defined_runs": 106,
+            "mean": 3.6214291468863684
+          },
+          "nonroot_oracle_prefix_visit_share": {
+            "defined_runs": 106,
+            "mean": 0.08430956377725286
+          },
+          "nonroot_oracle_prefix_visits_per_request": {
+            "defined_runs": 106,
+            "mean": 0.2209540292504118
+          }
+        },
+        "method": "sobol_routing_only",
+        "positive_exposure_runs": 106,
+        "replicates": 128,
+        "total_eligible_pre_hit_requests": 12878
+      },
+      {
+        "eligible_pre_hit_runs": 114,
+        "first_hit_position_counts": {
+          "after_window": 25,
+          "before_window": 14,
+          "inside_window": 9,
+          "not_observed": 80
+        },
+        "mean_metrics": {
+          "correct_stage_eos_trials_per_request": {
+            "defined_runs": 114,
+            "mean": 0.0
+          },
+          "correct_stage_total_visits_per_request": {
+            "defined_runs": 114,
+            "mean": 0.005977182539682539
+          },
+          "edge_selections_per_request": {
+            "defined_runs": 114,
+            "mean": 3.619154449973194
+          },
+          "nonroot_oracle_prefix_visit_share": {
+            "defined_runs": 114,
+            "mean": 0.08484861371008771
+          },
+          "nonroot_oracle_prefix_visits_per_request": {
+            "defined_runs": 114,
+            "mean": 0.22211083430991294
+          }
+        },
+        "method": "two_phase_action_256",
+        "positive_exposure_runs": 114,
+        "replicates": 128,
+        "total_eligible_pre_hit_requests": 13982
+      }
+    ],
+    "conditioning_warning": "eligibility and exposure depend on the post-treatment first-success time; these are not causal contrasts",
+    "first_hit_request_excluded_from_pre_hit_segment": true,
+    "fixed_window_request_numbers_inclusive": [
+      257,
+      384
+    ],
+    "paired_contrasts": [
+      {
+        "candidate": "two_phase_action_256",
+        "eligible_paired_blocks": 93,
+        "label": "two_phase_vs_routing_only",
+        "metric_deltas": {
+          "correct_stage_eos_trials_per_request": {
+            "defined_pairs": 93,
+            "mean_delta": 0.0,
+            "median_delta": 0.0,
+            "negative_pairs": 0,
+            "paired_bootstrap_95_nominal": [
+              0.0,
+              0.0
+            ],
+            "positive_pairs": 0,
+            "ties": 93
+          },
+          "correct_stage_total_visits_per_request": {
+            "defined_pairs": 93,
+            "mean_delta": -0.0003193626614325539,
+            "median_delta": 0.0,
+            "negative_pairs": 19,
+            "paired_bootstrap_95_nominal": [
+              -0.0013820617852875919,
+              0.0007509280593958013
+            ],
+            "positive_pairs": 17,
+            "ties": 57
+          },
+          "edge_selections_per_request": {
+            "defined_pairs": 93,
+            "mean_delta": 0.001455026145556385,
+            "median_delta": 0.0078125,
+            "negative_pairs": 42,
+            "paired_bootstrap_95_nominal": [
+              -0.00858737936856145,
+              0.011651423374334804
+            ],
+            "positive_pairs": 48,
+            "ties": 3
+          },
+          "nonroot_oracle_prefix_visit_share": {
+            "defined_pairs": 93,
+            "mean_delta": 0.0005345130396705388,
+            "median_delta": 0.0002370375572840755,
+            "negative_pairs": 43,
+            "paired_bootstrap_95_nominal": [
+              -0.0005622824793987204,
+              0.0018240059138648602
+            ],
+            "positive_pairs": 47,
+            "ties": 3
+          },
+          "nonroot_oracle_prefix_visits_per_request": {
+            "defined_pairs": 93,
+            "mean_delta": 0.0014918224278032413,
+            "median_delta": 0.0,
+            "negative_pairs": 31,
+            "paired_bootstrap_95_nominal": [
+              -0.0014154857295352208,
+              0.004622274186334362
+            ],
+            "positive_pairs": 32,
+            "ties": 30
+          }
+        },
+        "reference": "sobol_routing_only"
+      },
+      {
+        "candidate": "two_phase_action_256",
+        "eligible_paired_blocks": 114,
+        "label": "two_phase_vs_sobol_all",
+        "metric_deltas": {
+          "correct_stage_eos_trials_per_request": {
+            "defined_pairs": 114,
+            "mean_delta": 0.0,
+            "median_delta": 0.0,
+            "negative_pairs": 0,
+            "paired_bootstrap_95_nominal": [
+              0.0,
+              0.0
+            ],
+            "positive_pairs": 0,
+            "ties": 114
+          },
+          "correct_stage_total_visits_per_request": {
+            "defined_pairs": 114,
+            "mean_delta": 0.0001752578508187396,
+            "median_delta": 0.0,
+            "negative_pairs": 20,
+            "paired_bootstrap_95_nominal": [
+              -0.000825964271443371,
+              0.0011996275040437974
+            ],
+            "positive_pairs": 18,
+            "ties": 76
+          },
+          "edge_selections_per_request": {
+            "defined_pairs": 114,
+            "mean_delta": -0.005300606480383388,
+            "median_delta": -0.0078125,
+            "negative_pairs": 59,
+            "paired_bootstrap_95_nominal": [
+              -0.021143969788283472,
+              0.0111570292541269
+            ],
+            "positive_pairs": 51,
+            "ties": 4
+          },
+          "nonroot_oracle_prefix_visit_share": {
+            "defined_pairs": 114,
+            "mean_delta": 0.002149128176833275,
+            "median_delta": 0.0013041185483029863,
+            "negative_pairs": 51,
+            "paired_bootstrap_95_nominal": [
+              6.168766860090158e-06,
+              0.004618792289984719
+            ],
+            "positive_pairs": 63,
+            "ties": 0
+          },
+          "nonroot_oracle_prefix_visits_per_request": {
+            "defined_pairs": 114,
+            "mean_delta": 0.0049316287558388945,
+            "median_delta": 0.0,
+            "negative_pairs": 42,
+            "paired_bootstrap_95_nominal": [
+              -0.0003736213939280602,
+              0.01091720019752685
+            ],
+            "positive_pairs": 53,
+            "ties": 19
+          }
+        },
+        "reference": "sobol_all"
+      }
+    ],
+    "role": "oracle_informed_descriptive_only_not_a_performance_gate"
+  },
+  "primary_endpoints": [
+    {
+      "candidate": "two_phase_action_256",
+      "exact_mcnemar_p": 0.6075913612730801,
+      "holm_adjusted_p_primary_family": 1.0,
+      "mean_delta": -0.03125,
+      "paired_bootstrap_95_simultaneous": [
+        -0.1328125,
+        0.0703125
+      ],
+      "reference": "sobol_routing_only"
+    },
+    {
+      "candidate": "two_phase_action_256",
+      "exact_mcnemar_p": 0.8714146793645341,
+      "holm_adjusted_p_primary_family": 1.0,
+      "mean_delta": 0.015625,
+      "paired_bootstrap_95_simultaneous": [
+        -0.0859375,
+        0.1171875
+      ],
+      "reference": "sobol_all"
+    }
+  ],
+  "record_type": "two_phase_standalone_validation_summary",
+  "schema_version": "qmc-bmgs-two-phase-validation-summary/v1",
+  "simultaneous_interval_method": "paired exploration-seed bootstrap; 95th percentile of maximum absolute deviation across the two candidate-vs-control risk differences",
+  "validation_decision": {
+    "action": "stop_threshold_tuning_and_run_credit_assignment_ablation",
+    "co_primary_point_deltas": {
+      "two_phase_vs_routing_only": -0.03125,
+      "two_phase_vs_sobol_all": 0.015625
+    },
+    "co_primary_simultaneous_95": {
+      "two_phase_vs_routing_only": [
+        -0.1328125,
+        0.0703125
+      ],
+      "two_phase_vs_sobol_all": [
+        -0.0859375,
+        0.1171875
+      ]
+    },
+    "predeclared_rule": {
+      "data_quality_failure": "do not interpret; repair and rerun the same seeds",
+      "direction_not_replicated": "either co-primary point delta is nonpositive",
+      "directional_replication": "both co-primary point deltas are strictly positive but the joint interval condition is not met",
+      "supported_positive_validation": "both co-primary simultaneous lower bounds are strictly positive"
+    },
+    "reason": "at least one co-primary success point delta is nonpositive",
+    "status": "direction_not_replicated",
+    "threshold_tuning_after_this_cohort": false
+  }
+}

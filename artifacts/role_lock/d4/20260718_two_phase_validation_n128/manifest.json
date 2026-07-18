@@ -1,0 +1,152 @@
+{
+  "schema_version": "qmc-bmgs-artifact-manifest/v1",
+  "artifact_id": "role_lock_d4_20260718_two_phase_validation_n128",
+  "provenance_status": "generated_from_clean_repository_revision",
+  "exact_generation_revision_known": true,
+  "generation_git_commit": "31b476c9b170c58dc8001dd263f9ad39abc30b8f",
+  "generation_git_tree": "92163a3db1acefcc150a683ea2a385967421fb15",
+  "analysis_git_commit": "d07c04b0a884fb2e6ebbd633e869585b8e7d8df1",
+  "analysis_git_tree": "982ccb7a6cc993b98d32f9596381d49f88a5a28d",
+  "generation_date": "2026-07-18",
+  "claim_scope": "fresh standalone Role-Lock D4 validation of the fixed two-phase action-source schedule only",
+  "design": {
+    "run_mode": "validation_n128",
+    "cohort_role": "standalone_validation",
+    "selection_artifact_id": "role_lock_d4_20260718_two_phase_n64",
+    "selection_records_in_primary_analysis": false,
+    "cohort_pooling": false,
+    "methods": [
+      "sobol_all",
+      "sobol_routing_only",
+      "two_phase_action_256"
+    ],
+    "posterior_sd_scale": 1.0,
+    "verifier_cap": 700,
+    "lm_node_integrity_ceiling": 1111,
+    "reachable_nonterminal_prefix_bound": 820,
+    "edge_integrity_ceiling": 3500,
+    "normal_edge_bound": 2800,
+    "switch_after_completed_verifier_request": 256,
+    "phase_one_requests_inclusive": [
+      1,
+      256
+    ],
+    "phase_two_requests_inclusive": [
+      257,
+      700
+    ],
+    "checkpoint_requests": [
+      64,
+      128,
+      256,
+      384,
+      512,
+      700
+    ],
+    "prehit_window_requests_inclusive": [
+      257,
+      384
+    ],
+    "prehit_first_success_request_excluded": true,
+    "prehit_role": "oracle_informed_descriptive_only_not_a_performance_gate",
+    "exploration_seed_start": 704,
+    "exploration_seed_end_inclusive": 831,
+    "independent_randomization_unit": "exploration_seed",
+    "records": 384,
+    "paired_groups": 128,
+    "matched_primary_budget": "700 search verifier feedback calls",
+    "post_search_readout_evaluations": 1,
+    "post_search_readout_budget_scope": "outside the search verifier budget",
+    "source_architecture": "matched_full_dimension_column_mux/v2_dynamic",
+    "common_random_numbers": "both full streams advance at every draw; the switch changes selected action columns without replacing or rewinding streams",
+    "threshold_selection": "posthoc from the preceding fixed-verifier and n64 selection cohorts",
+    "threshold_sweep": false
+  },
+  "predeclared_decision": {
+    "status": "direction_not_replicated",
+    "action": "stop_threshold_tuning_and_run_credit_assignment_ablation",
+    "two_phase_minus_routing_only_success_delta": -0.03125,
+    "two_phase_minus_sobol_all_success_delta": 0.015625,
+    "selection_cohort_pooled": false
+  },
+  "runtime": {
+    "python": "3.13.13",
+    "torch": "2.11.0"
+  },
+  "source_generator_sha256": {
+    "policy.py": "a6aa9575176af59c5e5e588474d20f41b671a3d3ecd724b69a3ce50f9076dde1",
+    "role_lock.py": "d9a1230d82ec30ec2ab9d5abf518c26109668ee15b78f105722dbbcd61821868",
+    "two_phase_sampler.py": "6428a2ec35cfa52f8bef3e45ce9e032269fd5e4868595c76f4b9c3a0fd6589b1",
+    "two_phase_validation.py_at_raw_generation": "76c99e250544901821a607ea4e9bd9b18ecc874e0a93212d127c12b1f6860fae",
+    "two_phase_validation.py_at_analysis": "34c578c84b82fa350e9b985aa35501497877fe2c329aaff2ed893bfdf7366c51",
+    "records.py": "25ff3288f48aad398871eac6b0ae4a335a5733d6601efcadfecbe49da127e2c4"
+  },
+  "analysis_reproducibility": {
+    "bootstrap_replicates": 5000,
+    "generator": "torch.Generator manual_seed with torch.randint resampling",
+    "contrast_base_seeds_in_order": [
+      313,
+      1313,
+      2313
+    ],
+    "simultaneous_primary_seed": 20313,
+    "prehit_contrast_base_seeds": [
+      30313,
+      40313
+    ],
+    "simultaneous_family": [
+      "two_phase_action_256_minus_sobol_routing_only",
+      "two_phase_action_256_minus_sobol_all"
+    ]
+  },
+  "files": {
+    "records.jsonl": {
+      "bytes": 11392058,
+      "records": 384,
+      "sha256": "ec035850f61c75ca9a01f2e38f14d59841cbde9b2a046adb852a1d65c512360a"
+    },
+    "summary.json": {
+      "bytes": 42819,
+      "sha256": "b15c4064f74c66c634f5a9e456e444ed2c66368ce6d9b7e42498ade666b72db1"
+    },
+    "report.md": {
+      "bytes": 1757,
+      "sha256": "1314d935cdac4d89894cb28dd1b9ad2d553088aba16903ecf7175cf64afc852f"
+    }
+  },
+  "data_quality_status": "PASS",
+  "reproduction_command": "PYTHONPATH=src python -m qmc_bmgs.experiments.two_phase_validation",
+  "actual_execution": {
+    "parallel_shards": [
+      {
+        "seed_start": 704,
+        "seed_end_inclusive": 735,
+        "records": 96,
+        "sha256": "8f17da889c9b90fadf5da5501afb1439cbe5928f695f39b0ac0dd3c37d728110"
+      },
+      {
+        "seed_start": 736,
+        "seed_end_inclusive": 767,
+        "records": 96,
+        "sha256": "d67432e62144041de31820600827b3eb27d64433a8f569d9cd5975a23ea4ab28"
+      },
+      {
+        "seed_start": 768,
+        "seed_end_inclusive": 799,
+        "records": 96,
+        "sha256": "a52abbbf23c97a56f737253547d83e6adca31392a4ca58c922ba499bee409105"
+      },
+      {
+        "seed_start": 800,
+        "seed_end_inclusive": 831,
+        "records": 96,
+        "sha256": "b548e1cb185fd54a5a1ff4b897e7cd2a5eb69ac4d783015107cf79c9f4133842"
+      }
+    ],
+    "shard_union_verified_exact": true,
+    "shard_byte_concatenation_equals_promoted_raw": true,
+    "final_disk_reload_and_summary_regeneration": "PASS",
+    "independent_raw_digest_and_statistics_audit": "PASS",
+    "independent_engineering_behavior_audit": "PASS"
+  }
+}

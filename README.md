@@ -22,13 +22,17 @@ engineering research repoです。
 - exploratory two-phase n=64は両対照をpoint estimateで上回りましたが、独立fresh
   n=128ではtwo-phase 37.5%、routing-only 40.6%、Sobol-all 35.9%。routing-onlyとの
   方向は再現せず、threshold tuningを終了しました。
+- 固定routing-only上のcredit diagnosticでは、prefix-progressがrequest 128で25対12と
+  早く成功した一方、700では26/128対terminal-only 52/128へ反転しました。102 runが
+  正解直前prefixで固定され、D4のsampler / feedback tuningを終了しました。
 
 結果の短い読み方は [D4 result capsule](docs/results/d4_result.md)、
 [fresh channel-ablation capsule](docs/results/channel_ablation_fresh_n256.md)、
 [fixed-verifier capsule](docs/results/fixed_verifier_n128.md)、
 [two-phase selection capsule](docs/results/two_phase_n64.md)、
-[standalone validation capsule](docs/results/two_phase_validation_n128.md)、設計原則は
-[engineering north star](docs/engineering_north_star.md)、次の固定比較は
+[standalone validation capsule](docs/results/two_phase_validation_n128.md)、
+[credit-assignment capsule](docs/results/credit_assignment_n128.md)、設計原則は
+[engineering north star](docs/engineering_north_star.md)、固定比較の仕様は
 [credit-assignment contract](docs/credit_assignment_contract.md) を参照してください。
 
 ## Layout
@@ -78,9 +82,10 @@ dated evidenceとしてGitへ含め、各runの`manifest.json`でrecord数・byt
 
 ## Immediate roadmap
 
-1. two-phase threshold tuningは、fresh n=128で方向が再現しなかったため終了する。
-2. `sobol_routing_only`を固定substrateにし、terminal-only対prefix-progress feedbackを比べる。
-3. primaryは同じ700-call時点のexact successとし、dense creditはoracle positive controlに限る。
-4. credit改善が成功へ変換した場合だけ、chunk/contextual actionと実verifierへ接続する。
+1. D4のtwo-phase thresholdとprefix-feedback tuningは、固定decision ruleに従い終了する。
+2. prefix-progressの「早期hit後に正解直前でfreezeする」negative mechanism resultを保持する。
+3. routing-onlyを固定baselineとして、より難しい小規模taskとnon-oracle verifierへ移る。
+4. greedy / top-p / plain Thompsonを含むequal-total-compute比較と、final-action選択率・
+   seed間exact集中度のtelemetryを追加する。
 
 自然言語reasoningへの一般化や一般的なQMC優位は、まだ主張しません。

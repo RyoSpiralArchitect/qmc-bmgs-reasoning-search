@@ -69,7 +69,12 @@ routing-only 52/128 (40.6%)、Sobol-all 46/128 (35.9%)だった。two-phaseは
 Sobol-allへ+1.6ppだがrouting-onlyへ−3.1ppとなり、両対照への方向は再現しなかった。
 選抜n=64はprimaryへ混ぜず、threshold tuningをここで終了する。
 
-次はrouting-only substrateを固定し、terminal-only対prefix-progress feedbackの
-credit-assignment ablationへ進む。詳細は[fixed-verifier capsule](fixed_verifier_n128.md)、
+routing-only substrateを固定したcredit diagnosticでは、prefix-progressがrequest 128で
+25/128対control 12/128と先行した一方、700では26/128対52/128へ反転した。
+progressの残り102 runは全て正解直前のprefix length 3へ固定され、exact観測も26 seedへ
+集中した。固定ruleは`no_gain`であり、D4のsampler / feedback tuningはここで終了する。
+
+詳細は[fixed-verifier capsule](fixed_verifier_n128.md)、
 [two-phase selection capsule](two_phase_n64.md)、
-[standalone validation capsule](two_phase_validation_n128.md)を参照。
+[standalone validation capsule](two_phase_validation_n128.md)、
+[credit-assignment capsule](credit_assignment_n128.md)を参照。

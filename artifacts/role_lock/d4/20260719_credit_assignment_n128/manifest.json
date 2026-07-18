@@ -1,0 +1,135 @@
+{
+  "schema_version": "qmc-bmgs-artifact-manifest/v1",
+  "artifact_id": "role_lock_d4_20260719_credit_assignment_n128",
+  "provenance_status": "generated_from_clean_repository_revision",
+  "exact_generation_revision_known": true,
+  "generation_git_commit": "463cad4323f0a920fdd257db99ea1afe26f20fcc",
+  "generation_git_tree": "9f375f7ee4b8c24c3f8c20746cb9b7e5807587fb",
+  "analysis_git_commit": "463cad4323f0a920fdd257db99ea1afe26f20fcc",
+  "analysis_git_tree": "9f375f7ee4b8c24c3f8c20746cb9b7e5807587fb",
+  "generation_date": "2026-07-19",
+  "claim_scope": "post-validation Role-Lock D4 mechanism diagnostic of terminal-only versus oracle prefix-progress feedback on the fixed routing-only substrate",
+  "design": {
+    "comparison_role": "post_validation_mechanism_diagnostic",
+    "performance_validation": false,
+    "oracle_positive_control": true,
+    "substrate": "sobol_routing_only",
+    "new_raw_method": "prefix_progress",
+    "new_raw_contains_control_rows": false,
+    "control_artifact_id": "role_lock_d4_20260718_two_phase_validation_n128",
+    "control_raw_sha256": "ec035850f61c75ca9a01f2e38f14d59841cbde9b2a046adb852a1d65c512360a",
+    "control_routing_subset_sha256": "6fcd2d613976c965ba9786fbf6f2487c4b75f4310086db5ed8b812760c85d60e",
+    "terminal_only_feedback": "5 for exact target, otherwise 0",
+    "prefix_progress_feedback": "5 times longest correct prefix length divided by 4",
+    "exact_success_target": [
+      2,
+      3,
+      4,
+      1
+    ],
+    "posterior_sd_scale": 1.0,
+    "pruning": false,
+    "gamma": 1.0,
+    "verifier_cap": 700,
+    "lm_node_integrity_ceiling": 1111,
+    "edge_integrity_ceiling": 3500,
+    "normal_edge_bound": 2800,
+    "checkpoint_requests": [
+      64,
+      128,
+      256,
+      384,
+      512,
+      700
+    ],
+    "exploration_seed_start": 704,
+    "exploration_seed_end_inclusive": 831,
+    "independent_randomization_unit": "exploration_seed",
+    "new_records": 128,
+    "paired_groups": 128,
+    "matched_primary_budget": "700 search feedback calls",
+    "final_readout_evaluations_outside_search_budget": 1,
+    "primary_endpoint": "exact deterministic readout success at request 700"
+  },
+  "predeclared_decision": {
+    "status": "no_gain",
+    "action": "end Role-Lock D4 sampler and feedback tuning",
+    "prefix_progress_successes": 26,
+    "terminal_only_control_successes": 52,
+    "paired_success_delta": -0.203125,
+    "paired_bootstrap_95": [
+      -0.2734375,
+      -0.1328125
+    ],
+    "exact_two_sided_mcnemar_p": 2.1606683731079102e-7
+  },
+  "runtime": {
+    "python": "3.13.13",
+    "torch": "2.11.0"
+  },
+  "source_generator_sha256": {
+    "policy.py": "a6aa9575176af59c5e5e588474d20f41b671a3d3ecd724b69a3ce50f9076dde1",
+    "role_lock.py": "d9a1230d82ec30ec2ab9d5abf518c26109668ee15b78f105722dbbcd61821868",
+    "two_phase_sampler.py": "6428a2ec35cfa52f8bef3e45ce9e032269fd5e4868595c76f4b9c3a0fd6589b1",
+    "two_phase_validation.py": "34c578c84b82fa350e9b985aa35501497877fe2c329aaff2ed893bfdf7366c51",
+    "credit_assignment.py": "f86a36c9c6655659f442c56db29e42d210763d155233f988b573c95707c59d0c",
+    "records.py": "25ff3288f48aad398871eac6b0ae4a335a5733d6601efcadfecbe49da127e2c4"
+  },
+  "analysis_reproducibility": {
+    "bootstrap_replicates": 5000,
+    "bootstrap_seed": 313,
+    "bootstrap_unit": "paired exploration-seed binary difference",
+    "interval": "paired percentile 95 percent",
+    "mcnemar": "exact two-sided",
+    "summary_payload_sha256": "112e36a1aa7ed659f6813f9b81bf18e0f8d9e39059bda55a80f9016acebd04d4"
+  },
+  "files": {
+    "records.jsonl": {
+      "bytes": 9065707,
+      "records": 128,
+      "sha256": "5a72856d499eee53c17c8fd3f2dd4ab7cf7afbf5a59cb7a6e78330bfb787b937"
+    },
+    "summary.json": {
+      "bytes": 11118,
+      "sha256": "c06507e3a9c4cba92232a08c411956c6b67425c09b4954fa6cfcd335c056ec6b"
+    },
+    "report.md": {
+      "bytes": 837,
+      "sha256": "bce728dce36e294b0da7c4659752f9b96e1e7455711cc500bde9ab34a27c7292"
+    }
+  },
+  "data_quality_status": "PASS",
+  "reproduction_command": "PYTHONPATH=src python3 -m qmc_bmgs.experiments.credit_assignment",
+  "actual_execution": {
+    "parallel_shards": [
+      {
+        "seed_start": 704,
+        "seed_end_inclusive": 735,
+        "records": 32,
+        "sha256": "0ddc4e06a62fbc87d9cc8560fa300f961a88d8b487b43221f3086a1feb1527be"
+      },
+      {
+        "seed_start": 736,
+        "seed_end_inclusive": 767,
+        "records": 32,
+        "sha256": "c87e6a0a88566c9ad3d6992b13fc9245ddc20ad2142742d9b0b9775d4d566d6c"
+      },
+      {
+        "seed_start": 768,
+        "seed_end_inclusive": 799,
+        "records": 32,
+        "sha256": "f69476e256b9ec6affebbf2bd48246f274abb4b692af1c7753ea76afda49a77b"
+      },
+      {
+        "seed_start": 800,
+        "seed_end_inclusive": 831,
+        "records": 32,
+        "sha256": "1d9f17a970b0ec83cd9c30729a49654cb346432ff7bbb8410373c4fef8d8a7c4"
+      }
+    ],
+    "shard_byte_concatenation_equals_promoted_raw": true,
+    "disk_reloaded_summary_equals_in_memory": true,
+    "independent_raw_digest_and_statistics_audit": "PASS",
+    "independent_engineering_behavior_audit": "PASS"
+  }
+}

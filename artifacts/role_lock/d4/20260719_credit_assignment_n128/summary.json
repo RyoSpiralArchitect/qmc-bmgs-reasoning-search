@@ -1,0 +1,436 @@
+{
+  "cells": {
+    "prefix_progress": {
+      "exact_success_observation_count_total": 842,
+      "first_exact_success_observed_count": 26,
+      "mean_exact_success_observations": 6.578125,
+      "mean_readout_correct_prefix_length": 3.203125,
+      "mean_restricted_first_exact_success_request": 570.34375,
+      "mean_usage": {
+        "edge_selections": 2616.5234375,
+        "full_prefix_tokens": 1123.6796875,
+        "logical_lm_node_evals": 303.0625
+      },
+      "progress_feedback": {
+        "event_correct_prefix_length_counts": {
+          "0": 47416,
+          "1": 22400,
+          "2": 10717,
+          "3": 8225,
+          "4": 842
+        },
+        "mean_best_feedback": 4.00390625,
+        "mean_cumulative_feedback": 701.923828125,
+        "mean_first_positive_feedback_request_among_observed": 3.671875,
+        "mean_positive_feedback_events": 329.5625,
+        "oracle_positive_control": true,
+        "positive_feedback_observed_count": 128
+      },
+      "readout_success_count": 26,
+      "readout_success_rate": 0.203125,
+      "readout_success_wilson_95": [
+        0.1425573819359227,
+        0.2809926858514729
+      ],
+      "replicates": 128,
+      "restricted_first_success_definition": "exact first-hit request; verifier_cap + 1 for censored runs"
+    },
+    "terminal_only_control": {
+      "exact_success_observation_count_total": 787,
+      "first_exact_success_observed_count": 52,
+      "mean_exact_success_observations": 6.1484375,
+      "mean_readout_correct_prefix_length": 2.2109375,
+      "mean_restricted_first_exact_success_request": 547.5703125,
+      "mean_usage": {
+        "edge_selections": 2542.859375,
+        "full_prefix_tokens": 1478.125,
+        "logical_lm_node_evals": 393.84375
+      },
+      "readout_success_count": 52,
+      "readout_success_rate": 0.40625,
+      "readout_success_wilson_95": [
+        0.3251030219432171,
+        0.4928601573580657
+      ],
+      "replicates": 128,
+      "restricted_first_success_definition": "exact first-hit request; verifier_cap + 1 for censored runs"
+    }
+  },
+  "checkpoint_exact_success_diagnostics": [
+    {
+      "completed_feedback_requests": 64,
+      "mean_exact_success_delta": 0.09375,
+      "paired_bootstrap_95_descriptive": [
+        0.046875,
+        0.1484375
+      ]
+    },
+    {
+      "completed_feedback_requests": 128,
+      "mean_exact_success_delta": 0.1015625,
+      "paired_bootstrap_95_descriptive": [
+        0.0390625,
+        0.1640625
+      ]
+    },
+    {
+      "completed_feedback_requests": 256,
+      "mean_exact_success_delta": 0.0234375,
+      "paired_bootstrap_95_descriptive": [
+        -0.0390625,
+        0.0859375
+      ]
+    },
+    {
+      "completed_feedback_requests": 384,
+      "mean_exact_success_delta": -0.0703125,
+      "paired_bootstrap_95_descriptive": [
+        -0.140625,
+        0.0
+      ]
+    },
+    {
+      "completed_feedback_requests": 512,
+      "mean_exact_success_delta": -0.09375,
+      "paired_bootstrap_95_descriptive": [
+        -0.1640625,
+        -0.03125
+      ]
+    },
+    {
+      "completed_feedback_requests": 700,
+      "mean_exact_success_delta": -0.203125,
+      "paired_bootstrap_95_descriptive": [
+        -0.28125,
+        -0.1328125
+      ]
+    }
+  ],
+  "claim_boundary": [
+    "post-validation mechanism diagnostic, not new performance validation",
+    "prefix progress is oracle-informed and not a deployable verifier claim",
+    "exact success is never inferred from positive dense feedback",
+    "results are conditional on Role-Lock D4 aligned static-token strata"
+  ],
+  "comparison_role": "post_validation_mechanism_diagnostic",
+  "control_provenance": {
+    "analysis_label": "terminal_only_control",
+    "artifact_id": "role_lock_d4_20260718_two_phase_validation_n128",
+    "control_method_in_source_schema": "sobol_routing_only",
+    "copied_into_challenger_raw": false,
+    "expected_routing_subset_sha256": "6fcd2d613976c965ba9786fbf6f2487c4b75f4310086db5ed8b812760c85d60e",
+    "expected_sha256": "ec035850f61c75ca9a01f2e38f14d59841cbde9b2a046adb852a1d65c512360a",
+    "full_routing_subset_records": 128,
+    "manifest_artifact_id": "role_lock_d4_20260718_two_phase_validation_n128",
+    "manifest_expected_bytes": 11392058,
+    "manifest_expected_records": 384,
+    "manifest_observed_bytes": 11392058,
+    "observed_routing_subset_sha256": "6fcd2d613976c965ba9786fbf6f2487c4b75f4310086db5ed8b812760c85d60e",
+    "observed_sha256": "ec035850f61c75ca9a01f2e38f14d59841cbde9b2a046adb852a1d65c512360a",
+    "path": "/Users/ryohiga/SpiralReality/qmc-bmgs-reasoning-search/artifacts/role_lock/d4/20260718_two_phase_validation_n128/records.jsonl",
+    "selected_control_records": 128,
+    "source_data_quality_status": "PASS",
+    "source_records_validated": 384
+  },
+  "data_quality": {
+    "challenger": {
+      "checks": {
+        "candidate_identity_stable": true,
+        "complete_unique_challenger_cohort": true,
+        "exact_budget_and_usage_accounting": true,
+        "exact_success_separate_from_progress_feedback": true,
+        "fixed_identity_method_task_and_config": true,
+        "passive_checkpoint_and_source_accounting": true,
+        "schema_digest_and_strict_json": true
+      },
+      "details": {
+        "duplicate_count": 0,
+        "error_counts": {
+          "budget": 0,
+          "candidate": 0,
+          "canonical_order": 0,
+          "cohort": 0,
+          "config": 0,
+          "digest": 0,
+          "duplicate": 0,
+          "feedback_ledger": 0,
+          "identity": 0,
+          "method": 0,
+          "outcome": 0,
+          "schema": 0,
+          "source_accounting": 0,
+          "strict_json": 0,
+          "task": 0,
+          "telemetry": 0,
+          "usage": 0
+        },
+        "expected_records": 128,
+        "minimum_edge_guard_headroom": 845,
+        "minimum_lm_guard_headroom": 788,
+        "missing_seeds": [],
+        "observed_records": 128,
+        "root_candidate_fingerprints": [
+          "efeceea4fa57c3ba8f79c78148ffd8f46d0e3725cf4e52ba42827300f72911d8"
+        ],
+        "unexpected_seeds": []
+      },
+      "failures": [],
+      "status": "PASS"
+    },
+    "control_source_status": "PASS",
+    "paired_contract": {
+      "checks": {
+        "control_is_fixed_routing_only": true,
+        "paired_root_candidate_fingerprint_identical": true,
+        "paired_search_config_identical": true,
+        "paired_seed_plan_identical": true
+      },
+      "details": {
+        "error_counts": {
+          "control_method": 0,
+          "paired_candidate_fingerprint": 0,
+          "paired_config": 0,
+          "paired_seeds": 0
+        },
+        "paired_blocks": 128,
+        "root_candidate_fingerprints": [
+          "efeceea4fa57c3ba8f79c78148ffd8f46d0e3725cf4e52ba42827300f72911d8"
+        ]
+      },
+      "failures": [],
+      "status": "PASS"
+    },
+    "paired_seed_blocks_complete": true,
+    "status": "PASS"
+  },
+  "decision": {
+    "action": "stop_additional_sampler_tuning_on_this_toy",
+    "exact_full_design_evaluated": true,
+    "rule": {
+      "directional_only": "risk_difference > 0 but support rule unmet",
+      "no_gain": "risk_difference <= 0",
+      "supported_credit_gain": "risk_difference > 0, bootstrap lower > 0, and exact two-sided McNemar p < 0.05"
+    },
+    "status": "no_gain"
+  },
+  "design": {
+    "challenger_feedback": "5*longest_correct_prefix_length/4",
+    "checkpoints": [
+      64,
+      128,
+      256,
+      384,
+      512,
+      700
+    ],
+    "control_is_referenced_not_copied": true,
+    "edge_ceiling": 3500,
+    "exact_reward": 5,
+    "exploration_seed_ids": [
+      704,
+      705,
+      706,
+      707,
+      708,
+      709,
+      710,
+      711,
+      712,
+      713,
+      714,
+      715,
+      716,
+      717,
+      718,
+      719,
+      720,
+      721,
+      722,
+      723,
+      724,
+      725,
+      726,
+      727,
+      728,
+      729,
+      730,
+      731,
+      732,
+      733,
+      734,
+      735,
+      736,
+      737,
+      738,
+      739,
+      740,
+      741,
+      742,
+      743,
+      744,
+      745,
+      746,
+      747,
+      748,
+      749,
+      750,
+      751,
+      752,
+      753,
+      754,
+      755,
+      756,
+      757,
+      758,
+      759,
+      760,
+      761,
+      762,
+      763,
+      764,
+      765,
+      766,
+      767,
+      768,
+      769,
+      770,
+      771,
+      772,
+      773,
+      774,
+      775,
+      776,
+      777,
+      778,
+      779,
+      780,
+      781,
+      782,
+      783,
+      784,
+      785,
+      786,
+      787,
+      788,
+      789,
+      790,
+      791,
+      792,
+      793,
+      794,
+      795,
+      796,
+      797,
+      798,
+      799,
+      800,
+      801,
+      802,
+      803,
+      804,
+      805,
+      806,
+      807,
+      808,
+      809,
+      810,
+      811,
+      812,
+      813,
+      814,
+      815,
+      816,
+      817,
+      818,
+      819,
+      820,
+      821,
+      822,
+      823,
+      824,
+      825,
+      826,
+      827,
+      828,
+      829,
+      830,
+      831
+    ],
+    "independent_randomization_unit": "exploration_seed",
+    "lm_node_ceiling": 1111,
+    "methods": [
+      "terminal_only_control",
+      "prefix_progress"
+    ],
+    "oracle_positive_control": true,
+    "performance_validation": false,
+    "primary_endpoint": "exact_readout_success_at_request_700",
+    "production_raw_contains": [
+      "prefix_progress"
+    ],
+    "substrate": "sobol_routing_only",
+    "target": [
+      2,
+      3,
+      4,
+      1
+    ],
+    "task": "role_lock_d4",
+    "verifier_cap": 700
+  },
+  "primary_paired_comparison": {
+    "bootstrap_replicates": 5000,
+    "bootstrap_seed": 313,
+    "candidate": "prefix_progress",
+    "discordance": {
+      "both_failure": 75,
+      "both_success": 25,
+      "challenger_only": 1,
+      "control_only": 27
+    },
+    "endpoint": "exact_readout_success_at_request_700",
+    "exact_two_sided_mcnemar_p": 2.1606683731079102e-07,
+    "holm_adjustment": false,
+    "label": "prefix_progress_minus_terminal_only_control",
+    "mean_resource_delta": {
+      "edge_selections": {
+        "mean": 73.6640625,
+        "paired_bootstrap_95": [
+          68.0078125,
+          79.1015625
+        ]
+      },
+      "full_prefix_tokens": {
+        "mean": -354.4453125,
+        "paired_bootstrap_95": [
+          -370.25,
+          -337.78125
+        ]
+      },
+      "logical_lm_node_evals": {
+        "mean": -90.78125,
+        "paired_bootstrap_95": [
+          -94.8515625,
+          -86.484375
+        ]
+      }
+    },
+    "mean_restricted_first_exact_success_request_delta": 22.7734375,
+    "mean_risk_difference": -0.203125,
+    "paired_blocks": 128,
+    "paired_bootstrap_restricted_first_exact_success_95": [
+      -10.8828125,
+      56.53125
+    ],
+    "paired_percentile_bootstrap_95": [
+      -0.2734375,
+      -0.1328125
+    ],
+    "reference": "terminal_only_control",
+    "role": "post_validation_mechanism_diagnostic"
+  },
+  "record_type": "credit_assignment_summary",
+  "run_mode": "credit_assignment_n128",
+  "schema_version": "qmc_bmgs_credit_assignment_summary_v1",
+  "summary_payload_sha256": "112e36a1aa7ed659f6813f9b81bf18e0f8d9e39059bda55a80f9016acebd04d4"
+}

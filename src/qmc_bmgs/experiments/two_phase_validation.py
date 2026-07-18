@@ -769,8 +769,16 @@ def summarize_validation(
             "fresh_seed_range_inclusive": [min(seed_ids), max(seed_ids)],
             "fixed_validation_decision_evaluable": exact_full_design,
             "bootstrap_samples": BOOTSTRAP_SAMPLES,
+            "selection_seed_range_inclusive": [640, 703],
+            "selection_validation_seed_overlap": 0,
         }
     )
+    for legacy_field in (
+        "engineering_gate_evaluable",
+        "prior_experiment_seed_overlap",
+        "cohort_scope",
+    ):
+        base["design"].pop(legacy_field, None)
     base.pop("engineering_decision", None)
     base["validation_decision"] = {
         "status": status,
@@ -924,8 +932,8 @@ def render_validation_report(summary: dict[str, Any]) -> str:
             "",
             "## Claim boundary",
             "",
-            "This validates direction only within the fixed Role-Lock D4 toy. It is "
-            "not yet evidence of transfer to natural-language reasoning.",
+            "This test bears only on direction within the fixed Role-Lock D4 toy. "
+            "It is not evidence of transfer to natural-language reasoning.",
             "",
             "## Reproduce",
             "",

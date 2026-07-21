@@ -101,6 +101,23 @@ routing-onlyを固定baselineとして、より難しい小規模task・non-orac
 equal-total-compute baseline比較へ移る。correct-path reach、final-action selection rate、
 exact観測のseed間集中度を次の標準telemetryにする。
 
+## Next substrate: Countdown-D6
+
+次はtoken-prefix toyを増やさず、6個の正整数を5つの合法な算術action chunkでtargetへ
+変換する実行可能planning taskへ移る。sorted multisetをtask fingerprintでnamespaceした
+canonical stateとし、異なるaction順が同じstateへ合流する本物のDAGを使う。成功は
+expression traceのexact replayだけで判定し、exhaustive solverのwitnessや距離はpolicyへ
+渡さない。
+
+最初のmilestoneはTaskAdapter、exact verifier、multi-axis compute ledger、difficulty
+calibratorまで。性能主張は行わない。次のlocked comparisonでgreedy、top-p best-of-N、
+IID Thompson、best-first/PUCT、固定routing-onlyを同じcandidate/prior/cache/compute上で
+比較する。統計単位はtaskで、seedはtask内反復として扱う。
+
+算術だけに合わせた勝利を避けるため、calibration後の設定を小さなtyped DSL synthesisへ
+無調整で移すtransfer gateを予約する。詳細は
+[Countdown-D6 benchmark contract](countdown_benchmark_contract.md)を参照。
+
 ## Promotion rule
 
 新機構はtoyで「動く」だけでは昇格しません。少なくとも次を満たしてから実LLM段階へ

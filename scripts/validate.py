@@ -47,6 +47,7 @@ def main() -> None:
     for module in (
         "qmc_bmgs.policy",
         "qmc_bmgs.benchmarks.role_lock",
+        "qmc_bmgs.benchmarks.countdown",
         "qmc_bmgs.experiments.d4_noise_sweep",
         "qmc_bmgs.experiments.channel_ablation",
         "qmc_bmgs.experiments.fixed_verifier_budget",

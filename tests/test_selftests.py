@@ -5,6 +5,7 @@ import unittest
 import torch
 from torch.quasirandom import SobolEngine
 
+from qmc_bmgs.benchmarks.countdown import _run_self_test as countdown_self_test
 from qmc_bmgs.benchmarks.role_lock import (
     CHANNEL_ABLATION_VARIANTS,
     BenchmarkPolicy,
@@ -46,6 +47,9 @@ class RepositorySelfTests(unittest.TestCase):
 
     def test_benchmark_self_test(self) -> None:
         benchmark_self_test()
+
+    def test_countdown_self_test(self) -> None:
+        countdown_self_test()
 
     def test_d4_self_test(self) -> None:
         d4_self_test()

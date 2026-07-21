@@ -25,6 +25,9 @@ engineering research repoです。
 - 固定routing-only上のcredit diagnosticでは、prefix-progressがrequest 128で25対12と
   早く成功した一方、700では26/128対terminal-only 52/128へ反転しました。102 runが
   正解直前prefixで固定され、D4のsampler / feedback tuningを終了しました。
+- 次のsubstrateはCountdown-D6です。token prefixではなく合法な算術action chunk、
+  canonical DAG state、exact executable verifier、共通multi-axis compute ledgerを先に
+  固定し、search比較とは分離して構築します。
 
 結果の短い読み方は [D4 result capsule](docs/results/d4_result.md)、
 [fresh channel-ablation capsule](docs/results/channel_ablation_fresh_n256.md)、
@@ -33,7 +36,8 @@ engineering research repoです。
 [standalone validation capsule](docs/results/two_phase_validation_n128.md)、
 [credit-assignment capsule](docs/results/credit_assignment_n128.md)、設計原則は
 [engineering north star](docs/engineering_north_star.md)、固定比較の仕様は
-[credit-assignment contract](docs/credit_assignment_contract.md) を参照してください。
+[credit-assignment contract](docs/credit_assignment_contract.md)、次substrateの仕様は
+[Countdown-D6 contract](docs/countdown_benchmark_contract.md) を参照してください。
 
 ## Layout
 
@@ -53,6 +57,7 @@ examples/           preserved original single-file prototype
 ```bash
 PYTHONPATH=src python -m qmc_bmgs.policy --self-test
 PYTHONPATH=src python -m qmc_bmgs.benchmarks.role_lock --self-test
+PYTHONPATH=src python -m qmc_bmgs.benchmarks.countdown --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.d4_noise_sweep --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.channel_ablation --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.fixed_verifier_budget --self-test
@@ -62,12 +67,26 @@ PYTHONPATH=src python -m qmc_bmgs.experiments.credit_assignment --self-test
 python scripts/validate.py
 ```
 
+Countdownの可解・source-multiset重複なしsuiteは、exhaustive calibrationと
+不採用理由manifestを同時に作ります。2つ目のsplitでは先のsuiteを明示的に除外できます。
+
+```bash
+PYTHONPATH=src python -m qmc_bmgs.benchmarks.countdown \
+  --generate-solvable-suite 8 --seed 17 \
+  --output artifacts/work/countdown_calibration.json
+PYTHONPATH=src python -m qmc_bmgs.benchmarks.countdown \
+  --generate-solvable-suite 8 --seed 18 \
+  --exclude-suite artifacts/work/countdown_calibration.json \
+  --output artifacts/work/countdown_evaluation.json
+```
+
 editable installする場合:
 
 ```bash
 python -m pip install -e '.[dev]'
 qmc-bmgs-proto --self-test
 qmc-bmgs-benchmark --smoke
+qmc-bmgs-countdown --self-test
 qmc-bmgs-d4-sweep --smoke
 qmc-bmgs-channel-ablation --smoke
 qmc-bmgs-fixed-verifier --smoke
@@ -82,10 +101,9 @@ dated evidenceとしてGitへ含め、各runの`manifest.json`でrecord数・byt
 
 ## Immediate roadmap
 
-1. D4のtwo-phase thresholdとprefix-feedback tuningは、固定decision ruleに従い終了する。
-2. prefix-progressの「早期hit後に正解直前でfreezeする」negative mechanism resultを保持する。
-3. routing-onlyを固定baselineとして、より難しい小規模taskとnon-oracle verifierへ移る。
-4. greedy / top-p / plain Thompsonを含むequal-total-compute比較と、final-action選択率・
-   seed間exact集中度のtelemetryを追加する。
+1. Countdown-D6のTaskAdapter、exact verifier、canonical DAG、compute ledgerを固定する。
+2. exhaustive calibratorでcalibration taskとlocked evaluation taskを分離する。
+3. greedy / top-p / IID Thompson / best-first / routing-onlyをmatched computeで比較する。
+4. arithmeticで設定を凍結し、typed DSL synthesisへ無調整でtransferする。
 
 自然言語reasoningへの一般化や一般的なQMC優位は、まだ主張しません。

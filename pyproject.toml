@@ -12,11 +12,13 @@ dependencies = ["torch>=2.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.9"]
+anthropic = ["anthropic==0.116.0"]
 
 [project.scripts]
 qmc-bmgs-proto = "qmc_bmgs.policy:main"
 qmc-bmgs-benchmark = "qmc_bmgs.benchmarks.role_lock:main"
 qmc-bmgs-countdown = "qmc_bmgs.benchmarks.countdown:main"
+qmc-bmgs-countdown-anthropic-dev = "qmc_bmgs.experiments.countdown_anthropic_dev:main"
 qmc-bmgs-d4-sweep = "qmc_bmgs.experiments.d4_noise_sweep:main"
 qmc-bmgs-channel-ablation = "qmc_bmgs.experiments.channel_ablation:main"
 qmc-bmgs-fixed-verifier = "qmc_bmgs.experiments.fixed_verifier_budget:main"

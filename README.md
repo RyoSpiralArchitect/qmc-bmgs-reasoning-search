@@ -37,7 +37,9 @@ engineering research repoです。
 [credit-assignment capsule](docs/results/credit_assignment_n128.md)、設計原則は
 [engineering north star](docs/engineering_north_star.md)、固定比較の仕様は
 [credit-assignment contract](docs/credit_assignment_contract.md)、次substrateの仕様は
-[Countdown-D6 contract](docs/countdown_benchmark_contract.md) を参照してください。
+[Countdown-D6 contract](docs/countdown_benchmark_contract.md)、最初のprovider接続の境界は
+[Anthropic Countdown development-run contract](docs/countdown_anthropic_dev_contract.md)
+を参照してください。
 
 ## Layout
 
@@ -64,6 +66,8 @@ PYTHONPATH=src python -m qmc_bmgs.experiments.fixed_verifier_budget --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.two_phase_sampler --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.two_phase_validation --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.credit_assignment --self-test
+PYTHONPATH=src python -m qmc_bmgs.anthropic_countdown --self-test
+PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_anthropic_dev --self-test
 python scripts/validate.py
 ```
 
@@ -94,6 +98,46 @@ qmc-bmgs-two-phase --smoke
 qmc-bmgs-two-phase-validation --smoke
 qmc-bmgs-credit-assignment --smoke
 ```
+
+## Anthropic Countdown development runner
+
+これはprovider接続、物理コストguard、固定proposal snapshot、local search、exact
+verification、network-free replayを一本通すためのscratch plumbing canaryです。locked
+benchmarkではなく、4手法の性能差、QMC優位、Anthropicモデルの優位を示す結果には
+使いません。固定仕様と送信範囲は
+[development-run contract](docs/countdown_anthropic_dev_contract.md) にあります。
+
+fake runとself-testにはcredentialもnetworkも不要です。Anthropic SDKを含めて
+editable installする場合は、固定版をoptional dependencyから入れます。
+
+```bash
+python -m pip install -e '.[dev,anthropic]'
+qmc-bmgs-countdown-anthropic-dev --self-test
+qmc-bmgs-countdown-anthropic-dev --run-fake-dev \
+  --output-dir artifacts/work/countdown_anthropic_fake_v1
+qmc-bmgs-countdown-anthropic-dev \
+  --replay artifacts/work/countdown_anthropic_fake_v1
+```
+
+live runは`claude-haiku-4-5-20251001`、Messages API version `2023-06-01`、
+Anthropic SDK `0.116.0`へ固定されています。API keyはsecret managerや一時的な
+session wrapperから、runner子processの`ANTHROPIC_API_KEY`にだけ渡してください。
+keyをCLI引数、shell history、`.env`、repo、artifact、log、永続的なclipboardへ
+保存しないでください。次のコマンドはkeyが安全にprocess environmentへ設定済みで
+あることを前提にし、値を表示しません。出力先には新しい空directoryを使います。
+
+```bash
+test -n "${ANTHROPIC_API_KEY:-}"
+env -u ANTHROPIC_LOG qmc-bmgs-countdown-anthropic-dev \
+  --run-live-dev \
+  --output-dir artifacts/work/countdown_anthropic_live_v1
+env -u ANTHROPIC_API_KEY qmc-bmgs-countdown-anthropic-dev \
+  --replay artifacts/work/countdown_anthropic_live_v1
+```
+
+live canaryは最大64 attempts、USD 0.50のhard capです。replayはcredentialもnetworkも
+使わず、保存済みproposalからsearch recordをbyte単位で再構成します。出力は
+`artifacts/work/`のscratch evidenceのままとし、locked comparisonへ昇格しません。
 
 通常のrun出力は`artifacts/work/`へ保存されます。promoteしたcanonical raw JSONLは
 dated evidenceとしてGitへ含め、各runの`manifest.json`でrecord数・byte数・SHA-256を

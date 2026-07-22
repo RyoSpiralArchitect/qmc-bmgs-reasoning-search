@@ -46,6 +46,7 @@ def main() -> None:
     outside = Path("/tmp")
     for module in (
         "qmc_bmgs.policy",
+        "qmc_bmgs.anthropic_countdown",
         "qmc_bmgs.benchmarks.role_lock",
         "qmc_bmgs.benchmarks.countdown",
         "qmc_bmgs.experiments.d4_noise_sweep",
@@ -54,6 +55,7 @@ def main() -> None:
         "qmc_bmgs.experiments.two_phase_sampler",
         "qmc_bmgs.experiments.two_phase_validation",
         "qmc_bmgs.experiments.credit_assignment",
+        "qmc_bmgs.experiments.countdown_anthropic_dev",
     ):
         _run([sys.executable, "-m", module, "--self-test"], cwd=outside)
     print("repository validation: PASS")

@@ -10,6 +10,8 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+ARTIFACT_ROOT = ROOT / "artifacts"
+SCRATCH_ROOT = ARTIFACT_ROOT / "work"
 
 
 def _reject_constant(value: str) -> None:
@@ -78,7 +80,11 @@ def verify_manifest(path: Path) -> dict[str, Any]:
 
 
 def main() -> None:
-    manifests = sorted((ROOT / "artifacts").rglob("manifest.json"))
+    manifests = sorted(
+        path
+        for path in ARTIFACT_ROOT.rglob("manifest.json")
+        if not path.is_relative_to(SCRATCH_ROOT)
+    )
     if not manifests:
         raise SystemExit("no artifact manifests found")
     verified = [verify_manifest(path) for path in manifests]

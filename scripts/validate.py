@@ -58,6 +58,7 @@ def main() -> None:
         "qmc_bmgs.experiments.credit_assignment",
         "qmc_bmgs.experiments.countdown_anthropic_dev",
         "qmc_bmgs.experiments.countdown_openai_dev",
+        "qmc_bmgs.experiments.countdown_thompson_source_ablation",
     ):
         _run([sys.executable, "-m", module, "--self-test"], cwd=outside)
     print("repository validation: PASS")

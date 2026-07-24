@@ -140,12 +140,14 @@ exact traces; the current IID Thompson method did not. This does not identify a
 cause, but it sharply narrows the next engineering question.
 
 The present Thompson configuration has only eight terminal-return simulations,
-an observation-variance floor of 1.0, and proposal log-probability bonus 0.1.
+uses `posterior_sd = 1 / sqrt(visits + 1)`, and gives proposal probability a
+coefficient of 0.1. Its stored `m2` is not used in selection.
 When no early exact terminal is found, the reverse backup supplies no positive
-signal and posterior noise can dominate useful proposal ordering. At the GPT
-`->6` root, the prior bonus gap between the 0.9999 action and each 0.000045
-action is only about one unit—comparable to the initial unit-scale Thompson
-noise. This is a testable mechanism hypothesis, not a post-hoc conclusion.
+signal and posterior noise can dominate useful proposal ordering. The
+implementation uses `0.1 * exp(prior_logp)`, so at the GPT `->6` root the
+prior-component gap between the 0.9999 action and each 0.000045 action is only
+about `0.099986`, roughly one tenth of the initial unit-scale Thompson noise.
+This is a testable mechanism hypothesis, not a post-hoc conclusion.
 
 ## Next experiment
 
@@ -166,6 +168,11 @@ Use both frozen snapshots with no further provider calls:
 The engineering target is not “make QMC win.” It is to learn whether
 low-discrepancy posterior exploration spends the same budget more reliably
 without destroying an already useful proposal policy.
+
+This source-only comparison was completed with 128 fresh seeds per task and
+snapshot. Sobol improved root coverage but did not improve equal-task exact
+success; see
+[the matched Thompson observation](countdown_thompson_source_n128_20260724.md).
 
 ## Reproduction
 

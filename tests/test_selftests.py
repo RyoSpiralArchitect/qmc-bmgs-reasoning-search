@@ -8,6 +8,7 @@ from torch.quasirandom import SobolEngine
 from qmc_bmgs.anthropic_countdown import (
     _run_self_test as anthropic_countdown_self_test,
 )
+from qmc_bmgs.openai_countdown import _run_self_test as openai_countdown_self_test
 from qmc_bmgs.benchmarks.countdown import _run_self_test as countdown_self_test
 from qmc_bmgs.benchmarks.role_lock import (
     CHANNEL_ABLATION_VARIANTS,
@@ -28,6 +29,9 @@ from qmc_bmgs.experiments.credit_assignment import (
 )
 from qmc_bmgs.experiments.countdown_anthropic_dev import (
     _run_self_test as countdown_anthropic_dev_self_test,
+)
+from qmc_bmgs.experiments.countdown_openai_dev import (
+    _run_self_test as countdown_openai_dev_self_test,
 )
 from qmc_bmgs.experiments.d4_noise_sweep import _self_test as d4_self_test
 from qmc_bmgs.experiments.fixed_verifier_budget import (
@@ -62,6 +66,12 @@ class RepositorySelfTests(unittest.TestCase):
 
     def test_countdown_anthropic_dev_self_test(self) -> None:
         countdown_anthropic_dev_self_test()
+
+    def test_openai_countdown_self_test(self) -> None:
+        openai_countdown_self_test()
+
+    def test_countdown_openai_dev_self_test(self) -> None:
+        countdown_openai_dev_self_test()
 
     def test_d4_self_test(self) -> None:
         d4_self_test()

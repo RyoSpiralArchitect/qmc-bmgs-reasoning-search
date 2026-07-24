@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from qmc_bmgs.anthropic_countdown import (
     ADAPTER_SCHEMA_VERSION,
@@ -204,6 +204,16 @@ def _provider_payload(
     }
 
 
+class ScoreResult(Protocol):
+    scored_actions: Sequence[Any]
+    metadata: Mapping[str, Any]
+
+    @property
+    def recovered(self) -> bool: ...
+
+    def to_dict(self) -> dict[str, Any]: ...
+
+
 class ActionScorer(Protocol):
     model: str
     max_tokens: int
@@ -214,7 +224,24 @@ class ActionScorer(Protocol):
         target: int,
         state: CountdownState,
         legal_actions: Sequence[CountdownAction],
-    ) -> AnthropicScoreResult: ...
+    ) -> ScoreResult: ...
+
+
+class PhysicalLedger(Protocol):
+    attempts: int
+    responses_returned: int
+    successes: int
+    failures: int
+
+    def reserve(self) -> int: ...
+
+    def record_failure(self, error: BaseException, latency_ms: float) -> None: ...
+
+    def record_success(self, result: ScoreResult, latency_ms: float) -> None: ...
+
+    def record_settlement_failure(self, error: BaseException) -> None: ...
+
+    def snapshot(self) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -531,13 +558,16 @@ def _write_acquisition_checkpoint(
 def acquire_snapshot(
     scorer: ActionScorer,
     *,
-    physical_budget: PhysicalProviderBudget | None = None,
+    physical_budget: Any | None = None,
     attempt_journal_path: Path | None = None,
     proposal_journal_path: Path | None = None,
     checkpoint_path: Path | None = None,
+    pinned_model: str = PINNED_MODEL,
+    expected_request_count: int = PHYSICAL_REQUEST_CAP,
+    ledger_factory: Callable[[Any], PhysicalLedger] = PhysicalProviderLedger,
 ) -> tuple[ProposalSnapshot, dict[str, Any]]:
     budget = physical_budget or PhysicalProviderBudget()
-    if scorer.model != PINNED_MODEL and not scorer.model.startswith("fake-"):
+    if scorer.model != pinned_model and not scorer.model.startswith("fake-"):
         raise ValueError("live acquisition requires the pinned model ID")
     if scorer.max_tokens != budget.max_output_tokens_per_request:
         raise ValueError("provider max_tokens must match the physical reservation")
@@ -546,7 +576,7 @@ def acquire_snapshot(
         for task in DEV_TASKS
         for state in _nonterminal_states(task)
     )
-    if len(plan) != PHYSICAL_REQUEST_CAP:
+    if len(plan) != expected_request_count:
         raise AssertionError("development fixture proposal coverage drifted")
     if len(plan) > budget.max_requests or (
         len(plan) * budget.reserve_per_request_usd > budget.max_cost_usd + 1e-12
@@ -554,7 +584,7 @@ def acquire_snapshot(
         raise ValueError(
             "physical provider budget cannot cover the frozen request plan"
         )
-    ledger = PhysicalProviderLedger(budget)
+    ledger = ledger_factory(budget)
     rows: list[ProposalRow] = []
     _write_acquisition_checkpoint(
         checkpoint_path,
@@ -1395,6 +1425,7 @@ def run_search(
     *,
     method: str,
     seed: int,
+    record_schema_version: str = RECORD_SCHEMA_VERSION,
 ) -> dict[str, Any]:
     context = SearchContext(task, snapshot, method, seed)
     if method == "greedy":
@@ -1425,7 +1456,7 @@ def run_search(
             "seed": seed,
             "version": RNG_VERSION,
         },
-        "schema_version": RECORD_SCHEMA_VERSION,
+        "schema_version": record_schema_version,
         "seed": seed,
         "selection_events": context.selection_events,
         "stop_reason": stop_reason,
@@ -1436,17 +1467,49 @@ def run_search(
     return {**payload, "deterministic_digest": canonical_record_digest(payload)}
 
 
-def run_all_searches(snapshot: ProposalSnapshot) -> tuple[dict[str, Any], ...]:
+def run_all_searches(
+    snapshot: ProposalSnapshot,
+    *,
+    record_schema_version: str = RECORD_SCHEMA_VERSION,
+) -> tuple[dict[str, Any], ...]:
     records: list[dict[str, Any]] = []
     for task in DEV_TASKS:
-        records.append(run_search(task, snapshot, method="greedy", seed=0))
-        records.append(run_search(task, snapshot, method="best_first_8", seed=0))
+        records.append(
+            run_search(
+                task,
+                snapshot,
+                method="greedy",
+                seed=0,
+                record_schema_version=record_schema_version,
+            )
+        )
+        records.append(
+            run_search(
+                task,
+                snapshot,
+                method="best_first_8",
+                seed=0,
+                record_schema_version=record_schema_version,
+            )
+        )
         for seed in DEV_SEEDS:
             records.append(
-                run_search(task, snapshot, method="top_p_best_of_8", seed=seed)
+                run_search(
+                    task,
+                    snapshot,
+                    method="top_p_best_of_8",
+                    seed=seed,
+                    record_schema_version=record_schema_version,
+                )
             )
             records.append(
-                run_search(task, snapshot, method="iid_thompson_8", seed=seed)
+                run_search(
+                    task,
+                    snapshot,
+                    method="iid_thompson_8",
+                    seed=seed,
+                    record_schema_version=record_schema_version,
+                )
             )
     return tuple(records)
 
@@ -1780,9 +1843,12 @@ def _validate_acquisition_journals(
 
 
 def _validate_search_record(
-    record: Mapping[str, Any], snapshot: ProposalSnapshot
+    record: Mapping[str, Any],
+    snapshot: ProposalSnapshot,
+    *,
+    record_schema_version: str = RECORD_SCHEMA_VERSION,
 ) -> None:
-    if record.get("schema_version") != RECORD_SCHEMA_VERSION:
+    if record.get("schema_version") != record_schema_version:
         raise AssertionError("unsupported search-record schema")
     if record.get("deterministic_digest") != canonical_record_digest(dict(record)):
         raise AssertionError("search-record digest mismatch")

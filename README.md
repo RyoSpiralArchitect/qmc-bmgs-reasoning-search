@@ -38,7 +38,11 @@ engineering research repoです。
 [engineering north star](docs/engineering_north_star.md)、固定比較の仕様は
 [credit-assignment contract](docs/credit_assignment_contract.md)、次substrateの仕様は
 [Countdown-D6 contract](docs/countdown_benchmark_contract.md)、最初のprovider接続の境界は
-[Anthropic Countdown development-run contract](docs/countdown_anthropic_dev_contract.md)
+[Anthropic Countdown development-run contract](docs/countdown_anthropic_dev_contract.md)、
+対応するGPT-5.6接続の境界は
+[GPT-5.6 Countdown development-run contract](docs/countdown_openai_dev_contract.md)
+、両providerのdevelopment観察は
+[Countdown provider observation](docs/observations/countdown_provider_dev_20260724.md)
 を参照してください。
 
 ## Layout
@@ -68,6 +72,8 @@ PYTHONPATH=src python -m qmc_bmgs.experiments.two_phase_validation --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.credit_assignment --self-test
 PYTHONPATH=src python -m qmc_bmgs.anthropic_countdown --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_anthropic_dev --self-test
+PYTHONPATH=src python -m qmc_bmgs.openai_countdown --self-test
+PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_openai_dev --self-test
 python scripts/validate.py
 ```
 
@@ -138,6 +144,41 @@ env -u ANTHROPIC_API_KEY qmc-bmgs-countdown-anthropic-dev \
 live canaryは最大64 attempts、USD 0.50のhard capです。replayはcredentialもnetworkも
 使わず、保存済みproposalからsearch recordをbyte単位で再構成します。出力は
 `artifacts/work/`のscratch evidenceのままとし、locked comparisonへ昇格しません。
+
+## GPT-5.6 Countdown development runner
+
+GPT-5.6版は同じ2 task・64 state・proposal意味論・4 local search・exact verifierを
+共有し、provider固有のResponses API、token会計、料金、artifact検証だけを分離します。
+固定仕様は
+[GPT-5.6 development-run contract](docs/countdown_openai_dev_contract.md) にあります。
+
+```bash
+python -m pip install -e '.[dev,openai]'
+qmc-bmgs-countdown-openai-dev --self-test
+qmc-bmgs-countdown-openai-dev --run-fake-dev \
+  --output-dir artifacts/work/countdown_openai_fake_v1
+qmc-bmgs-countdown-openai-dev \
+  --replay artifacts/work/countdown_openai_fake_v1
+```
+
+live runは`gpt-5.6-sol`、Responses API、OpenAI SDK `2.45.0`、
+`reasoning.effort=none`へ固定します。keyはrunner processの
+`OPENAI_API_KEY`だけに渡し、CLI、repo、artifact、logへ保存しません。
+
+```bash
+test -n "${OPENAI_API_KEY:-}"
+env -u OPENAI_LOG -u OPENAI_BASE_URL -u OPENAI_CUSTOM_HEADERS \
+  -u OPENAI_ORG_ID -u OPENAI_PROJECT_ID \
+  qmc-bmgs-countdown-openai-dev \
+  --run-live-dev \
+  --output-dir artifacts/work/countdown_openai_live_v1
+env -u OPENAI_API_KEY qmc-bmgs-countdown-openai-dev \
+  --replay artifacts/work/countdown_openai_live_v1
+```
+
+最大64 attempts、4,096 input tokens/request、512 output tokens/requestを
+cache-write最高単価で予約し、USD 3.00をhard capとします。これもscratch plumbing
+evidenceであり、provider/model/search superiorityの根拠にはしません。
 
 通常のrun出力は`artifacts/work/`へ保存されます。promoteしたcanonical raw JSONLは
 dated evidenceとしてGitへ含め、各runの`manifest.json`でrecord数・byte数・SHA-256を

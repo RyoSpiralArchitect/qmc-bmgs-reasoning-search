@@ -13,6 +13,10 @@ QMC-superiority evidence.
   `bb681d22cb50e6509f9b8ddbcd44e03ee1703afa`
 - decision-freeze commit:
   `2869012dce66660291171171143cec1bfe83d909`
+- post-hardening replay implementation commit:
+  `001342dcc2509c5f03f130d3668808377d50aec3`
+- release tag:
+  `countdown-calibration-grid-v1`
 - summary deterministic digest:
   `82542ba2a8a9f9622a0302ecdde132aeeb4f9a452d1983ddfc27630b32e5efac`
 - manifest deterministic digest:

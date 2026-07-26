@@ -50,6 +50,7 @@ engineering research repoです。
 [matched Thompson source-ablation contract](docs/countdown_thompson_source_ablation_contract.md)
 、結果の観察は
 [matched Thompson n=128 observation](docs/observations/countdown_thompson_source_n128_20260724.md)
+[prior/noise calibration preregistration](docs/countdown_calibration_grid_contract.md)
 を参照してください。
 
 ## Layout
@@ -82,6 +83,7 @@ PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_anthropic_dev --self-tes
 PYTHONPATH=src python -m qmc_bmgs.openai_countdown --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_openai_dev --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_source_ablation --self-test
+PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_calibration_grid --self-test
 python scripts/validate.py
 ```
 
@@ -207,6 +209,26 @@ env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
 
 これは2つのdevelopment task上のsampler robustness観察であり、held-out性能や一般的な
 QMC優位を示すものではありません。
+
+## Preregistered prior/noise calibration grid
+
+旧v2を回帰境界として保存したまま、`prior_bonus x posterior_sd_scale`の9設定を
+fresh seed `2048..2175`上で比較します。全設定は同じdual-source bankを共有し、
+IID/QMCのどちらが勝つかではなく、両source・両snapshotでterminal feedbackへ入る
+安定設定だけを事前固定ルールで選びます。
+
+```bash
+env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
+  PYTHONPATH=src python -m \
+  qmc_bmgs.experiments.countdown_calibration_grid \
+  --run \
+  --anthropic-dir artifacts/work/countdown_anthropic_dev_20260722_live_v3 \
+  --openai-dir artifacts/work/countdown_openai_dev_20260724_live_v2 \
+  --output-dir artifacts/work/countdown_calibration_grid_n128_v1
+```
+
+eligibleな設定がなければ、実験は正常完了したうえで
+`NO_STABLE_CALIBRATION_REGION`を返します。閾値を結果後に緩めません。
 
 通常のrun出力は`artifacts/work/`へ保存されます。promoteしたcanonical raw JSONLは
 dated evidenceとしてGitへ含め、各runの`manifest.json`でrecord数・byte数・SHA-256を

@@ -126,6 +126,15 @@ PREREGISTRATION_SCHEMA_VERSION = (
 PREREGISTRATION_FILENAME = "countdown_calibration_grid_v1.json"
 ROOT = Path(__file__).resolve().parents[3]
 PREREGISTRATION_PATH = ROOT / "docs" / "preregistrations" / PREREGISTRATION_FILENAME
+DECISION_FREEZE_PATH = (
+    ROOT
+    / "docs"
+    / "preregistrations"
+    / "countdown_calibration_decision_freeze_v1.json"
+)
+DECISION_FREEZE_DIGEST = (
+    "15de3ff8386d5839ba5e50c53baa0ef861b515f1d29aa985a67a114a7e02a72d"
+)
 
 
 def _float_label(value: float) -> str:
@@ -276,6 +285,25 @@ def _load_and_validate_preregistration(path: Path) -> dict[str, Any]:
     expected = _expected_preregistration()
     if _canonical_json(observed) != _canonical_json(expected):
         raise AssertionError("calibration preregistration drifted")
+    return observed
+
+
+def _load_and_validate_decision_freeze(path: Path) -> dict[str, Any]:
+    observed = _read_json(path)
+    payload = {
+        key: value
+        for key, value in observed.items()
+        if key != "deterministic_digest"
+    }
+    if (
+        observed.get("schema_version")
+        != "qmc-bmgs-countdown-calibration-decision-freeze/v1"
+        or observed.get("deterministic_digest") != _sha256_json(payload)
+        or observed.get("deterministic_digest") != DECISION_FREEZE_DIGEST
+        or observed.get("selected_config") != CalibrationConfig(1.0, 1.0).to_dict()
+        or observed.get("held_out_gate", {}).get("execution_authorized") is not False
+    ):
+        raise AssertionError("calibration decision freeze drifted")
     return observed
 
 
@@ -1409,8 +1437,13 @@ def run_experiment(
 
 def _run_self_test() -> None:
     preregistration = _load_and_validate_preregistration(PREREGISTRATION_PATH)
+    decision_freeze = _load_and_validate_decision_freeze(DECISION_FREEZE_PATH)
     if preregistration["workload"]["records"] != 9216:
         raise AssertionError("calibration preregistered workload drifted")
+    if decision_freeze["status"] != (
+        "CALIBRATION_CONFIG_FROZEN_HELD_OUT_INPUTS_PENDING"
+    ):
+        raise AssertionError("calibration held-out gate drifted")
     snapshot = _fake_snapshot(0)
     task = DEV_TASKS[0]
     seed = 31

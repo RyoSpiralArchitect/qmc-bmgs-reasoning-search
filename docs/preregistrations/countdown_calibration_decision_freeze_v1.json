@@ -1,0 +1,123 @@
+{
+  "algorithm_commit": "bb681d22cb50e6509f9b8ddbcd44e03ee1703afa",
+  "artifact_identity": {
+    "artifact_locator": "artifacts/work/countdown_calibration_grid_n128_v1",
+    "bank_sha256": "385c67b060634791c8228aa0809362064c541be7d094120b5241674779d2d06d",
+    "manifest_deterministic_digest": "49d8a0465c89584f18b4242d329ffc58482453f8f5f6d5b6af87e91041414270",
+    "manifest_sha256": "2def89a9e36ba71590f1692d80e8c8a6ccc4a149e7e8d3e721e95ea2f373a8fc",
+    "summary_deterministic_digest": "82542ba2a8a9f9622a0302ecdde132aeeb4f9a452d1983ddfc27630b32e5efac",
+    "summary_sha256": "9d3907250e6469ed410e7a6b6bad293583717c859561ad16f8d951895173604a"
+  },
+  "claim_boundary": "Frozen development calibration candidate only; not task-transfer, provider-superiority, or QMC-superiority evidence.",
+  "decision": {
+    "decision_rows_digest": "91ec7dd00e7d49cd1dbbbffcc7f4bcd1f45706201ab6674f36416ffdcc714fdd",
+    "decision_rule_version": "stable-both-source-both-provider/v1",
+    "eligible_config_ids": [
+      "prior_0p5__sd_0p5",
+      "prior_1__sd_1"
+    ],
+    "eligibility": {
+      "prior_0p1__sd_0p25": {
+        "mechanism_pass": true,
+        "proposal_preservation_pass": true,
+        "terminal_feedback_entry_pass": false
+      },
+      "prior_0p1__sd_0p5": {
+        "mechanism_pass": true,
+        "proposal_preservation_pass": true,
+        "terminal_feedback_entry_pass": false
+      },
+      "prior_0p1__sd_1": {
+        "mechanism_pass": true,
+        "proposal_preservation_pass": true,
+        "terminal_feedback_entry_pass": false
+      },
+      "prior_0p5__sd_0p25": {
+        "mechanism_pass": false,
+        "proposal_preservation_pass": true,
+        "terminal_feedback_entry_pass": true
+      },
+      "prior_0p5__sd_0p5": {
+        "mechanism_pass": true,
+        "proposal_preservation_pass": true,
+        "terminal_feedback_entry_pass": true
+      },
+      "prior_0p5__sd_1": {
+        "mechanism_pass": true,
+        "proposal_preservation_pass": true,
+        "terminal_feedback_entry_pass": false
+      },
+      "prior_1__sd_0p25": {
+        "mechanism_pass": false,
+        "proposal_preservation_pass": true,
+        "terminal_feedback_entry_pass": false
+      },
+      "prior_1__sd_0p5": {
+        "mechanism_pass": false,
+        "proposal_preservation_pass": true,
+        "terminal_feedback_entry_pass": true
+      },
+      "prior_1__sd_1": {
+        "mechanism_pass": true,
+        "proposal_preservation_pass": true,
+        "terminal_feedback_entry_pass": true
+      }
+    },
+    "selected_config_id": "prior_1__sd_1",
+    "selected_sort_key_ascending": [
+      -0.015625,
+      -0.005859375,
+      -0.015625,
+      0.15625,
+      -0.05647235782503087,
+      2.302585092994046,
+      1.0,
+      1.0
+    ],
+    "signed_source_success_delta_was_optimized": false
+  },
+  "development_inputs": {
+    "proposal_behavior_digests": {
+      "anthropic": "9eaee49f6e100d26100b10b0eb8d9f9ba75f74cb0109d2b25634590117682868",
+      "openai": "529b7dd51458cda3a6899a7b0b406dd8880317b413f39fe0fc08786c4eff8862"
+    },
+    "task_fingerprints": [
+      "e1e2fdaf480a626266300f4d9b583e847065458be604d6b9cff2483e4478b5c6",
+      "a2c80cfde3aaeb372fa8c2628e7f61760370f6184c2ab838368578e4b504ea7d"
+    ]
+  },
+  "deterministic_digest": "15de3ff8386d5839ba5e50c53baa0ef861b515f1d29aa985a67a114a7e02a72d",
+  "held_out_gate": {
+    "execution_authorized": false,
+    "proposal_snapshot_digests": {},
+    "reason": "Held-out task manifest and proposal snapshots are not yet sealed.",
+    "reserved_seed_end_inclusive": 4223,
+    "reserved_seed_start": 4096,
+    "task_manifest_digest": null
+  },
+  "preregistration": {
+    "canonical_digest": "73fd13403c7c51bfe475b58d444a34bb7d7a7d4e562d0ac2bab73692b11bbec8",
+    "path": "docs/preregistrations/countdown_calibration_grid_v1.json",
+    "schema_version": "qmc-bmgs-countdown-calibration-grid-preregistration/v1"
+  },
+  "runtime": {
+    "python_version": "3.13.13",
+    "torch_version": "2.11.0"
+  },
+  "schema_version": "qmc-bmgs-countdown-calibration-decision-freeze/v1",
+  "seed_plan": {
+    "collision_resolutions": 0,
+    "entries": 16384,
+    "max_probe": 0,
+    "seed_end_inclusive": 2175,
+    "seed_map_digest": "1d5e37cd950b87351de27e04cf571e8bb90aad4bfb2400068b2647e82e9e70b0",
+    "seed_start": 2048,
+    "version": "sha256-uint32-linear-probe/v1"
+  },
+  "selected_config": {
+    "config_id": "prior_1__sd_1",
+    "posterior_sd_scale": 1.0,
+    "prior_bonus": 1.0
+  },
+  "status": "CALIBRATION_CONFIG_FROZEN_HELD_OUT_INPUTS_PENDING"
+}

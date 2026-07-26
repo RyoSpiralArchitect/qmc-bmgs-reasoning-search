@@ -50,7 +50,10 @@ engineering research repoです。
 [matched Thompson source-ablation contract](docs/countdown_thompson_source_ablation_contract.md)
 、結果の観察は
 [matched Thompson n=128 observation](docs/observations/countdown_thompson_source_n128_20260724.md)
+、次の校正設計は
 [prior/noise calibration preregistration](docs/countdown_calibration_grid_contract.md)
+、その結果は
+[prior/noise calibration observation](docs/observations/countdown_calibration_grid_n128_20260726.md)
 を参照してください。
 
 ## Layout

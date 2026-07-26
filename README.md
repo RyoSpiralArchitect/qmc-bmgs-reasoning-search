@@ -31,6 +31,9 @@ engineering research repoです。
 - Countdownのmatched source ablation n=128ではSobolがroot discrepancyを約59%下げ、
   root breadthを増やしましたが、equal-task exact successはAnthropicで-1.17pp、
   GPTで-1.95pp。QMC action noiseはpromoteせず、prior/noise calibrationへ進みます。
+- prior/noise gridは`(1,1)`をpreregistered gate-passing candidateとして凍結しましたが、
+  adversarial reviewで安定性・CRN表記・held-out設計を修正。次はselected対baseline、
+  IID対Sobol、simple search baselinesをtask-levelで分離評価します。
 
 結果の短い読み方は [D4 result capsule](docs/results/d4_result.md)、
 [fresh channel-ablation capsule](docs/results/channel_ablation_fresh_n256.md)、
@@ -54,6 +57,12 @@ engineering research repoです。
 [prior/noise calibration preregistration](docs/countdown_calibration_grid_contract.md)
 、その結果は
 [prior/noise calibration observation](docs/observations/countdown_calibration_grid_n128_20260726.md)
+、再現物は
+[calibration release capsule](docs/releases/countdown_calibration_grid_n128_v1.md)
+、fresh-eye監査と新作戦は
+[Countdown adversarial review](docs/reviews/countdown_adversarial_review_20260726.md)
+と
+[Countdown next experiment v2](docs/strategy/countdown_next_experiment_v2.md)
 を参照してください。
 
 ## Layout
@@ -218,7 +227,8 @@ QMC優位を示すものではありません。
 旧v2を回帰境界として保存したまま、`prior_bonus x posterior_sd_scale`の9設定を
 fresh seed `2048..2175`上で比較します。全設定は同じdual-source bankを共有し、
 IID/QMCのどちらが勝つかではなく、両source・両snapshotでterminal feedbackへ入る
-安定設定だけを事前固定ルールで選びます。
+gate-passing candidateを事前固定ルールで選びます。IID/Sobolはmatched
+dual-streamであり、互いにcommon random numbersではありません。
 
 ```bash
 env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
@@ -239,12 +249,12 @@ dated evidenceとしてGitへ含め、各runの`manifest.json`でrecord数・byt
 
 ## Immediate roadmap
 
-1. 凍結Countdown snapshot上で`posterior SD scale x prior bonus`の小さな事前登録gridを
-   回し、coverageをterminal rewardへ変換できる校正領域を探す。
-2. 両source・両provider snapshotでproposal guidanceを保つ1設定をfreezeする。
-3. 未使用Countdown task suiteでtask-levelのIID/QMC比較を行う。
-4. それでもbreadthだけが増える場合にearly-QMC / late-exploitationを診断し、
-   semantic routingとBayesian pruningはその後に分離評価する。
-5. arithmeticで設定を凍結してからtyped DSL synthesisへ無調整でtransferする。
+1. dynamic action dimensionとvisited-state lazy materializationを実装する。
+2. source-multiset-disjoint task suiteとdeterministic proposalを結果前にsealする。
+3. selected `(1,1)`とbaseline `(.1,1)`、IID/Sobol、greedy/best-first/PUCTを
+   fixed verifierとactual legal-action-score budgetで比較する。
+4. taskを独立単位としてcalibration transferとsource effectを分離評価する。
+5. competitiveなbase searchが確認できた後だけsemantic routingとBayesian pruningを
+   一因子ずつ追加する。
 
 自然言語reasoningへの一般化や一般的なQMC優位は、まだ主張しません。

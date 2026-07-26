@@ -1526,16 +1526,51 @@ def _run_self_test() -> None:
         raise AssertionError("calibration config was absent from record identity")
 
 
-def _print_summary(summary: Mapping[str, Any]) -> None:
-    print(
-        _canonical_json(
-            {
-                "decision": summary["decision"],
-                "deterministic_digest": summary["deterministic_digest"],
-                "pairing_gate": summary["pairing_gate"],
-            }
+def _print_summary(
+    summary: Mapping[str, Any],
+    *,
+    replay_provenance: Mapping[str, Any] | None = None,
+) -> None:
+    payload = {
+        "decision": summary["decision"],
+        "deterministic_digest": summary["deterministic_digest"],
+        "pairing_gate": summary["pairing_gate"],
+    }
+    if replay_provenance is not None:
+        payload["replay_provenance"] = dict(replay_provenance)
+    print(_canonical_json(payload))
+
+
+def _replay_with_source_revalidation(
+    *,
+    artifact_dir: Path,
+    anthropic_dir: Path,
+    openai_dir: Path,
+) -> dict[str, Any]:
+    source_dirs = {
+        "anthropic": anthropic_dir,
+        "openai": openai_dir,
+    }
+    with _deny_network():
+        fresh_receipt = _validate_sources_without_mutation(source_dirs)
+        summary = validate_artifact(
+            artifact_dir,
+            require_replay_match=True,
         )
-    )
+        if fresh_receipt != summary["source_validation"]:
+            raise AssertionError(
+                "fresh source validation receipt does not match "
+                "the calibration artifact"
+            )
+    return summary
+
+
+def _replay_search_bytes_only(artifact_dir: Path) -> dict[str, Any]:
+    with _deny_network():
+        return validate_artifact(
+            artifact_dir,
+            require_replay_match=True,
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -1543,6 +1578,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--run", action="store_true")
     mode.add_argument("--replay", type=Path)
+    mode.add_argument("--replay-search-only", type=Path)
     mode.add_argument("--self-test", action="store_true")
     parser.add_argument("--anthropic-dir", type=Path)
     parser.add_argument("--openai-dir", type=Path)
@@ -1554,6 +1590,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         print("countdown calibration grid self-test: PASS")
         return
     if args.replay is not None:
+        if args.anthropic_dir is None or args.openai_dir is None:
+            parser.error(
+                "--replay requires --anthropic-dir and --openai-dir "
+                "for fresh source-artifact revalidation"
+            )
         if any(
             os.environ.get(name)
             for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")
@@ -1561,12 +1602,40 @@ def main(argv: Sequence[str] | None = None) -> None:
             raise RuntimeError(
                 "offline replay requires provider credentials unset"
             )
-        with _deny_network():
-            summary = validate_artifact(
-                args.replay,
-                require_replay_match=True,
+        summary = _replay_with_source_revalidation(
+            artifact_dir=args.replay,
+            anthropic_dir=args.anthropic_dir,
+            openai_dir=args.openai_dir,
+        )
+        _print_summary(
+            summary,
+            replay_provenance={
+                "mode": "search_bytes_and_fresh_source_artifacts",
+                "original_source_artifacts_revalidated": True,
+            },
+        )
+        return
+    if args.replay_search_only is not None:
+        if args.anthropic_dir is not None or args.openai_dir is not None:
+            parser.error(
+                "--replay-search-only does not accept source directories; "
+                "use --replay to revalidate original source artifacts"
             )
-        _print_summary(summary)
+        if any(
+            os.environ.get(name)
+            for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")
+        ):
+            raise RuntimeError(
+                "offline replay requires provider credentials unset"
+            )
+        summary = _replay_search_bytes_only(args.replay_search_only)
+        _print_summary(
+            summary,
+            replay_provenance={
+                "mode": "self_contained_search_bytes_only",
+                "original_source_artifacts_revalidated": False,
+            },
+        )
         return
     if (
         not args.run

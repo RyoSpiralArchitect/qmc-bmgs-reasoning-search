@@ -4,7 +4,7 @@
 
 事前登録した9設定のうち、全gateを通ったのは
 `(prior_bonus, posterior_sd_scale) = (0.5, 0.5)`と`(1.0, 1.0)`の2つだった。
-source-symmetricなlexicographic ruleにより、後者をheld-out用の校正候補として
+preregistered ruleにより、後者をgate-passing development candidateとして
 freezeする。
 
 ただし、これはQMC winnerの選出ではない。凍結候補でも全cell合計は
@@ -24,9 +24,9 @@ IID `74/128`に対してQMC `54/128`だった。確認できたのは、
 
 - `prior_bonus = {0.1, 0.5, 1.0}`;
 - `posterior_sd_scale = {0.25, 0.5, 1.0}`;
-- fresh common-random-number seeds `2048..2175`;
+- fresh matched dual-stream seeds `2048..2175`;
 - 両provider snapshot、両task、matched IID/QMC;
-- validity、eligibility、source-symmetric selection rule;
+- validity、eligibility、preregistered selection rule;
 
 を固定した。
 
@@ -38,9 +38,10 @@ IID `74/128`に対してQMC `54/128`だった。確認できたのは、
 = 4,608 paired IID/QMC blocks
 ```
 
-だった。全設定は同じ256個のdual-source perturbation bankを共有する。provider、
-method、configはbank seed identityに含めない。生成・replay中はcredentialをunsetし、
-socket accessを拒否した。
+だった。全設定は同じ256個のdual-source perturbation bankを共有する。同一sourceの
+乱数はconfig/provider間で再利用される。一方、IIDとSobolはsource固有の別streamで、
+両者の比較はCRNではない。生成・replay中はcredentialをunsetし、socket accessを
+拒否した。
 
 ## Decision result
 
@@ -153,18 +154,31 @@ Selected configでは、QMC-minus-IIDが全provider/task cellで、
 
 と混在した。breadthがterminal rewardへ一貫して変換されたとは言えない。
 
+Post-hoc adversarial auditで再構成した記述的なQMC-minus-IID success intervalは、
+
+| Snapshot | Task | Delta | Descriptive 95% interval |
+|---|---:|---:|---:|
+| Anthropic | `->6` | -0.78pp | -9.06 to +7.50pp |
+| Anthropic | `->10` | +1.56pp | -2.19 to +5.32pp |
+| GPT-5.6 | `->6` | -15.63pp | -27.42 to -3.83pp |
+| GPT-5.6 | `->10` | +1.56pp | -2.19 to +5.32pp |
+
+だった。これはfixed-task内のsampler intervalであり、task-transfer intervalや
+multiplicity-corrected promotion testではない。
+
 ## Engineering decision
 
-1. `(prior_bonus, posterior_sd_scale) = (1,1)`をheld-out用の校正候補として
-   変更せずfreezeする。
+1. `(prior_bonus, posterior_sd_scale) = (1,1)`をgate-passing development
+   candidateとして変更せず保存する。
 2. これはQMC winnerではなく、両sourceがfeedbackへ入りQMC mechanismも保った
    development calibrationである。
-3. held-out inputを結果非依存にsealできるまで、held-out executionは開始しない。
+3. selected-only held-outはcalibration transferを測れないため実行しない。candidate
+   とfrozen baseline、IIDとSobol、simple search baselinesを新規preregisterする。
 4. 次の診断ではraw 2軸を`kappa`と共通振幅`tau`へ再パラメータ化し、
    `pre_first_positive_trajectory_digest`、post-feedback exact-terminal reuse、
    successful-terminal diversityを記録する。
-5. held-outでentryが再現した後にだけ、`kappa=1, tau=1`で開始し、
-   first positive後だけ`tau`を下げるone-factor phase-switchを試す。
+5. `(1,1)`からfirst positive後に`(.5,.5)`へ切り替える案は、固定`(.5,.5)`と
+   behaviorally identicalなので実行しない。
 6. semantic routingとBayesian pruningは、このentry/exploitation分離を確認するまで
    追加しない。
 
@@ -187,10 +201,13 @@ artifacts/work/countdown_calibration_grid_n128_v1
 - seed-map digest:
   `1d5e37cd950b87351de27e04cf571e8bb90aad4bfb2400068b2647e82e9e70b0`
 
-Full replay regenerated all nine canonical JSONL shards byte-for-byte and
-recomputed the summary and decision. The artifact contains 9,216 records,
-4,608 paired blocks, no missing/duplicate record, fixed compute closure,
-zero credential/network/provider calls, and 256 shared bank records.
+Search-byte replay regenerated all nine canonical JSONL shards byte-for-byte
+and recomputed the summary and decision. Artifact creation additionally
+validated both original provider artifacts on scratch copies. The corrected
+full replay mode now repeats that source validation; search-only replay is
+explicitly labeled. The artifact contains 9,216 records, 4,608 paired blocks,
+no missing/duplicate record, fixed compute closure, zero
+credential/network/provider calls, and 256 shared bank records.
 
 ここでfixedなのはtrajectory、verifier、posterior update、padded-bank axesである。
 実際のlegal-action score workはtrajectory依存でrunあたり`142..333`、paired
@@ -204,3 +221,6 @@ held-out task manifestとproposal snapshotは未封印なので、freeze record�
 The result remains conditional on two frozen tasks, two frozen proposal
 snapshots, binary exact reward, and eight simulations. It is not provider
 superiority, task-transfer, causal, or general QMC-superiority evidence.
+
+See `docs/reviews/countdown_adversarial_review_20260726.md` for the complete
+fresh-eye review and stateful correction record.

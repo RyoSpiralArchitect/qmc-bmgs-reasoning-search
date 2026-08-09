@@ -232,10 +232,11 @@ order:
 
 | profile | proposal states | proposal scores | legal scores | coordinates | edges | transitions | verifiers |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `score256` | 86 | 257 | 256 | 257 | 86 | 86 | 18 |
+| `score256` | 87 | 317 | 256 | 316 | 86 | 86 | 18 |
 | `verifier8` | 41 | 1121 | 1121 | 1121 | 41 | 41 | 8 |
 
-These guards are outcome-blind structural bounds plus one unit of headroom.
+These guards are outcome-blind structural bounds with explicit headroom for
+the next atomic action vector.
 For a nonterminal Countdown state the legal-action count is at least three and
 at most `4*C(n,2)`. Across state widths six through two the maxima are
 `60,40,24,12,4`: at most 140 scores and five transitions per trajectory.
@@ -245,6 +246,14 @@ transitions. The width-two beam completes within 220 scores and ten retained
 edges. A canary cell is budget-invalid if a non-primary guard rejects work or
 finishes at exact exhaustion; locked evaluation may begin only if every cell
 retains positive non-primary headroom.
+
+The score256 primary and Thompson coordinates are charged in the same atomic
+selection receipt. The coordinate guard therefore admits the primary limit
+plus a full maximum-width next vector (`256 + 60 = 316`). Proposal scores add
+one strict unit (`317`), while proposal-state evaluations admit 85 accepted
+selections, one next miss, and one strict unit (`87`). The earlier version-one
+`257` guards were superseded before any sealed canary outcome after a
+source-disjoint non-canary fixture reproduced coordinate co-blocking.
 
 Each method must stop before overshooting its profile's stopping axis. Before
 starting another `verifier8` trajectory, the runner preflights that one verifier

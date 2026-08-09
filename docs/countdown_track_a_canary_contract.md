@@ -16,7 +16,7 @@ and an IID-versus-Sobol effect remain decisions for the separately locked
 ## Sealed bundle
 
 The canonical bundle is
-`docs/preregistrations/countdown_track_a_canary_v1/`. It contains:
+`docs/preregistrations/countdown_track_a_canary_v2/`. It contains:
 
 - `exclusions.json`: the two historical development tasks and their tracked
   provenance;
@@ -36,9 +36,19 @@ drift, schema drift, and a regenerated payload that differs from the tracked
 bytes. Creation uses a sibling temporary directory and refuses to overwrite an
 existing destination.
 
-The version-one aggregate seal digest is
-`6d3d6249141bc74e827ca0fcdf860656e5f0885d043607b80b5d9919edc30b78`.
+The version-two aggregate seal digest is
+`5799c9f17686f064b7c50ee741d79bfbb14a4d61b9048672068a586b258fd437`.
 This identifies preregistration bytes only; it is not a search result.
+
+Version one remains byte-for-byte under
+`docs/preregistrations/countdown_track_a_canary_v1/`, with seal digest
+`6d3d6249141bc74e827ca0fcdf860656e5f0885d043607b80b5d9919edc30b78`.
+It was superseded before any sealed canary search outcome was opened. A
+source-disjoint non-canary D6 fixture showed that its score256 coordinate
+guard could reject the same atomic action-vector charge as the legal-score
+primary axis. Version two changes only the outcome-blind score256 guard
+envelope and the resulting identities; tasks, proposals, methods, seeds,
+analysis rules, and the 936-cell scope are unchanged.
 
 ## Task cohort
 
@@ -110,7 +120,7 @@ runtime boundary.
 
 The tracked bundle is deliberately an exact-runtime execution qualification,
 not a claim that every environment admitted by the library's broad package
-requirements will regenerate identical bytes. Version one binds CPython
+requirements will regenerate identical bytes. Version two binds CPython
 3.13.13, arm64, Torch 2.11.0, and the recorded generator conformance digests.
 Before any canary cell is opened, the future runner must pass both a portable
 sealed-byte/schema/provenance audit and a separate live exact-runtime
@@ -144,7 +154,7 @@ The two profiles have separate primary axes:
 
 | profile | proposal states | proposal scores | legal scores | coordinates | edges | transitions | verifiers |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `score256` | 86 | 257 | **256** | 257 | 86 | 86 | 18 |
+| `score256` | 87 | 317 | **256** | 316 | 86 | 86 | 18 |
 | `verifier8` | 41 | 1121 | 1121 | 1121 | 41 | 41 | **8** |
 
 For a state with `n` values, at least three actions are legal and at most
@@ -153,9 +163,17 @@ For a state with `n` values, at least three actions are legal and at most
 scores and exactly five transitions. Eight trajectories use at most 1120
 scores and 40 transitions. Under score256, an ordinary method can accept at
 most 85 selections and finish at most 17 trajectories. Beam width two
-completes within 220 scores and ten retained edges. Every non-primary guard is
-the appropriate structural maximum plus one, so a valid cell retains positive
-headroom rather than ending at ambiguous exact exhaustion.
+completes within 220 scores and ten retained edges.
+
+An ordinary search step charges the complete action vector atomically. When a
+next vector of up to 60 actions exceeds the 256-score primary limit, the
+coordinate guard must still admit that whole attempted vector. Its limit is
+therefore `256 + 60 = 316`, not `256 + 1`. Proposal scores receive one further
+unit of strict headroom (`317`), and proposal-state evaluations receive the
+85-selection structural maximum, one possible next miss, and one strict unit
+(`87`). These guards do not authorize additional accepted legal-score work;
+they make the non-primary envelope demonstrably nonbinding at the primary
+stop.
 
 ## Canary execution gate
 

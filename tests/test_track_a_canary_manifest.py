@@ -393,6 +393,25 @@ class TrackACanaryManifestTests(unittest.TestCase):
         ):
             qualify_track_a_canary_runtime()
 
+        perturbations_module._runtime_conformance_digest.cache_clear()
+        with patch.object(
+            perturbations_module,
+            "_compute_runtime_conformance_digest",
+            return_value="0" * 64,
+        ):
+            poisoned = manifest_module.perturbation_runtime_metadata("iid")
+        self.assertEqual(poisoned["runtime_conformance_digest"], "0" * 64)
+        refreshed = manifest_module.perturbation_runtime_metadata(
+            "iid",
+            refresh_conformance=True,
+        )
+        subsequent = manifest_module.perturbation_runtime_metadata("iid")
+        self.assertEqual(
+            subsequent["runtime_conformance_digest"],
+            refreshed["runtime_conformance_digest"],
+        )
+        self.assertNotEqual(refreshed["runtime_conformance_digest"], "0" * 64)
+
     def test_runtime_qualification_recomputes_perturbation_conformance(self) -> None:
         manifest_module.perturbation_runtime_metadata("iid")
         with (

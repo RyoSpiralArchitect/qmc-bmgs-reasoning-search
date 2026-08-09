@@ -290,7 +290,8 @@ generator conformance digestへ固定している。一般的なpackage install�
 実行前にportableなartifact監査とlive exact-runtime qualificationの両方を要求する。
 runtime不一致は失敗rowではなく`NOT_RUN`として扱う。
 qualifier単体は実行を認可しない。次runnerがverified bundle、fresh qualifier、cleanな
-`implementation_base` revisionを同一preflight内で結合して初めてcellを開ける。
+runner/search build digestを同一preflight内で結合し、`implementation_base`を祖先として
+検証して初めてcellを開ける。PR3 revisionは将来runnerのHEAD要件ではない。
 
 ```bash
 qmc-bmgs-countdown-track-a-canary-manifest --qualify-runtime

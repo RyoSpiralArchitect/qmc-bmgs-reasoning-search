@@ -122,6 +122,12 @@ def _runtime_metadata(
         if resolved_source == "iid"
         else SOBOL_GENERATOR_VERSION
     )
+    if refresh_conformance:
+        # Qualification is a sequential pre-run boundary. Clear every source
+        # so a poisoned digest cannot survive into later run identities, then
+        # repopulate this source with freshly observed behavior.
+        _runtime_conformance_digest.cache_clear()
+    conformance_digest = _runtime_conformance_digest(resolved_source)
     metadata = {
         "architecture": platform.machine(),
         "byteorder": sys.byteorder,
@@ -134,11 +140,7 @@ def _runtime_metadata(
             "version": NORMAL_TRANSFORM_VERSION,
         },
         "python_version": platform.python_version(),
-        "runtime_conformance_digest": (
-            _compute_runtime_conformance_digest(resolved_source)
-            if refresh_conformance
-            else _runtime_conformance_digest(resolved_source)
-        ),
+        "runtime_conformance_digest": conformance_digest,
         "source": resolved_source,
         "torch_git_version": getattr(torch.version, "git_version", None),
         "torch_version": torch.__version__,

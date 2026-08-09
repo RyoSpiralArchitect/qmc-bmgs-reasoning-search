@@ -11,10 +11,12 @@ from importlib.resources import files as resource_files
 from pathlib import Path
 from unittest.mock import patch
 
+from qmc_bmgs.benchmarks.countdown import CountdownTask
 from qmc_bmgs.experiments.countdown_track_a_canary_manifest import (
     BUNDLE_FILENAMES,
     EXPECTED_CELL_COUNT,
     IMPLEMENTATION_BASE,
+    SUPERSEDED_BUNDLE,
     CanaryManifestError,
     build_track_a_canary_payloads,
     frozen_track_a_canary_runtime_bindings,
@@ -24,7 +26,14 @@ from qmc_bmgs.experiments.countdown_track_a_canary_manifest import (
     write_track_a_canary_bundle,
 )
 from qmc_bmgs.experiments import countdown_track_a_canary_manifest as manifest_module
+from qmc_bmgs.substrate.budget import TrackAWorkBudget
+from qmc_bmgs.substrate.countdown_search import (
+    TrackABudgetProfile,
+    TrackAMethodSpec,
+    run_countdown_track_a_search,
+)
 from qmc_bmgs.substrate import perturbations as perturbations_module
+from qmc_bmgs.substrate.proposals import TrackAProposalSpec
 from qmc_bmgs.substrate.trace import canonical_json, sha256_json
 
 
@@ -190,10 +199,10 @@ class TrackACanaryManifestTests(unittest.TestCase):
         self.assertEqual(
             profiles["score256"]["spec"]["budget"],
             {
-                "proposal_state_evaluations": 86,
-                "proposal_action_scores": 257,
+                "proposal_state_evaluations": 87,
+                "proposal_action_scores": 317,
                 "legal_action_scores": 256,
-                "generated_perturbation_coordinates": 257,
+                "generated_perturbation_coordinates": 316,
                 "edge_selections": 86,
                 "transitions": 86,
                 "verifier_calls": 18,
@@ -212,10 +221,133 @@ class TrackACanaryManifestTests(unittest.TestCase):
             },
         )
         proof = budgets["structural_guard_proof"]
+        self.assertEqual(proof["version"], "countdown-d6-atomic-guard-upper-bound/v2")
+        self.assertEqual(proof["score256_atomic_next_selection_max_action_count"], 60)
         self.assertEqual(proof["score256_max_selection_steps"], 85)
         self.assertEqual(proof["score256_max_complete_terminal_verifications"], 17)
         self.assertEqual(proof["verifier8_max_legal_action_scores"], 1120)
         self.assertEqual(proof["strict_guard_slack"], 1)
+
+    def test_v2_explicitly_supersedes_the_untouched_v1_seal(self) -> None:
+        supersedes = self.payloads["preregistration.json"]["supersedes"]
+        self.assertEqual(
+            supersedes,
+            {
+                **SUPERSEDED_BUNDLE,
+                "reason": (
+                    "The v1 score256 coordinate and proposal guards could "
+                    "co-block the same atomic action-vector charge as the "
+                    "legal-action primary axis. A source-disjoint non-canary "
+                    "D6 fixture reproduced the failure before any sealed "
+                    "canary search outcome was opened."
+                ),
+                "replacement_scope": (
+                    "outcome-blind guard correction only; tasks, proposals, "
+                    "methods, seeds, analysis rules, and cell count are unchanged"
+                ),
+            },
+        )
+        legacy_dir = (
+            Path(__file__).resolve().parents[1]
+            / "docs/preregistrations/countdown_track_a_canary_v1"
+        )
+        self.assertEqual(
+            {path.name for path in legacy_dir.iterdir()},
+            set(BUNDLE_FILENAMES),
+        )
+        raw = (legacy_dir / "seal.json").read_bytes()
+        self.assertEqual(
+            hashlib.sha256(raw).hexdigest(),
+            SUPERSEDED_BUNDLE["seal_file_sha256"],
+        )
+        legacy_seal = json.loads(raw)
+        self.assertEqual(
+            legacy_seal["deterministic_digest"],
+            SUPERSEDED_BUNDLE["seal_digest"],
+        )
+        for filename, receipt in legacy_seal["component_files"].items():
+            component_raw = (legacy_dir / filename).read_bytes()
+            component = json.loads(component_raw)
+            self.assertEqual(len(component_raw), receipt["byte_count"])
+            self.assertEqual(hashlib.sha256(component_raw).hexdigest(), receipt["sha256"])
+            self.assertEqual(
+                component["deterministic_digest"],
+                receipt["deterministic_digest"],
+            )
+
+    def test_noncanary_fixture_reproduces_v1_coblock_and_v2_primary_stop(
+        self,
+    ) -> None:
+        task = CountdownTask((1, 2, 3, 4, 5, 6), target=720)
+        canary_ids = {
+            row["task_fingerprint"]
+            for row in self.payloads["tasks.json"]["tasks"]
+        }
+        self.assertNotIn(task.task_fingerprint, canary_ids)
+        proposal = TrackAProposalSpec("greedy_rollout_target_error/v1")
+        method = TrackAMethodSpec.candidate_thompson("iid")
+
+        legacy = TrackABudgetProfile(
+            profile_id="score256-v1-reproducer",
+            primary_axis="legal_action_scores",
+            budget=TrackAWorkBudget(
+                proposal_state_evaluations=86,
+                proposal_action_scores=257,
+                legal_action_scores=256,
+                generated_perturbation_coordinates=257,
+                edge_selections=86,
+                transitions=86,
+                verifier_calls=18,
+            ),
+        )
+        legacy_result = run_countdown_track_a_search(
+            task,
+            proposal=proposal,
+            method=method,
+            budget_profile=legacy,
+            exploration_seed=7168,
+        )
+        self.assertFalse(legacy_result.summary["budget_valid"])
+        self.assertEqual(
+            legacy_result.summary["stop_blocked_axes"],
+            ["legal_action_scores", "generated_perturbation_coordinates"],
+        )
+        self.assertEqual(
+            hashlib.sha256(legacy_result.canonical_bytes).hexdigest(),
+            "14de780153b4f50e16baf09c949904773a4ae1ed76f4c241a3a9d05b24b59094",
+        )
+
+        score256 = next(
+            row["spec"]
+            for row in self.payloads["budgets.json"]["profiles"]
+            if row["spec"]["profile_id"] == "score256"
+        )
+        corrected = TrackABudgetProfile(
+            profile_id=score256["profile_id"],
+            primary_axis=score256["primary_axis"],
+            budget=TrackAWorkBudget(**score256["budget"]),
+            schema_version=score256["schema_version"],
+        )
+        corrected_result = run_countdown_track_a_search(
+            task,
+            proposal=proposal,
+            method=method,
+            budget_profile=corrected,
+            exploration_seed=7168,
+        )
+        self.assertTrue(corrected_result.summary["budget_valid"])
+        self.assertEqual(
+            corrected_result.summary["stop_blocked_axes"],
+            ["legal_action_scores"],
+        )
+        self.assertEqual(
+            corrected_result.summary["stop_reason"],
+            "primary_budget_blocked",
+        )
+        self.assertEqual(
+            hashlib.sha256(corrected_result.canonical_bytes).hexdigest(),
+            "6df057f51423cfcf99c5b852308613bfb05ab47f107df1f5caf84461e567b0f6",
+        )
 
     def test_analysis_and_canary_gates_are_frozen_without_canary_statistics(
         self,
@@ -683,7 +815,7 @@ class TrackACanaryManifestTests(unittest.TestCase):
     def test_tracked_bundle_is_exactly_regenerable(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
         tracked = repository_root / (
-            "docs/preregistrations/countdown_track_a_canary_v1"
+            "docs/preregistrations/countdown_track_a_canary_v2"
         )
         verified = verify_track_a_canary_bundle(
             tracked,
@@ -692,7 +824,7 @@ class TrackACanaryManifestTests(unittest.TestCase):
         self.assertEqual(len(verified.cells), EXPECTED_CELL_COUNT)
         self.assertEqual(
             verified.seal_digest,
-            "6d3d6249141bc74e827ca0fcdf860656e5f0885d043607b80b5d9919edc30b78",
+            "5799c9f17686f064b7c50ee741d79bfbb14a4d61b9048672068a586b258fd437",
         )
 
     def test_verified_payload_property_is_defensive(self) -> None:

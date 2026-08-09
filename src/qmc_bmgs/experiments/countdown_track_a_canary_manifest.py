@@ -45,7 +45,17 @@ from qmc_bmgs.substrate.trace import (
 )
 
 
-BUNDLE_ID = "countdown_track_a_canary_12_seed_26072601/v1"
+BUNDLE_ID = "countdown_track_a_canary_12_seed_26072601/v2"
+SUPERSEDED_BUNDLE = {
+    "bundle_id": "countdown_track_a_canary_12_seed_26072601/v1",
+    "seal_digest": (
+        "6d3d6249141bc74e827ca0fcdf860656e5f0885d043607b80b5d9919edc30b78"
+    ),
+    "seal_file_sha256": (
+        "03d44071623fad116bb67a2eb8512dfb1e3b53dadb89f048914b6179e023f28f"
+    ),
+    "status": "SUPERSEDED_BEFORE_ANY_CANARY_SEARCH_OUTCOME",
+}
 EXCLUSION_SCHEMA_VERSION = "qmc-bmgs-countdown-track-a-exclusion-set/v1"
 TASK_MANIFEST_SCHEMA_VERSION = "qmc-bmgs-countdown-track-a-task-manifest/v1"
 PROPOSAL_MANIFEST_SCHEMA_VERSION = (
@@ -496,10 +506,10 @@ def _budget_profiles() -> tuple[TrackABudgetProfile, TrackABudgetProfile]:
         profile_id="score256",
         primary_axis="legal_action_scores",
         budget=TrackAWorkBudget(
-            proposal_state_evaluations=86,
-            proposal_action_scores=257,
+            proposal_state_evaluations=87,
+            proposal_action_scores=317,
             legal_action_scores=256,
-            generated_perturbation_coordinates=257,
+            generated_perturbation_coordinates=316,
             edge_selections=86,
             transitions=86,
             verifier_calls=18,
@@ -547,12 +557,23 @@ def _budget_manifest() -> dict[str, Any]:
                     "6": 60,
                 },
                 "minimum_legal_actions_per_nonterminal_state": 3,
+                "score256_atomic_next_selection_max_action_count": 60,
+                "score256_generated_coordinate_guard": (
+                    "legal_action_scores_limit + max_next_action_count = 316"
+                ),
                 "score256_max_complete_terminal_verifications": 17,
                 "score256_max_selection_steps": 85,
+                "score256_proposal_action_guard": (
+                    "legal_action_scores_limit + max_next_action_count + "
+                    "strict_slack = 317"
+                ),
+                "score256_proposal_state_guard": (
+                    "max_selection_steps + one_next_miss + strict_slack = 87"
+                ),
                 "strict_guard_slack": 1,
                 "verifier8_max_legal_action_scores": 1120,
                 "verifier8_max_selection_steps": 40,
-                "version": "countdown-d6-structural-upper-bound/v1",
+                "version": "countdown-d6-atomic-guard-upper-bound/v2",
             },
             "telemetry_only": {
                 "actual_rss": True,
@@ -1348,6 +1369,20 @@ def _preregistration_manifest(
             },
             "schema_version": PREREGISTRATION_SCHEMA_VERSION,
             "sealed_before_search_outcomes": True,
+            "supersedes": {
+                **SUPERSEDED_BUNDLE,
+                "reason": (
+                    "The v1 score256 coordinate and proposal guards could "
+                    "co-block the same atomic action-vector charge as the "
+                    "legal-action primary axis. A source-disjoint non-canary "
+                    "D6 fixture reproduced the failure before any sealed "
+                    "canary search outcome was opened."
+                ),
+                "replacement_scope": (
+                    "outcome-blind guard correction only; tasks, proposals, "
+                    "methods, seeds, analysis rules, and cell count are unchanged"
+                ),
+            },
         }
     )
 

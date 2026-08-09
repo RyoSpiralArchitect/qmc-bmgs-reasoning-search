@@ -271,12 +271,12 @@ seal済みで、次で独立再生成できる。
 
 ```bash
 qmc-bmgs-countdown-track-a-canary-manifest \
-  --verify docs/preregistrations/countdown_track_a_canary_v1 \
+  --verify docs/preregistrations/countdown_track_a_canary_v2 \
   --repository-root .
 ```
 
 seal digestは
-`6d3d6249141bc74e827ca0fcdf860656e5f0885d043607b80b5d9919edc30b78`。
+`5799c9f17686f064b7c50ee741d79bfbb14a4d61b9048672068a586b258fd437`。
 これはpreregistrationの同一性であり、canary性能結果ではない。契約は
 [`docs/countdown_track_a_substrate_contract.md`](docs/countdown_track_a_substrate_contract.md)
 と
@@ -292,6 +292,12 @@ runtime不一致は失敗rowではなく`NOT_RUN`として扱う。
 qualifier単体は実行を認可しない。次runnerがverified bundle、fresh qualifier、cleanな
 runner/search build digestを同一preflight内で結合し、`implementation_base`を祖先として
 検証して初めてcellを開ける。PR3 revisionは将来runnerのHEAD要件ではない。
+
+Version oneのsealは履歴として保持しているが、atomic selectionの次vectorが
+legal-score primaryとcoordinate guardを同時にblockし得ることを非canary fixtureで
+実行前に確認したため、outcome-blindなversion twoへsupersedeした。Version twoは
+score256のnon-primary envelopeだけを修正し、12 tasks、methods、seeds、analysis rules、
+936-cell scopeは変えていない。
 
 ```bash
 qmc-bmgs-countdown-track-a-canary-manifest --qualify-runtime

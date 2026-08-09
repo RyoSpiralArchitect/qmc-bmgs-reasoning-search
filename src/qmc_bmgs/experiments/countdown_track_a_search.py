@@ -55,6 +55,14 @@ def _variants() -> tuple[_Variant, ...]:
             "thompson_candidate_sobol",
             TrackAMethodSpec.candidate_thompson("sobol"),
         ),
+        _Variant(
+            "thompson_dimension_normalized_iid",
+            TrackAMethodSpec.dimension_normalized_thompson("iid"),
+        ),
+        _Variant(
+            "thompson_dimension_normalized_sobol",
+            TrackAMethodSpec.dimension_normalized_thompson("sobol"),
+        ),
     )
 
 
@@ -182,7 +190,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--self-test",
         action="store_true",
-        help="run seven local methods through two-stage byte replay",
+        help="run nine local methods through two-stage byte replay",
     )
     args = parser.parse_args(argv)
     if not args.self_test:

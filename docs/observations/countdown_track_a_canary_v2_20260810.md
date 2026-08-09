@@ -55,6 +55,11 @@ and 936-line `records.jsonl`.  Their file SHA-256 values are:
 | `records.jsonl` | `c24a8797fe562dc7b748e10e692f7a208bedf945ff453ece3bca6333e1534dfe` |
 | analyzer summary JSON | `c7052432e61affc695b5d2992f055f4c4053543bfb33024bc83e7ff0ae5803db` |
 
+The compact [tracked result capsule](../results/countdown_track_a_canary_v2/)
+contains byte-identical copies of `commit.json`, `manifest.json`, and
+`summary.json`.  The 166,835,073-byte raw `records.jsonl` remains in the
+release asset and is bound by the tracked manifest's ordered record digests.
+
 The independent analyzer regenerated proposal rows, legal-action order,
 perturbation material, and every search result before emitting the summary.
 All 936 records had `provider_calls=0`, `budget_valid=true`, and both replay

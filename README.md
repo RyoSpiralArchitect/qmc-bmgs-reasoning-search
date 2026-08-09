@@ -359,4 +359,25 @@ proposal-rank診断は
 [`docs/observations/countdown_track_a_canary_v2_20260810.md`](docs/observations/countdown_track_a_canary_v2_20260810.md)
 に保存した。
 
+この診断を結果後に組み替えないため、historical 2 + canary 12をauthorityにして、
+まだ未実行のlocked 128（seed `26072602`）を先に予約し、さらにtask fingerprintと
+source-multiset fingerprintの両方で分離したdiagnostic 12（seed `26081001`）をsealした。
+score256、IIDのみ、v1/v2/v3/v4 + greedy/beam/PUCT、oracle-greedy controlの240 cellsで、
+search outcome、proposal row、perturbation pointはまだ一件も生成していない。
+
+```bash
+PYTHONPATH=src python -m \
+  qmc_bmgs.experiments.countdown_thompson_diagnostic_manifest \
+  --verify docs/preregistrations/countdown_thompson_diagnostic_v1 \
+  --repository-root .
+```
+
+seal digestは
+`cc633b9ee3ffda6a9115af07f0cc047a1bd8cd7af5e11d07f6ddb0faa4e5f975`。
+これはtask予約、240-cell schedule、分析順序とengineering gateの同一性だけを証明する。
+契約は
+[`docs/countdown_thompson_diagnostic_contract.md`](docs/countdown_thompson_diagnostic_contract.md)
+に固定した。v2/v3/v4のどれもbase searchとしてgreedy/beamを上回れなければ、locked-128は
+開かず`STOP_REPAIR_NO_LOCKED_128_RUN`とする。
+
 自然言語reasoningへの一般化や一般的なQMC優位は、まだ主張しません。

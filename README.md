@@ -98,6 +98,8 @@ PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_source_ablation
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_calibration_grid --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_track_a_substrate --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_track_a_search --self-test
+PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_track_a_canary_runner --self-test
+PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_track_a_canary_analysis --self-test
 python scripts/validate.py
 ```
 
@@ -130,6 +132,8 @@ qmc-bmgs-credit-assignment --smoke
 qmc-bmgs-countdown-track-a-substrate --self-test
 qmc-bmgs-countdown-track-a-search --self-test
 qmc-bmgs-countdown-track-a-canary-manifest --self-test
+qmc-bmgs-countdown-track-a-canary-runner --self-test
+qmc-bmgs-countdown-track-a-canary-analysis --self-test
 ```
 
 ## Anthropic Countdown development runner
@@ -303,14 +307,28 @@ score256のnon-primary envelopeだけを修正し、12 tasks、methods、seeds�
 qmc-bmgs-countdown-track-a-canary-manifest --qualify-runtime
 ```
 
+runnerと独立analyzerのself-testは非canary fixtureだけを使う。sealed canaryを開く手順は
+runner実装PRのmerge、clean checkoutからrepo内の将来tracked pathへの`--plan`、生成した
+authorizationだけを含む別PRのreview/merge、review済みdigestとそのPR merge revisionを
+明示した1回の`--run`、外部authorizationを再度渡すindependent analysis、の順を変えない。
+source closureは4つの実行済みpackage initializerを含む13ファイルをrunnerがattestし、
+独立analyzerはhistorical runner leafを除く現在の12 imported modulesを再検証する。
+`--plan`は実行ではなく、authorization candidateを作るだけである。完全なコマンド、
+`NOT_RUN`/`INVALID`境界、durable attempt reservationによるauthorization消費、
+copy後artifactの分析条件は
+[`docs/countdown_track_a_canary_execution_contract.md`](docs/countdown_track_a_canary_execution_contract.md)
+に固定した。
+
 1. source-multiset-disjointな12-task canaryと936-cell scheduleはGit上でseal済み。
-2. 次にmanifest-driven runnerとfail-closed analyzerを実装してから実行し、全cellで二段階
-   replay、budget closure、non-primary guardの正の余白を要求する。deterministic
-   methodを4 seedへ水増ししない。
-3. canary gate通過後だけ128-task locked evaluationをsealして実行する。
-4. taskを独立単位としてcalibration transfer、source effect、simple-baseline差を分離
+2. runner/analyzerをmergeした後、別authorization PRをreview/mergeする。merge前には
+   sealed outcomeを一件も開かない。
+3. review済みauthorization digestとauthorization PR merge revisionでexact 936-cell
+   runを一度だけ実行し、全cellのbudget closure、provider call zero、二段階replayを
+   独立analyzerで検証する。durable attempt marker生成後は同じauthorizationでretryしない。
+4. canary gate通過後だけ128-task locked evaluationをsealして実行する。
+5. taskを独立単位としてcalibration transfer、source effect、simple-baseline差を分離
    評価する。
-5. competitiveなbase searchが確認できた後だけsemantic routingとBayesian pruningを
+6. competitiveなbase searchが確認できた後だけsemantic routingとBayesian pruningを
    一因子ずつ追加する。
 
 自然言語reasoningへの一般化や一般的なQMC優位は、まだ主張しません。

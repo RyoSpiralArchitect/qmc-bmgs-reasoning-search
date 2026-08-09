@@ -97,6 +97,7 @@ PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_openai_dev --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_source_ablation --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_calibration_grid --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_track_a_substrate --self-test
+PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_track_a_search --self-test
 python scripts/validate.py
 ```
 
@@ -127,6 +128,7 @@ qmc-bmgs-two-phase --smoke
 qmc-bmgs-two-phase-validation --smoke
 qmc-bmgs-credit-assignment --smoke
 qmc-bmgs-countdown-track-a-substrate --self-test
+qmc-bmgs-countdown-track-a-search --self-test
 ```
 
 ## Anthropic Countdown development runner
@@ -251,26 +253,31 @@ dated evidenceとしてGitへ含め、各runの`manifest.json`でrecord数・byt
 
 ## Immediate roadmap
 
-Track Aの最初のsubstrateとして、dynamic action dimension、atomicな7軸work
-ledger、selected-sourceだけのvisited-state lazy materialization、hash-chain trace、
-独立generative replayを実装した。download-free確認は次で実行できる。
+Track Aではdynamic action dimension、atomicな7軸work ledger、visited-state lazy
+materialization、hash-chain traceに加え、greedy、beam width 2、PUCT、2設定×IID/Sobol
+Thompsonを共通search transactionへ載せた。proposal/perturbation materialの独立再生成後、
+空graphからsearch全体をbyte単位で再実行する。download-free確認は次で実行できる。
 
 ```bash
 qmc-bmgs-countdown-track-a-substrate --self-test
+qmc-bmgs-countdown-track-a-search --self-test
 ```
 
-これは53-action stateをpadding/truncationなしで扱うintegrity milestoneであり、
-search性能の結果ではない。search replayとmethod matrixはまだ未実装なので、canary
-executionは未承認のままである。契約は
+これは53-action fixture上のtransaction・method plumbing・二段階replayを確認する
+integrity milestoneであり、search性能の結果ではない。canary task、guard値、method
+manifest、outcomeはまだsealも生成もしていない。契約は
 [`docs/countdown_track_a_substrate_contract.md`](docs/countdown_track_a_substrate_contract.md)
+と
+[`docs/countdown_track_a_search_contract.md`](docs/countdown_track_a_search_contract.md)
 を参照。
 
-1. 共通harnessへgreedy/best-first/PUCTと2設定×IID/Sobolを実装し、search replayを
-   閉じる。
-2. source-multiset-disjoint task suiteとdeterministic proposalを結果前にsealする。
-3. selected `(1,1)`とbaseline `(.1,1)`、IID/Sobol、greedy/best-first/PUCTを
-   fixed verifierとactual legal-action-score budgetで比較する。
-4. taskを独立単位としてcalibration transferとsource effectを分離評価する。
+1. source-multiset-disjointな12-task canary、proposal/method/budget manifest、全
+   non-primary guardをsearch outcomeより前にsealする。
+2. 2 budget profile×全method×4 canary seedsを実行し、全cellで二段階replay、budget
+   closure、non-primary guard非拘束を要求する。
+3. canary gate通過後だけ128-task locked evaluationをsealして実行する。
+4. taskを独立単位としてcalibration transfer、source effect、simple-baseline差を分離
+   評価する。
 5. competitiveなbase searchが確認できた後だけsemantic routingとBayesian pruningを
    一因子ずつ追加する。
 

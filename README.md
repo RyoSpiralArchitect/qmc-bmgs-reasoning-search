@@ -113,6 +113,8 @@ PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_track_a_substrate --self
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_track_a_search --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_track_a_canary_runner --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_track_a_canary_analysis --self-test
+PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_diagnostic_runner --self-test
+PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_diagnostic_analysis --self-test
 python scripts/validate.py
 ```
 
@@ -377,6 +379,18 @@ seal digestは
 これはtask予約、240-cell schedule、分析順序とengineering gateの同一性だけを証明する。
 契約は
 [`docs/countdown_thompson_diagnostic_contract.md`](docs/countdown_thompson_diagnostic_contract.md)
+に固定した。runner/analyzerはsource checkoutのGit履歴とsource closureをauthorityにするため、
+packaged console entrypointは設けない。自己診断は非diagnostic fixtureだけを使い、sealed bundle、
+task、proposal、search record、outcomeを開かない。
+
+```bash
+PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_diagnostic_runner --self-test
+PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_diagnostic_analysis --self-test
+```
+
+実行時はclean source checkoutからmodule invocationを使い、`--repository-root .`を明示する。
+plan、別PRでのauthorization review、1回限りのrun、独立analysisの順序と完全なコマンドは
+[`docs/countdown_thompson_diagnostic_execution_contract.md`](docs/countdown_thompson_diagnostic_execution_contract.md)
 に固定した。v2/v3/v4のどれもbase searchとしてgreedy/beamを上回れなければ、locked-128は
 開かず`STOP_REPAIR_NO_LOCKED_128_RUN`とする。
 

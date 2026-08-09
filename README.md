@@ -331,4 +331,17 @@ copy後artifactの分析条件は
 6. competitiveなbase searchが確認できた後だけsemantic routingとBayesian pruningを
    一因子ずつ追加する。
 
+このcanaryはreview済みauthorizationで一度だけ実行され、936/936 cellのbudget
+closure、provider call zero、独立二段階replayを通過した。一方、heuristic proposalの
+`score256`ではgreedy/beam/PUCTが各`6/12` taskを解いたのに対し、4つのThompson
+variantは合計`0/192` runだった。`verifier8`でもcandidate IID/Sobolは各`1/48`に
+留まり、両budgetでsimple-baseline Pareto blockが成立した。
+
+したがってintegrity/livenessとしての`CANARY_ENGINEERING_PASS`をThompsonやQMCの
+性能passとは読まない。現candidateのlocked-128実行とsemantic routing/pruning追加は
+保留し、dynamic action dimension下のprior/noise scaleと疎なbinary feedbackを先に
+診断する。結果、exact digest、release archive、post-hocなproposal-rank診断は
+[`docs/observations/countdown_track_a_canary_v2_20260810.md`](docs/observations/countdown_track_a_canary_v2_20260810.md)
+に保存した。
+
 自然言語reasoningへの一般化や一般的なQMC優位は、まだ主張しません。

@@ -96,6 +96,7 @@ PYTHONPATH=src python -m qmc_bmgs.openai_countdown --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_openai_dev --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_source_ablation --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_calibration_grid --self-test
+PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_track_a_substrate --self-test
 python scripts/validate.py
 ```
 
@@ -125,6 +126,7 @@ qmc-bmgs-fixed-verifier --smoke
 qmc-bmgs-two-phase --smoke
 qmc-bmgs-two-phase-validation --smoke
 qmc-bmgs-credit-assignment --smoke
+qmc-bmgs-countdown-track-a-substrate --self-test
 ```
 
 ## Anthropic Countdown development runner
@@ -249,7 +251,22 @@ dated evidenceとしてGitへ含め、各runの`manifest.json`でrecord数・byt
 
 ## Immediate roadmap
 
-1. dynamic action dimensionとvisited-state lazy materializationを実装する。
+Track Aの最初のsubstrateとして、dynamic action dimension、atomicな7軸work
+ledger、selected-sourceだけのvisited-state lazy materialization、hash-chain trace、
+独立generative replayを実装した。download-free確認は次で実行できる。
+
+```bash
+qmc-bmgs-countdown-track-a-substrate --self-test
+```
+
+これは53-action stateをpadding/truncationなしで扱うintegrity milestoneであり、
+search性能の結果ではない。search replayとmethod matrixはまだ未実装なので、canary
+executionは未承認のままである。契約は
+[`docs/countdown_track_a_substrate_contract.md`](docs/countdown_track_a_substrate_contract.md)
+を参照。
+
+1. 共通harnessへgreedy/best-first/PUCTと2設定×IID/Sobolを実装し、search replayを
+   閉じる。
 2. source-multiset-disjoint task suiteとdeterministic proposalを結果前にsealする。
 3. selected `(1,1)`とbaseline `(.1,1)`、IID/Sobol、greedy/best-first/PUCTを
    fixed verifierとactual legal-action-score budgetで比較する。

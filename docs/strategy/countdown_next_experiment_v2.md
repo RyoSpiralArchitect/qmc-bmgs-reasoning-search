@@ -117,14 +117,47 @@ first engineering benchmark.
 
 - Do not materialize the frozen exploration streams until the task manifest is
   frozen.
-- Seed identity must include task, canonical state, visit index, action-order
-  digest, source, and version.
-- Reuse each source-specific stream across configurations where a paired
-  configuration contrast is desired.
+- A node stream has one canonical identity containing the task fingerprint,
+  canonical serialized state, exploration seed, action count, action-order
+  digest, perturbation source, and stream implementation version. Its digest is
+  the SHA-256 digest of that complete canonical identity.
+- A point identity contains the node-stream digest and the zero-based
+  node-local visit index. The visit index is a point coordinate within one
+  stream; it is not a new stream seed.
+- Configuration, search method, and budget-profile identifiers are excluded
+  from the node-stream identity. Consequently, whenever two runs using the
+  same perturbation source reach the same state at the same node-local visit,
+  they consume the same point. This is the paired configuration contract even
+  after their global trajectories diverge.
+- IID points use a versioned counter mapping from full point and coordinate
+  identities. Sobol points use one versioned node-local Sobol stream. A Sobol
+  engine must never be re-seeded per visit and then sampled at its first point;
+  point `i` is the `i`th point of the same node stream.
+- The Sobol implementation must use an explicitly versioned deterministic
+  randomized shift (including a Cranley-Patterson rotation), digital shift, or
+  scramble whose key material is derived from the full 256-bit node-stream
+  SHA-256 digest. Reducing that digest to a library seed is not sufficient. The
+  direction-number version, bit width, key expansion, shift or scramble
+  algorithm, and normal-transform version are sealed in the method manifest.
+- Reuse each source-specific stream across configurations and budget profiles
+  where a paired contrast is desired. Method exclusion from stream identity
+  also makes points agree at any shared `(state, local visit)` across stochastic
+  methods; this is not a claim that divergent whole trajectories are common
+  random numbers.
 - IID and Sobol remain distinct matched streams.
 - Use counter-based or deterministic node-local generation so storage is
   proportional to visited states.
 - Record actual action coordinates used, not only padded coordinates.
+
+Lazy replay has two mandatory stages. First, **generative material replay**
+recomputes legal-action order, stream and point identities, uniforms, the
+normal transform, and every visited-state vector from the sealed manifests; it
+must not trust stored vectors merely because their local digest is
+self-consistent. Second, **search replay** consumes only material that passed
+the first stage, reconstructs selection, transitions, updates, and all ledger
+counters from events, and compares the canonical deterministic search records
+byte-for-byte. Volatile telemetry such as wall time, process identifiers, and
+resident-memory observations is stored outside the byte-identical replay core.
 
 ## Budgets
 
@@ -138,6 +171,21 @@ Match and report multiple work axes:
 - peak live nodes and bytes;
 - wall time as descriptive telemetry.
 
+The two action-score counters have distinct meanings:
+
+- `proposal_action_scores` charges once per legal arm when an uncached proposal
+  policy evaluates that arm. A cached proposal lookup does not charge it again.
+- `selection_action_scores`, called **legal-action scores** in the frozen slice
+  below, charges once per legal arm whose current Thompson sample, UCB/PUCT
+  index, best-first priority, or deterministic selection value is computed or
+  recomputed to select or expand an action. Reading a cached proposal value as
+  an input to the current selection formula still incurs this selection charge.
+
+Thus the 256-score endpoint is exactly
+`selection_action_scores <= 256`; it is neither
+`proposal_action_scores <= 256` nor the sum of the two counters. Proposal
+scoring remains an independently reported and hard-guarded work axis.
+
 Primary comparisons should use both a fixed-verifier slice and a fixed
 legal-action-score slice. A method that visits cheaper trajectories should not
 be described as equal arithmetic merely because it used the same number of
@@ -148,10 +196,36 @@ The frozen v2 slices are:
 - primary: at most **256 legal-action scores**;
 - secondary: at most **8 verifier calls**.
 
-Each method must stop before overshooting its slice. Proposal evaluations,
-generated perturbation coordinates, transitions, live nodes, peak bytes, and
-wall time remain required telemetry, but are not substituted for the two
-matched primary work axes.
+These slices are executed as two separate frozen budget profiles, not as two
+competing stopping limits in one run:
+
+- `score256`: `selection_action_scores` is the stopping axis with limit `256`;
+  the verifier and every other work axis are non-primary hard guards.
+- `verifier8`: `verifier_calls` is the stopping axis with limit `8`;
+  selection scoring and every other work axis are non-primary hard guards.
+
+The complete non-primary guard values for both profiles are sealed in the
+budget manifest before canary search. A canary cell is budget-invalid if a
+non-primary guard binds, and that cell fails the gate rather than being treated
+as an observation at the requested slice. The locked evaluation may begin only
+if every canary cell proves that its non-primary guards were nonbinding.
+
+Each method must stop before overshooting its profile's stopping axis. Before
+starting another `verifier8` trajectory, the runner preflights that one verifier
+call remains. If none remains, it stops before state lookup, proposal/cache
+access, node creation, stream access, or any event or value update. Execution
+of a run is single-threaded across this preflight and the terminal verifier
+charge.
+
+Every multi-axis charge is atomic. A rejected charge leaves unchanged the
+complete ledger, proposal and graph caches, live-node set, node-local visit
+indices, IID/Sobol stream positions, materialized points, proposal/selection/
+terminal event buffers, learned values, and readout candidates. Search code
+charges before cache or node insertion, perturbation generation, transition,
+verifier execution, or value update. Proposal evaluations, generated
+perturbation coordinates, transitions, live nodes, peak bytes, and wall time
+remain required telemetry, but are not substituted for the two matched primary
+work axes.
 
 ## Primary estimands
 
@@ -226,10 +300,13 @@ simultaneous 97.5% intervals.
 
 Before the full benchmark:
 
-1. canary every method on all 12 canary tasks and all four canary seeds;
+1. canary every method under both frozen budget profiles on all 12 canary tasks
+   and all four canary seeds;
 2. require no action truncation and exact action-order agreement;
-3. require byte-identical lazy replay from persisted visited-state material;
-4. require fixed budget closure on all primary axes;
+3. require generative material replay followed by byte-identical search replay
+   from persisted visited-state material;
+4. require fixed budget closure on each profile's stopping axis and prove that
+   every non-primary guard was nonbinding in every canary cell;
 5. require greedy/best-first/PUCT baselines to be functional;
 6. estimate projected provider calls, bank bytes, and wall time;
 7. publish the task/proposal/method manifest and its digest.

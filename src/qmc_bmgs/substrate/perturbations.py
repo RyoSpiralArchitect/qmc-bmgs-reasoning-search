@@ -87,8 +87,7 @@ def _action_payload(actions: Sequence[CountdownAction]) -> list[dict[str, Any]]:
     return [action.to_dict() for action in actions]
 
 
-@lru_cache(maxsize=len(SOURCE_NAMES))
-def _runtime_conformance_digest(source: str) -> str:
+def _compute_runtime_conformance_digest(source: str) -> str:
     resolved_source = _require_source(source)
     uniforms = torch.tensor(
         (0.125, 0.25, 0.5, 0.75, 0.875),
@@ -107,13 +106,28 @@ def _runtime_conformance_digest(source: str) -> str:
     return sha256_json(payload)
 
 
-def _runtime_metadata(source: str) -> dict[str, Any]:
+@lru_cache(maxsize=len(SOURCE_NAMES))
+def _runtime_conformance_digest(source: str) -> str:
+    return _compute_runtime_conformance_digest(source)
+
+
+def _runtime_metadata(
+    source: str,
+    *,
+    refresh_conformance: bool = False,
+) -> dict[str, Any]:
     resolved_source = _require_source(source)
     generator = (
         IID_GENERATOR_VERSION
         if resolved_source == "iid"
         else SOBOL_GENERATOR_VERSION
     )
+    if refresh_conformance:
+        # Qualification is a sequential pre-run boundary. Clear every source
+        # so a poisoned digest cannot survive into later run identities, then
+        # repopulate this source with freshly observed behavior.
+        _runtime_conformance_digest.cache_clear()
+    conformance_digest = _runtime_conformance_digest(resolved_source)
     metadata = {
         "architecture": platform.machine(),
         "byteorder": sys.byteorder,
@@ -126,9 +140,7 @@ def _runtime_metadata(source: str) -> dict[str, Any]:
             "version": NORMAL_TRANSFORM_VERSION,
         },
         "python_version": platform.python_version(),
-        "runtime_conformance_digest": _runtime_conformance_digest(
-            resolved_source
-        ),
+        "runtime_conformance_digest": conformance_digest,
         "source": resolved_source,
         "torch_git_version": getattr(torch.version, "git_version", None),
         "torch_version": torch.__version__,
@@ -149,6 +161,26 @@ def _runtime_metadata(source: str) -> dict[str, Any]:
             }
         )
     return metadata
+
+
+def perturbation_runtime_metadata(
+    source: str,
+    *,
+    refresh_conformance: bool = False,
+) -> dict[str, Any]:
+    """Return source runtime metadata without creating a task stream or point.
+
+    The fixed conformance digest in this payload checks the pinned numerical
+    runtime.  It is not a canary node stream and does not consume an
+    exploration seed, node visit, perturbation coordinate, or trace event.
+    """
+
+    if type(refresh_conformance) is not bool:
+        raise TypeError("refresh_conformance must be a plain bool")
+    return _runtime_metadata(
+        source,
+        refresh_conformance=refresh_conformance,
+    )
 
 
 def _validate_node_materialization_schema(payload: Mapping[str, Any]) -> None:

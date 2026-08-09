@@ -267,6 +267,17 @@ def _search_runtime_metadata() -> dict[str, Any]:
     }
 
 
+def search_runtime_metadata() -> dict[str, Any]:
+    """Return the runtime identity payload without starting a search run.
+
+    Preregistration builders need to seal the exact deterministic-float
+    runtime before opening outcomes.  This accessor performs no task lookup,
+    proposal evaluation, graph mutation, or search execution.
+    """
+
+    return _search_runtime_metadata()
+
+
 def _configuration_payload(
     method: TrackAMethodSpec,
     proposal: TrackAProposalSpec,

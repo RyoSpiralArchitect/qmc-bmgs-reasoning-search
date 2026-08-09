@@ -1,0 +1,151 @@
+{
+  "baseline_config_id": "prior_0p1__sd_1",
+  "claim_boundary": "Development calibration on two frozen public tasks. The grid selects a source-robust configuration, not a winning perturbation source, and does not establish task transfer or QMC superiority.",
+  "decision_rule": {
+    "eligibility": {
+      "all_eight_cells_exact_success_count_minimum": 1,
+      "all_provider_task_qmc_minus_iid_root_entropy_minimum": 0.02,
+      "all_provider_task_qmc_minus_iid_unique_edges_minimum": 1.0,
+      "all_task_sobol_lower_discrepancy_fraction_minimum": 0.95,
+      "mean_normalized_prior_rank_vs_baseline_maximum_regression": 0.02,
+      "top_set_retention_vs_baseline_maximum_regression": 0.02
+    },
+    "no_eligible_status": "NO_STABLE_CALIBRATION_REGION",
+    "rank_lexicographic": [
+      "maximize_min_cell_exact_success_rate",
+      "maximize_min_cell_success_auc",
+      "maximize_min_cell_exact_terminal_count_mean",
+      "minimize_max_provider_task_abs_qmc_minus_iid_success_delta",
+      "maximize_min_provider_task_qmc_minus_iid_root_entropy",
+      "minimize_log_distance_from_baseline",
+      "minimize_prior_bonus",
+      "minimize_posterior_sd_scale"
+    ],
+    "signed_source_success_delta_is_never_maximized": true,
+    "version": "stable-both-source-both-provider/v1"
+  },
+  "experiment_version": "countdown-prior-noise-calibration-grid/v1",
+  "fresh_common_random_number_cohort": {
+    "config_provider_and_method_excluded_from_seed_identity": true,
+    "count": 128,
+    "end_inclusive": 2175,
+    "shared_across_all_grid_cells": true,
+    "start": 2048
+  },
+  "grid": [
+    {
+      "config_id": "prior_0p1__sd_0p25",
+      "posterior_sd_scale": 0.25,
+      "prior_bonus": 0.1
+    },
+    {
+      "config_id": "prior_0p1__sd_0p5",
+      "posterior_sd_scale": 0.5,
+      "prior_bonus": 0.1
+    },
+    {
+      "config_id": "prior_0p1__sd_1",
+      "posterior_sd_scale": 1.0,
+      "prior_bonus": 0.1
+    },
+    {
+      "config_id": "prior_0p5__sd_0p25",
+      "posterior_sd_scale": 0.25,
+      "prior_bonus": 0.5
+    },
+    {
+      "config_id": "prior_0p5__sd_0p5",
+      "posterior_sd_scale": 0.5,
+      "prior_bonus": 0.5
+    },
+    {
+      "config_id": "prior_0p5__sd_1",
+      "posterior_sd_scale": 1.0,
+      "prior_bonus": 0.5
+    },
+    {
+      "config_id": "prior_1__sd_0p25",
+      "posterior_sd_scale": 0.25,
+      "prior_bonus": 1.0
+    },
+    {
+      "config_id": "prior_1__sd_0p5",
+      "posterior_sd_scale": 0.5,
+      "prior_bonus": 1.0
+    },
+    {
+      "config_id": "prior_1__sd_1",
+      "posterior_sd_scale": 1.0,
+      "prior_bonus": 1.0
+    }
+  ],
+  "methods": [
+    "matched_iid_thompson_8",
+    "qmc_thompson_8"
+  ],
+  "parent_v2_regression_oracle": {
+    "bank_sha256": "2a30a8c90c3538cd378a860c02a9e544e8912fafbef81fadea0107e9591166ed",
+    "manifest_digest": "2f303018e67202824516a7fd84b32dc64492c6167ed6428f29283b23d610cb11",
+    "records_sha256": "4947f8d7f5e6fd131718680d1c92f767efc5dddac882a7094ff20ba107d160fe",
+    "summary_digest": "8e037efcba2cead9c78463ce6f026b517dd4a8c1a194958ad1b8060e4fb749d0"
+  },
+  "providers": {
+    "anthropic": {
+      "behavior_digest": "9eaee49f6e100d26100b10b0eb8d9f9ba75f74cb0109d2b25634590117682868",
+      "manifest_sha256": "843b2437000818e225315029e3e9f08cb7325c765406e8505a34fa6dd46c7005",
+      "proposal_sha256": "cbeba18fb46c7b5a9fdc7317dd29e82bd13ceeb286ee7aaaf47574e2ef55ae46",
+      "summary_digest": "2a8974326d436bcc53ebb47c73232d99784046d44a16ba9b1f906a1447bae379"
+    },
+    "openai": {
+      "behavior_digest": "529b7dd51458cda3a6899a7b0b406dd8880317b413f39fe0fc08786c4eff8862",
+      "manifest_sha256": "f69f1a04065a93da495c97a191f38fe7d4a67a603ed58dfbe3930f1adedc8e51",
+      "proposal_sha256": "57a9e5a1a07340739f88288ee4b12af0d8550e2683667de447c2febcbc131e13",
+      "summary_digest": "11a3ed0b4313ea7b73a2d6987d9400c13081c918ec5a1982822c5241ed12e73d"
+    }
+  },
+  "schema_version": "qmc-bmgs-countdown-calibration-grid-preregistration/v1",
+  "search_contract": {
+    "gamma": 1.0,
+    "no_pruning": true,
+    "no_semantic_routing": true,
+    "no_shaped_reward": true,
+    "posterior_sd_formula": "posterior_sd_scale/sqrt(visits+1)",
+    "prior_component_formula": "prior_bonus*exp(prior_logp)",
+    "search_budget": {
+      "edge_selections": 128,
+      "proposal_action_scores": 256,
+      "proposal_batch_calls": 64,
+      "proposal_input_values": 448,
+      "proposal_state_items": 64,
+      "selection_action_scores": 512,
+      "transitions": 128,
+      "verifier_calls": 8
+    },
+    "simulations": 8,
+    "terminal_reward": "exact_1_or_0"
+  },
+  "tasks": [
+    {
+      "inputs": [1, 1, 1, 1, 1, 1],
+      "max_steps": 5,
+      "ruleset_id": "countdown-d6-positive-int-exact-division/v1",
+      "source_multiset_fingerprint": "25fe684e04918305d3ea93d921795d46537f8e4323cac4bc6be9e583db257633",
+      "target": 6,
+      "task_fingerprint": "e1e2fdaf480a626266300f4d9b583e847065458be604d6b9cff2483e4478b5c6",
+      "task_id": "countdown_d6_e1e2fdaf480a6262"
+    },
+    {
+      "inputs": [1, 1, 1, 1, 1, 2],
+      "max_steps": 5,
+      "ruleset_id": "countdown-d6-positive-int-exact-division/v1",
+      "source_multiset_fingerprint": "0ead81f745f1d7316ddb545ac265c3389a2346957708612d4f041fbb7a995258",
+      "target": 10,
+      "task_fingerprint": "a2c80cfde3aaeb372fa8c2628e7f61760370f6184c2ab838368578e4b504ea7d",
+      "task_id": "countdown_d6_a2c80cfde3aaeb37"
+    }
+  ],
+  "workload": {
+    "paired_iid_qmc_blocks": 4608,
+    "records": 9216
+  }
+}

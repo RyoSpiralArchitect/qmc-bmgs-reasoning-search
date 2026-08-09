@@ -129,6 +129,7 @@ qmc-bmgs-two-phase-validation --smoke
 qmc-bmgs-credit-assignment --smoke
 qmc-bmgs-countdown-track-a-substrate --self-test
 qmc-bmgs-countdown-track-a-search --self-test
+qmc-bmgs-countdown-track-a-canary-manifest --self-test
 ```
 
 ## Anthropic Countdown development runner
@@ -264,17 +265,42 @@ qmc-bmgs-countdown-track-a-search --self-test
 ```
 
 これは53-action fixture上のtransaction・method plumbing・二段階replayを確認する
-integrity milestoneであり、search性能の結果ではない。canary task、guard値、method
-manifest、outcomeはまだsealも生成もしていない。契約は
+integrity milestoneであり、search性能の結果ではない。12 task、936 cell、
+proposal/method/budget、analysis gateはsearchを一度も走らせずcanonical JSONとして
+seal済みで、次で独立再生成できる。
+
+```bash
+qmc-bmgs-countdown-track-a-canary-manifest \
+  --verify docs/preregistrations/countdown_track_a_canary_v1 \
+  --repository-root .
+```
+
+seal digestは
+`6d3d6249141bc74e827ca0fcdf860656e5f0885d043607b80b5d9919edc30b78`。
+これはpreregistrationの同一性であり、canary性能結果ではない。契約は
 [`docs/countdown_track_a_substrate_contract.md`](docs/countdown_track_a_substrate_contract.md)
 と
 [`docs/countdown_track_a_search_contract.md`](docs/countdown_track_a_search_contract.md)
+、
+[`docs/countdown_track_a_canary_contract.md`](docs/countdown_track_a_canary_contract.md)
 を参照。
 
-1. source-multiset-disjointな12-task canary、proposal/method/budget manifest、全
-   non-primary guardをsearch outcomeより前にsealする。
-2. 2 budget profile×全method×4 canary seedsを実行し、全cellで二段階replay、budget
-   closure、non-primary guard非拘束を要求する。
+このbundleの実行資格はCPython 3.13.13、arm64、Torch 2.11.0と記録済み
+generator conformance digestへ固定している。一般的なpackage install可否とは分け、
+実行前にportableなartifact監査とlive exact-runtime qualificationの両方を要求する。
+runtime不一致は失敗rowではなく`NOT_RUN`として扱う。
+qualifier単体は実行を認可しない。次runnerがverified bundle、fresh qualifier、cleanな
+runner/search build digestを同一preflight内で結合し、`implementation_base`を祖先として
+検証して初めてcellを開ける。PR3 revisionは将来runnerのHEAD要件ではない。
+
+```bash
+qmc-bmgs-countdown-track-a-canary-manifest --qualify-runtime
+```
+
+1. source-multiset-disjointな12-task canaryと936-cell scheduleはGit上でseal済み。
+2. 次にmanifest-driven runnerとfail-closed analyzerを実装してから実行し、全cellで二段階
+   replay、budget closure、non-primary guardの正の余白を要求する。deterministic
+   methodを4 seedへ水増ししない。
 3. canary gate通過後だけ128-task locked evaluationをsealして実行する。
 4. taskを独立単位としてcalibration transfer、source effect、simple-baseline差を分離
    評価する。

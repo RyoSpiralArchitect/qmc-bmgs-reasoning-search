@@ -18,8 +18,29 @@ def _reject_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON constant: {value}")
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
 def _strict_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject_constant)
+    return json.loads(
+        path.read_text(encoding="utf-8"),
+        parse_constant=_reject_constant,
+        object_pairs_hook=_reject_duplicate_keys,
+    )
+
+
+def _strict_json_text(text: str) -> Any:
+    return json.loads(
+        text,
+        parse_constant=_reject_constant,
+        object_pairs_hook=_reject_duplicate_keys,
+    )
 
 
 def _sha256(path: Path) -> str:
@@ -35,15 +56,35 @@ def _canonical_record_digest(record: dict[str, Any]) -> str:
 
 
 def verify_manifest(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise AssertionError(f"manifest is not a regular file: {path}")
     manifest = _strict_json(path)
+    if not isinstance(manifest, dict):
+        raise AssertionError(f"manifest is not a JSON object: {path}")
     if manifest.get("schema_version") != "qmc-bmgs-artifact-manifest/v1":
         raise AssertionError(f"unsupported manifest schema: {path}")
+    files = manifest.get("files")
+    if not isinstance(files, dict):
+        raise AssertionError(f"manifest files is not an object: {path}")
 
     directory = path.parent
-    for name, expected in manifest["files"].items():
+    declared_files = set(files)
+    observed_entries = {
+        item.name
+        for item in directory.iterdir()
+        if item.name != path.name
+    }
+    if observed_entries != declared_files:
+        missing = sorted(declared_files - observed_entries)
+        extra = sorted(observed_entries - declared_files)
+        raise AssertionError(
+            f"artifact entry-set mismatch: {directory}; "
+            f"missing={missing}, extra={extra}"
+        )
+    for name, expected in files.items():
         artifact = directory / name
-        if not artifact.is_file():
-            raise AssertionError(f"missing artifact: {artifact}")
+        if artifact.is_symlink() or not artifact.is_file():
+            raise AssertionError(f"artifact is not a regular file: {artifact}")
         if artifact.stat().st_size != int(expected["bytes"]):
             raise AssertionError(f"byte-size mismatch: {artifact}")
         if _sha256(artifact) != expected["sha256"]:
@@ -56,7 +97,7 @@ def verify_manifest(path: Path) -> dict[str, Any]:
                     if not line.strip():
                         continue
                     try:
-                        record = json.loads(line, parse_constant=_reject_constant)
+                        record = _strict_json_text(line)
                     except (ValueError, json.JSONDecodeError) as exc:
                         raise AssertionError(
                             f"invalid strict JSON at {artifact}:{line_number}"

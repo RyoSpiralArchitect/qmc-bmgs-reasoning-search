@@ -23,6 +23,7 @@ qmc-bmgs-countdown-anthropic-dev = "qmc_bmgs.experiments.countdown_anthropic_dev
 qmc-bmgs-countdown-openai-dev = "qmc_bmgs.experiments.countdown_openai_dev:main"
 qmc-bmgs-countdown-thompson-source = "qmc_bmgs.experiments.countdown_thompson_source_ablation:main"
 qmc-bmgs-countdown-calibration-grid = "qmc_bmgs.experiments.countdown_calibration_grid:main"
+qmc-bmgs-countdown-calibration-audit = "qmc_bmgs.experiments.countdown_calibration_adversarial_audit:main"
 qmc-bmgs-d4-sweep = "qmc_bmgs.experiments.d4_noise_sweep:main"
 qmc-bmgs-channel-ablation = "qmc_bmgs.experiments.channel_ablation:main"
 qmc-bmgs-fixed-verifier = "qmc_bmgs.experiments.fixed_verifier_budget:main"

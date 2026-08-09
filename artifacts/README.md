@@ -10,6 +10,7 @@
 | `role_lock/d4/20260718_two_phase_n64` | exploratory late IID-action switch and validation gate | `report.md` |
 | `role_lock/d4/20260718_two_phase_validation_n128` | standalone validation of the fixed two-phase schedule | `report.md` |
 | `role_lock/d4/20260719_credit_assignment_n128` | fixed routing-only terminal versus prefix-progress mechanism diagnostic | `report.md` |
+| `countdown-calibration-grid-v1` GitHub release | full two-provider prior/noise development grid and source provenance | [`docs/releases/countdown_calibration_grid_n128_v1.md`](../docs/releases/countdown_calibration_grid_n128_v1.md) |
 
 Each promoted directory tracks `report.md`, `summary.json`, `manifest.json`, and immutable
 `records.jsonl`. The first three runs were imported with explicit pre-repository provenance; the
@@ -22,3 +23,7 @@ python scripts/verify_artifacts.py
 
 Regenerated output should first go to `artifacts/work/`. Promotion into this registry requires a
 matched command, validation PASS, and an updated manifest.
+
+Large raw artifacts may instead be promoted as a versioned GitHub release asset
+when the tracked release capsule records the archive hash, source identities,
+claim boundary, and clean-extraction replay result.

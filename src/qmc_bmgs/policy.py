@@ -124,6 +124,55 @@ class QMCBMGSConfig:
     normal_icdf_clip: float = 1e-6
 
     def __post_init__(self) -> None:
+        integer_fields = (
+            "candidate_top_k",
+            "min_candidates",
+            "qmc_tail_candidates",
+            "semantic_clusters",
+            "kmeans_iterations",
+            "prune_samples",
+            "prune_every_node_visits",
+            "min_action_visits_before_prune",
+            "min_active_actions",
+            "seed",
+        )
+        for field_name in integer_fields:
+            if type(getattr(self, field_name)) is not int:
+                raise ValueError(f"{field_name} must be a plain integer")
+        finite_numeric_fields = (
+            "gamma",
+            "candidate_top_k",
+            "candidate_top_p",
+            "min_candidates",
+            "qmc_tail_candidates",
+            "semantic_clusters",
+            "kmeans_iterations",
+            "semantic_coverage_probability",
+            "semantic_uniform_mix",
+            "action_prior_strength",
+            "value_prior_mean",
+            "value_prior_variance",
+            "observation_variance",
+            "uncertainty_floor",
+            "lm_logprob_reward_weight",
+            "prune_epsilon",
+            "prune_samples",
+            "prune_every_node_visits",
+            "min_action_visits_before_prune",
+            "min_active_actions",
+            "seed",
+            "normal_icdf_clip",
+        )
+        for field_name in finite_numeric_fields:
+            value = getattr(self, field_name)
+            try:
+                finite = math.isfinite(value)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"{field_name} must be a finite numeric value"
+                ) from error
+            if not finite:
+                raise ValueError(f"{field_name} must be finite")
         if not 0.0 <= self.gamma <= 1.0:
             raise ValueError("gamma must be in [0, 1]")
         if self.candidate_top_k < 1:
@@ -136,6 +185,8 @@ class QMCBMGSConfig:
             raise ValueError("qmc_tail_candidates must be non-negative")
         if self.semantic_clusters < 1:
             raise ValueError("semantic_clusters must be positive")
+        if self.kmeans_iterations < 1:
+            raise ValueError("kmeans_iterations must be positive")
         if not 0.0 <= self.semantic_coverage_probability <= 1.0:
             raise ValueError("semantic_coverage_probability must be in [0, 1]")
         if not 0.0 <= self.semantic_uniform_mix <= 1.0:
@@ -791,7 +842,10 @@ class QMCBMGSReasoningPolicy:
         if trace.terminated:
             trace.leaf_value = 0.0  # terminal reward was included on the EOS edge
         elif self.leaf_value_fn is not None:
-            trace.leaf_value = float(self.leaf_value_fn(current_state))
+            leaf_value = float(self.leaf_value_fn(current_state))
+            if not math.isfinite(leaf_value):
+                raise ValueError(f"non-finite leaf value at state={current_state}")
+            trace.leaf_value = leaf_value
         else:
             trace.leaf_value = self.config.value_prior_mean
 

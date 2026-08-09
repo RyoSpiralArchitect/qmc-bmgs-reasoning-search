@@ -12,6 +12,31 @@ The experiment selects at most one **calibration configuration** for a later
 held-out comparison. It does not select a perturbation source and cannot by
 itself establish QMC superiority.
 
+## Post-run errata, 2026-07-26
+
+This section is an explicit post-run correction layer. It does not alter the
+machine preregistration, seed cohort, grid, eligibility, ranking, or frozen
+decision.
+
+- “Common random number” is too broad for the IID/Sobol contrast. Random values
+  are reused across configurations and provider snapshots within each source.
+  IID and Sobol use distinct source-specific streams and form matched
+  dual-stream blocks, not IID/Sobol CRN blocks.
+- The frozen v1 summary stores paired means and seed variances but omits the
+  paired conditional intervals promised below. They are reconstructed by the
+  independent post-hoc adversarial audit rather than inserted into the frozen
+  summary.
+- Full `--replay` now requires both original provider artifact directories and
+  revalidates them on scratch copies. `--replay-search-only` is the explicit
+  self-contained mode that reconstructs search bytes without claiming original
+  source revalidation.
+- “Source-robust” below means only that a configuration passed the frozen
+  gates. It does not mean source effects are small or statistically stable.
+- The selected-only held-out plan below cannot estimate calibration transfer.
+  It is superseded by
+  `docs/strategy/countdown_next_experiment_v2.md`, which includes the frozen
+  `(0.1,1)` baseline and simple search baselines.
+
 ## Frozen development inputs
 
 The grid uses the same two public Countdown development tasks as the matched

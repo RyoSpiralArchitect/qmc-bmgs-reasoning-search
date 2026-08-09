@@ -312,6 +312,23 @@ def _matrix_from_payload(
     return tensor
 
 
+def _require_bank_action_capacity(
+    *,
+    action_count: Any,
+    max_actions: Any,
+    boundary: str,
+) -> None:
+    if type(max_actions) is not int or max_actions < 1:
+        raise ValueError(f"{boundary}: max_actions must be a positive plain integer")
+    if type(action_count) is not int or action_count < 1:
+        raise ValueError(f"{boundary}: action_count must be a positive plain integer")
+    if action_count > max_actions:
+        raise ValueError(
+            f"{boundary}: action_count {action_count} exceeds "
+            f"perturbation-bank dimension {max_actions}"
+        )
+
+
 @dataclass(frozen=True)
 class BankState:
     state: CountdownState
@@ -363,6 +380,7 @@ class PerturbationBank:
         if (
             type(exploration_seed) is not int
             or exploration_seed < 0
+            or type(max_actions) is not int
             or max_actions != MAX_ACTIONS
             or payload["normal_transform"] != _normal_transform_metadata()
         ):
@@ -389,10 +407,21 @@ class PerturbationBank:
             state = task.canonical_state(item["state"])
             actions = task.legal_actions(state)
             action_count = len(actions)
+            stored_action_count = item["action_count"]
+            _require_bank_action_capacity(
+                action_count=stored_action_count,
+                max_actions=max_actions,
+                boundary="perturbation-bank parse",
+            )
+            _require_bank_action_capacity(
+                action_count=action_count,
+                max_actions=max_actions,
+                boundary="perturbation-bank parse",
+            )
             if (
                 list(state) != item["state"]
                 or state in index
-                or item["action_count"] != action_count
+                or stored_action_count != action_count
                 or item["action_digest"] != _action_digest(actions)
                 or type(item["iid_seed"]) is not int
                 or not 0 <= item["iid_seed"] < 2**32
@@ -488,6 +517,12 @@ def _build_bank_record(
     state_records: list[dict[str, Any]] = []
     for state in _nonterminal_states(task):
         actions = task.legal_actions(state)
+        action_count = len(actions)
+        _require_bank_action_capacity(
+            action_count=action_count,
+            max_actions=MAX_ACTIONS,
+            boundary="perturbation-bank build",
+        )
         action_digest = _action_digest(actions)
         source_seeds: dict[str, int] = {}
         for source in SOURCE_NAMES:
@@ -512,7 +547,7 @@ def _build_bank_record(
             seed=source_seeds["sobol"],
         ).draw_base2(int(math.log2(THOMPSON_SIMULATIONS)), dtype=torch.float64)
         state_core = {
-            "action_count": len(actions),
+            "action_count": action_count,
             "action_digest": action_digest,
             "iid_normals": _matrix_to_lists(_inverse_normal(iid_uniforms)),
             "iid_seed": source_seeds["iid"],
@@ -552,18 +587,45 @@ class BankCursor:
 
     def draw(self, state: CountdownState, action_count: int) -> dict[str, Any]:
         bank_state = self.bank.state(state)
+        _require_bank_action_capacity(
+            action_count=bank_state.action_count,
+            max_actions=self.bank.max_actions,
+            boundary="perturbation-bank draw",
+        )
+        _require_bank_action_capacity(
+            action_count=action_count,
+            max_actions=self.bank.max_actions,
+            boundary="perturbation-bank draw",
+        )
         if action_count != bank_state.action_count:
-            raise AssertionError("bank/action count mismatch")
+            raise ValueError(
+                "perturbation-bank draw: requested action_count "
+                f"{action_count} does not match stored action_count "
+                f"{bank_state.action_count}"
+            )
         visit_index = self.visits[state]
         if visit_index >= THOMPSON_SIMULATIONS:
             raise AssertionError("node visit exceeds frozen bank depth")
-        self.visits[state] += 1
-        self.point_reads += 1
-        self.used_coordinates += action_count
+        matrices = (
+            bank_state.iid_uniforms,
+            bank_state.iid_normals,
+            bank_state.sobol_uniforms,
+            bank_state.sobol_normals,
+        )
+        if any(len(matrix) != THOMPSON_SIMULATIONS for matrix in matrices):
+            raise ValueError("perturbation-bank draw: stored point depth mismatch")
         iid_uniform = bank_state.iid_uniforms[visit_index]
         iid_normal = bank_state.iid_normals[visit_index]
         sobol_uniform = bank_state.sobol_uniforms[visit_index]
         sobol_normal = bank_state.sobol_normals[visit_index]
+        if any(
+            len(row) != self.bank.max_actions
+            for row in (iid_uniform, iid_normal, sobol_uniform, sobol_normal)
+        ):
+            raise ValueError("perturbation-bank draw: stored vector width mismatch")
+        self.visits[state] += 1
+        self.point_reads += 1
+        self.used_coordinates += action_count
         selected_uniform = (
             iid_uniform if self.selected_source == "iid" else sobol_uniform
         )

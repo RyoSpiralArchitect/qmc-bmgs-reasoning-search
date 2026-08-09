@@ -312,6 +312,10 @@ class TrackACanaryManifestTests(unittest.TestCase):
             legacy_result.summary["stop_blocked_axes"],
             ["legal_action_scores", "generated_perturbation_coordinates"],
         )
+        self.assertEqual(
+            hashlib.sha256(legacy_result.canonical_bytes).hexdigest(),
+            "14de780153b4f50e16baf09c949904773a4ae1ed76f4c241a3a9d05b24b59094",
+        )
 
         score256 = next(
             row["spec"]
@@ -339,6 +343,10 @@ class TrackACanaryManifestTests(unittest.TestCase):
         self.assertEqual(
             corrected_result.summary["stop_reason"],
             "primary_budget_blocked",
+        )
+        self.assertEqual(
+            hashlib.sha256(corrected_result.canonical_bytes).hexdigest(),
+            "6df057f51423cfcf99c5b852308613bfb05ab47f107df1f5caf84461e567b0f6",
         )
 
     def test_analysis_and_canary_gates_are_frozen_without_canary_statistics(

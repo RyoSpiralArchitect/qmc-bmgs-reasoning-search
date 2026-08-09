@@ -43,7 +43,7 @@ The remaining score256 guards and the entire verifier8 profile are unchanged.
 The same non-canary fixture under the corrected envelope stops only on
 `legal_action_scores`, reports `primary_budget_blocked`, and keeps
 `budget_valid=true`. Its canonical regression trace SHA-256 was
-`882aa3d2e1dc473b01486253c35a82c07f14cc59f19c821f823d68b089d04797`.
+`6df057f51423cfcf99c5b852308613bfb05ab47f107df1f5caf84461e567b0f6`.
 
 ## Identity and claim boundary
 

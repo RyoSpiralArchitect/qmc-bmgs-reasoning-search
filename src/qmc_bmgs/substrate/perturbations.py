@@ -46,6 +46,8 @@ IID_GENERATOR_VERSION = "sha256-counter-open-unit-float51/v2"
 SOBOL_GENERATOR_VERSION = "torch-sobol-full-sha256-cp-rotation-float51/v2"
 NORMAL_TRANSFORM_VERSION = "clipped-torch-erfinv-float64/v1"
 NORMAL_ICDF_CLIP = 2.0**-53
+MAX_GENERIC_ACTION_DIMENSION = 1_000_000
+MAX_GENERIC_NODE_VISIT_INDEX = 2**63 - 1
 
 
 class TrackARunPoisoned(RuntimeError):
@@ -85,31 +87,34 @@ def _action_payload(actions: Sequence[CountdownAction]) -> list[dict[str, Any]]:
     return [action.to_dict() for action in actions]
 
 
-@lru_cache(maxsize=1)
-def _runtime_conformance_digest() -> str:
-    sobol = SobolEngine(dimension=3, scramble=False).draw(
-        8,
-        dtype=torch.float64,
-    )
+@lru_cache(maxsize=len(SOURCE_NAMES))
+def _runtime_conformance_digest(source: str) -> str:
+    resolved_source = _require_source(source)
     uniforms = torch.tensor(
         (0.125, 0.25, 0.5, 0.75, 0.875),
         dtype=torch.float64,
         device="cpu",
     )
     normals = math.sqrt(2.0) * torch.erfinv(2.0 * uniforms - 1.0)
-    return sha256_json(
-        {
-            "inverse_normal": normals.tolist(),
-            "sobol": sobol.tolist(),
-        }
-    )
+    payload: dict[str, Any] = {"inverse_normal": normals.tolist()}
+    if resolved_source == "iid":
+        payload["iid"] = list(_iid_uniforms("0" * 64, 8))
+    else:
+        payload["sobol"] = SobolEngine(dimension=3, scramble=False).draw(
+            8,
+            dtype=torch.float64,
+        ).tolist()
+    return sha256_json(payload)
 
 
 def _runtime_metadata(source: str) -> dict[str, Any]:
+    resolved_source = _require_source(source)
     generator = (
-        IID_GENERATOR_VERSION if source == "iid" else SOBOL_GENERATOR_VERSION
+        IID_GENERATOR_VERSION
+        if resolved_source == "iid"
+        else SOBOL_GENERATOR_VERSION
     )
-    return {
+    metadata = {
         "architecture": platform.machine(),
         "byteorder": sys.byteorder,
         "device": "cpu",
@@ -121,12 +126,29 @@ def _runtime_metadata(source: str) -> dict[str, Any]:
             "version": NORMAL_TRANSFORM_VERSION,
         },
         "python_version": platform.python_version(),
-        "sobol_maxbit": SobolEngine.MAXBIT,
-        "sobol_maxdim": SobolEngine.MAXDIM,
-        "runtime_conformance_digest": _runtime_conformance_digest(),
+        "runtime_conformance_digest": _runtime_conformance_digest(
+            resolved_source
+        ),
+        "source": resolved_source,
         "torch_git_version": getattr(torch.version, "git_version", None),
         "torch_version": torch.__version__,
     }
+    if resolved_source == "iid":
+        metadata.update(
+            {
+                "iid_counter_hash": "sha256",
+                "iid_open_unit_bits": 51,
+            }
+        )
+    else:
+        metadata.update(
+            {
+                "sobol_maxbit": SobolEngine.MAXBIT,
+                "sobol_maxdim": SobolEngine.MAXDIM,
+                "sobol_randomization": "full-sha256-cranley-patterson-rotation",
+            }
+        )
+    return metadata
 
 
 def _validate_node_materialization_schema(payload: Mapping[str, Any]) -> None:
@@ -142,7 +164,7 @@ def _validate_node_materialization_schema(payload: Mapping[str, Any]) -> None:
         raise TraceValidationError("node action order does not match action_count")
 
     metadata = payload["generator_metadata"]
-    metadata_fields = {
+    common_metadata_fields = {
         "architecture",
         "byteorder",
         "device",
@@ -151,11 +173,19 @@ def _validate_node_materialization_schema(payload: Mapping[str, Any]) -> None:
         "normal_transform",
         "python_version",
         "runtime_conformance_digest",
-        "sobol_maxbit",
-        "sobol_maxdim",
+        "source",
         "torch_git_version",
         "torch_version",
     }
+    source = payload["source"]
+    if source not in SOURCE_NAMES or not isinstance(source, str):
+        raise TraceValidationError("node source is invalid")
+    source_metadata_fields = (
+        {"iid_counter_hash", "iid_open_unit_bits"}
+        if source == "iid"
+        else {"sobol_maxbit", "sobol_maxdim", "sobol_randomization"}
+    )
+    metadata_fields = common_metadata_fields | source_metadata_fields
     if not isinstance(metadata, dict) or set(metadata) != metadata_fields:
         raise TraceValidationError("node generator metadata fields drifted")
     for field_name in (
@@ -165,12 +195,15 @@ def _validate_node_materialization_schema(payload: Mapping[str, Any]) -> None:
         "dtype",
         "generator_version",
         "python_version",
+        "source",
         "torch_version",
     ):
         if not isinstance(metadata[field_name], str):
             raise TraceValidationError(
                 f"node generator metadata {field_name} is invalid"
             )
+    if metadata["source"] != source:
+        raise TraceValidationError("node generator metadata source drifted")
     git_version = metadata["torch_git_version"]
     if git_version is not None and not isinstance(git_version, str):
         raise TraceValidationError(
@@ -188,12 +221,22 @@ def _validate_node_materialization_schema(payload: Mapping[str, Any]) -> None:
         raise TraceValidationError(
             "node generator metadata runtime_conformance_digest is invalid"
         )
-    for field_name in ("sobol_maxbit", "sobol_maxdim"):
+    integer_fields = (
+        ("iid_open_unit_bits",)
+        if source == "iid"
+        else ("sobol_maxbit", "sobol_maxdim")
+    )
+    for field_name in integer_fields:
         value = metadata[field_name]
         if type(value) is not int or value < 1:
             raise TraceValidationError(
                 f"node generator metadata {field_name} must be a positive plain integer"
             )
+    if source == "iid":
+        if metadata["iid_counter_hash"] != "sha256":
+            raise TraceValidationError("node IID counter hash is invalid")
+    elif not isinstance(metadata["sobol_randomization"], str):
+        raise TraceValidationError("node Sobol randomization metadata is invalid")
 
     normal_transform = metadata["normal_transform"]
     if (
@@ -234,7 +277,7 @@ def build_perturbation_run_identity(
     task_rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for task in tasks:
-        if not isinstance(task, CountdownTask):
+        if type(task) is not CountdownTask:
             raise TypeError("tasks must contain only CountdownTask values")
         if task.task_fingerprint in seen:
             raise ValueError("run identity contains a duplicate task")
@@ -322,13 +365,13 @@ def _validate_request(
     exploration_seed: int,
     node_visit_index: int,
 ) -> tuple[CountdownState, tuple[CountdownAction, ...]]:
-    if not isinstance(task, CountdownTask):
+    if type(task) is not CountdownTask:
         raise TypeError("task must be a CountdownTask")
-    _require_source(source)
+    resolved_source = _require_source(source)
     _require_nonnegative_int(exploration_seed, "exploration_seed")
     visit = _require_nonnegative_int(node_visit_index, "node_visit_index")
-    if visit >= 2**SobolEngine.MAXBIT:
-        raise ValueError("node_visit_index exceeds the versioned Sobol depth")
+    if visit > MAX_GENERIC_NODE_VISIT_INDEX:
+        raise ValueError("node_visit_index exceeds the generic safety bound")
     canonical_state = task.canonical_state(state)
     action_order = tuple(actions)
     if any(not isinstance(action, CountdownAction) for action in action_order):
@@ -338,8 +381,13 @@ def _validate_request(
         raise ValueError("terminal or actionless states have no perturbation stream")
     if action_order != expected_actions:
         raise ValueError("action order drifted from the task adapter")
-    if len(action_order) > SobolEngine.MAXDIM:
-        raise ValueError("action dimension exceeds the versioned Sobol maximum")
+    if len(action_order) > MAX_GENERIC_ACTION_DIMENSION:
+        raise ValueError("action dimension exceeds the generic safety bound")
+    if resolved_source == "sobol":
+        if visit >= 2**SobolEngine.MAXBIT:
+            raise ValueError("node_visit_index exceeds the versioned Sobol depth")
+        if len(action_order) > SobolEngine.MAXDIM:
+            raise ValueError("action dimension exceeds the versioned Sobol maximum")
     return canonical_state, action_order
 
 
@@ -532,7 +580,7 @@ def generate_perturbation_point(
 
 @dataclass(frozen=True)
 class PerturbationDraw:
-    """One selected-source vector and its accepted work receipt."""
+    """One selected-source vector and its coordinate-generation receipt."""
 
     node: dict[str, Any]
     point: dict[str, Any]
@@ -634,7 +682,7 @@ class LazyNormalSource:
         self.trace.assert_identity_unchanged()
         if not isinstance(ledger, TrackAWorkLedger):
             raise TypeError("ledger must be a TrackAWorkLedger")
-        if not isinstance(task, CountdownTask):
+        if type(task) is not CountdownTask:
             raise TypeError("task must be a CountdownTask")
         if (
             self._source != self._run_identity["selected_source"]
@@ -676,7 +724,13 @@ class LazyNormalSource:
             exploration_seed=self._exploration_seed,
             node_visit_index=visit_index,
         )
-        receipt = ledger.charge_perturbed_selection(len(action_order))
+        materialized = node_digest not in self._nodes
+        reservation = self.trace.reserve_event_slots(2 if materialized else 1)
+        try:
+            receipt = ledger.charge_perturbation_coordinates(len(action_order))
+        except Exception:
+            reservation.cancel()
+            raise
 
         try:
             node, point = generate_perturbation_point(
@@ -690,10 +744,18 @@ class LazyNormalSource:
             if node != candidate_node:
                 raise AssertionError("node materialization drifted within one draw")
 
-            materialized = node_digest not in self._nodes
             if materialized:
-                self.trace.append("node_materialized", node)
-            self.trace.append("perturbation_draw", point, receipt=receipt)
+                self.trace.append(
+                    "node_materialized",
+                    node,
+                    reservation=reservation,
+                )
+            self.trace.append(
+                "perturbation_draw",
+                point,
+                receipt=receipt,
+                reservation=reservation,
+            )
             if materialized:
                 self._nodes[node_digest] = node
             self._next_visit[node_digest] = visit_index + 1
@@ -705,6 +767,8 @@ class LazyNormalSource:
                 materialized,
             )
         except Exception as error:
+            if reservation.remaining:
+                reservation.cancel()
             self._poisoned = True
             self.trace.poison("accepted_perturbation_commit_failure")
             raise TrackARunPoisoned(
@@ -715,7 +779,7 @@ class LazyNormalSource:
 def _task_index(tasks: Sequence[CountdownTask]) -> dict[str, CountdownTask]:
     index: dict[str, CountdownTask] = {}
     for task in tasks:
-        if not isinstance(task, CountdownTask):
+        if type(task) is not CountdownTask:
             raise TypeError("replay tasks must contain only CountdownTask values")
         if task.task_fingerprint in index:
             raise TraceValidationError("replay task registry contains duplicates")
@@ -846,7 +910,6 @@ def replay_perturbation_trace(
                     "perturbation point failed generative replay"
                 )
             expected_delta = {axis: 0 for axis in TRACK_A_WORK_AXES}
-            expected_delta["legal_action_scores"] = node["action_count"]
             expected_delta["generated_perturbation_coordinates"] = node[
                 "action_count"
             ]

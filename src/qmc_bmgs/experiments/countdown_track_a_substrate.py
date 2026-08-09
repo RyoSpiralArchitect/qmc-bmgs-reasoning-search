@@ -27,7 +27,7 @@ def _self_test() -> dict[str, object]:
     if len(actions) != 53:
         raise AssertionError("dynamic-dimension fixture drifted")
     limits = {axis: 128 for axis in TRACK_A_WORK_AXES}
-    limits["legal_action_scores"] = len(actions)
+    limits["legal_action_scores"] = 0
     limits["generated_perturbation_coordinates"] = len(actions)
     budget = TrackAWorkBudget(**limits)
     ledger = TrackAWorkLedger(budget)
@@ -53,7 +53,10 @@ def _self_test() -> dict[str, object]:
         actions=actions,
         ledger=ledger,
     )
-    record = trace.finalize(ledger.snapshot())
+    snapshot = ledger.snapshot()
+    if snapshot["usage"]["legal_action_scores"] != 0:
+        raise AssertionError("perturbation source charged selection scores")
+    record = trace.finalize(snapshot)
     payload = canonical_trace_bytes(record)
     replayed = replay_perturbation_trace_bytes(
         payload,
@@ -69,6 +72,7 @@ def _self_test() -> dict[str, object]:
         "generated_coordinates": len(draw.normals),
         "materialized_nodes": source.materialized_node_count,
         "point_count": source.point_count,
+        "legal_action_scores": snapshot["usage"]["legal_action_scores"],
         "status": "PASS",
         "trace_digest": record["deterministic_digest"],
     }

@@ -152,23 +152,26 @@ class TrackAWorkLedger:
                 ),
             )
 
-    def charge_selection(self, action_count: int) -> TrackAChargeReceipt:
+    def charge_selection(self, scored_action_count: int) -> TrackAChargeReceipt:
         """Charge scoring every legal action at one selection point."""
 
-        count = _require_plain_positive_int(action_count, "action_count")
+        count = _require_plain_positive_int(
+            scored_action_count,
+            "scored_action_count",
+        )
         return self.charge(legal_action_scores=count)
 
-    def charge_perturbed_selection(
+    def charge_perturbation_coordinates(
         self,
-        action_count: int,
+        coordinate_count: int,
     ) -> TrackAChargeReceipt:
-        """Charge scoring plus exactly one perturbation coordinate per action."""
+        """Charge exactly one generated perturbation coordinate per action."""
 
-        count = _require_plain_positive_int(action_count, "action_count")
-        return self.charge(
-            legal_action_scores=count,
-            generated_perturbation_coordinates=count,
+        count = _require_plain_positive_int(
+            coordinate_count,
+            "coordinate_count",
         )
+        return self.charge(generated_perturbation_coordinates=count)
 
     def observe_live_storage(self, *, live_nodes: int, live_bytes: int) -> None:
         """Record current and peak live storage without treating it as budget."""

@@ -160,6 +160,25 @@ def _validate_base_run_identity(payload: Any) -> dict[str, Any]:
 
 
 @dataclass
+class TraceEventReservation:
+    """Opaque capacity claim for a fixed number of future trace events."""
+
+    _trace: HashChainedTrace
+    _remaining: int
+    _active: bool = field(default=True, init=False)
+
+    @property
+    def remaining(self) -> int:
+        return self._remaining
+
+    def cancel(self) -> None:
+        """Release every unconsumed slot without appending an event."""
+
+        if self._active:
+            self._trace._cancel_event_reservation(self)
+
+
+@dataclass
 class HashChainedTrace:
     """Append-only deterministic core trace.
 
@@ -174,6 +193,11 @@ class HashChainedTrace:
     _charge_count: int = field(default=0, init=False, repr=False)
     _poison_reason: str | None = field(default=None, init=False, repr=False)
     _run_identity_digest: str = field(default="", init=False, repr=False)
+    _event_reservations: list[TraceEventReservation] = field(
+        default_factory=list,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         frozen = _frozen_json_value(self.run_identity, field_name="run_identity")
@@ -197,8 +221,64 @@ class HashChainedTrace:
         return len(self._events)
 
     @property
+    def reserved_event_slot_count(self) -> int:
+        return sum(reservation._remaining for reservation in self._event_reservations)
+
+    @property
     def events(self) -> tuple[dict[str, Any], ...]:
         return tuple(_frozen_json_value(self._events, field_name="events"))
+
+    def reserve_event_slots(self, count: int) -> TraceEventReservation:
+        """Atomically claim event capacity or fail without changing the trace."""
+
+        self.assert_identity_unchanged()
+        if self._poison_reason is not None:
+            raise TraceValidationError("cannot reserve slots on a poisoned trace")
+        if type(count) is not int or count < 1:
+            raise TraceValidationError(
+                "event reservation count must be a positive plain integer"
+            )
+        if self.event_count + self.reserved_event_slot_count + count > MAX_TRACE_EVENTS:
+            raise TraceValidationError("trace event capacity exhausted")
+        reservation = TraceEventReservation(self, count)
+        self._event_reservations.append(reservation)
+        return reservation
+
+    def _require_active_reservation(
+        self,
+        reservation: TraceEventReservation,
+    ) -> None:
+        if (
+            not isinstance(reservation, TraceEventReservation)
+            or reservation._trace is not self
+            or not reservation._active
+            or reservation._remaining < 1
+            or not any(item is reservation for item in self._event_reservations)
+        ):
+            raise TraceValidationError("event reservation is not active on this trace")
+
+    def _consume_event_reservation(
+        self,
+        reservation: TraceEventReservation,
+    ) -> None:
+        self._require_active_reservation(reservation)
+        reservation._remaining -= 1
+        if reservation._remaining == 0:
+            self._event_reservations = [
+                item for item in self._event_reservations if item is not reservation
+            ]
+            reservation._active = False
+
+    def _cancel_event_reservation(
+        self,
+        reservation: TraceEventReservation,
+    ) -> None:
+        self._require_active_reservation(reservation)
+        self._event_reservations = [
+            item for item in self._event_reservations if item is not reservation
+        ]
+        reservation._remaining = 0
+        reservation._active = False
 
     def append(
         self,
@@ -206,6 +286,7 @@ class HashChainedTrace:
         payload: Mapping[str, Any],
         *,
         receipt: TrackAChargeReceipt | None = None,
+        reservation: TraceEventReservation | None = None,
     ) -> dict[str, Any]:
         self.assert_identity_unchanged()
         if self._poison_reason is not None:
@@ -215,11 +296,16 @@ class HashChainedTrace:
         frozen_payload = _frozen_json_value(payload, field_name="event payload")
         if not isinstance(frozen_payload, dict):
             raise TraceValidationError("event payload must be a JSON object")
+        if reservation is None:
+            if self.event_count + self.reserved_event_slot_count >= MAX_TRACE_EVENTS:
+                raise TraceValidationError("trace event capacity exhausted")
+        else:
+            self._require_active_reservation(reservation)
         charge: dict[str, Any] | None = None
         next_usage = self._usage
         if receipt is not None:
-            if not isinstance(receipt, TrackAChargeReceipt):
-                raise TypeError("receipt must be a TrackAChargeReceipt")
+            if type(receipt) is not TrackAChargeReceipt:
+                raise TypeError("receipt must be exactly TrackAChargeReceipt")
             receipt_payload = receipt.to_dict()
             charge_index = _require_nonnegative_int(
                 receipt_payload["charge_index"],
@@ -256,6 +342,13 @@ class HashChainedTrace:
                 "usage_after": frozen_usage,
             }
 
+        # Receipt serialization is the last caller-controlled callback. Recheck
+        # the reservation afterward, then consume it before the irreversible
+        # event append so no callback can leave an appended-but-uncommitted
+        # event behind.
+        if reservation is not None:
+            self._require_active_reservation(reservation)
+
         previous = (
             self._events[-1]["event_digest"] if self._events else GENESIS_DIGEST
         )
@@ -267,6 +360,8 @@ class HashChainedTrace:
             "previous_event_digest": previous,
         }
         event = {**core, "event_digest": sha256_json(core)}
+        if reservation is not None:
+            self._consume_event_reservation(reservation)
         self._events.append(event)
         if receipt is not None:
             self._usage = next_usage
@@ -284,6 +379,8 @@ class HashChainedTrace:
             raise TraceValidationError(
                 f"cannot finalize poisoned trace: {self._poison_reason}"
             )
+        if self._event_reservations:
+            raise TraceValidationError("cannot finalize with reserved event slots")
         frozen_ledger = _frozen_json_value(
             ledger_snapshot,
             field_name="ledger_snapshot",

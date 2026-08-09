@@ -72,30 +72,51 @@ class TrackAWorkBudgetTests(unittest.TestCase):
         )
         self.assertEqual(ledger.snapshot(), before)
 
-    def test_selection_helpers_charge_closed_work_bundles(self) -> None:
+    def test_selection_and_perturbation_helpers_charge_separate_axes(self) -> None:
         ledger = TrackAWorkLedger(_budget())
         first = ledger.charge_selection(7)
-        second = ledger.charge_perturbed_selection(53)
+        second = ledger.charge_perturbation_coordinates(53)
         usage = ledger.snapshot()["usage"]
 
         self.assertEqual(first.charge_index, 0)
         self.assertEqual(second.charge_index, 1)
-        self.assertEqual(usage["legal_action_scores"], 60)
+        self.assertEqual(usage["legal_action_scores"], 7)
         self.assertEqual(usage["generated_perturbation_coordinates"], 53)
         self.assertEqual(usage["edge_selections"], 0)
         self.assertEqual(usage["transitions"], 0)
 
-    def test_perturbed_selection_fails_atomically_before_coordinate_charge(self) -> None:
+    def test_perturbation_helper_ignores_exhausted_selection_axis(self) -> None:
         ledger = TrackAWorkLedger(
             _budget(
-                legal_action_scores=52,
-                generated_perturbation_coordinates=100,
+                legal_action_scores=0,
+                generated_perturbation_coordinates=53,
+            )
+        )
+        receipt = ledger.charge_perturbation_coordinates(53)
+
+        self.assertEqual(dict(receipt.increments)["legal_action_scores"], 0)
+        self.assertEqual(
+            ledger.snapshot()["usage"],
+            {
+                axis: 53 if axis == "generated_perturbation_coordinates" else 0
+                for axis in TRACK_A_WORK_AXES
+            },
+        )
+
+    def test_unequal_selection_and_coordinate_charge_is_atomic(self) -> None:
+        ledger = TrackAWorkLedger(
+            _budget(
+                legal_action_scores=6,
+                generated_perturbation_coordinates=53,
             )
         )
         before = ledger.snapshot()
 
         with self.assertRaises(TrackABudgetExceeded) as caught:
-            ledger.charge_perturbed_selection(53)
+            ledger.charge(
+                legal_action_scores=7,
+                generated_perturbation_coordinates=53,
+            )
 
         self.assertEqual(caught.exception.blocked_axes, ("legal_action_scores",))
         self.assertEqual(ledger.snapshot(), before)
@@ -109,7 +130,7 @@ class TrackAWorkBudgetTests(unittest.TestCase):
             lambda ledger: ledger.charge(),
             lambda ledger: ledger.charge(legal_action_scores=0),
             lambda ledger: ledger.charge_selection(0),
-            lambda ledger: ledger.charge_perturbed_selection(False),
+            lambda ledger: ledger.charge_perturbation_coordinates(False),
         )
         for invalid_call in invalid_calls:
             ledger = TrackAWorkLedger(_budget())
@@ -141,7 +162,8 @@ class TrackAWorkBudgetTests(unittest.TestCase):
                 generated_perturbation_coordinates=53,
             )
         )
-        ledger.charge_perturbed_selection(53)
+        ledger.charge_selection(53)
+        ledger.charge_perturbation_coordinates(53)
         snapshot = ledger.snapshot()
 
         for axis in (

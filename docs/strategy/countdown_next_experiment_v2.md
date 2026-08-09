@@ -175,16 +175,28 @@ The two action-score counters have distinct meanings:
 
 - `proposal_action_scores` charges once per legal arm when an uncached proposal
   policy evaluates that arm. A cached proposal lookup does not charge it again.
-- `selection_action_scores`, called **legal-action scores** in the frozen slice
-  below, charges once per legal arm whose current Thompson sample, UCB/PUCT
-  index, best-first priority, or deterministic selection value is computed or
-  recomputed to select or expand an action. Reading a cached proposal value as
-  an input to the current selection formula still incurs this selection charge.
+- `legal_action_scores` charges once per legal arm whose current Thompson
+  sample, UCB/PUCT index, best-first priority, or deterministic selection value
+  is computed or recomputed to select or expand an action. Reading a cached
+  proposal value as an input to the current selection formula still incurs this
+  selection charge.
+
+Earlier design prose used `selection_action_scores` for the latter quantity;
+that is a legacy explanatory alias only. The canonical Track A ledger and all
+new manifests use `legal_action_scores`.
 
 Thus the 256-score endpoint is exactly
-`selection_action_scores <= 256`; it is neither
+`legal_action_scores <= 256`; it is neither
 `proposal_action_scores <= 256` nor the sum of the two counters. Proposal
 scoring remains an independently reported and hard-guarded work axis.
+
+The perturbation-material source charges only
+`generated_perturbation_coordinates`; generating a vector is not itself a
+selection score. Before the method matrix is implemented, the common harness
+must add a single transaction or preauthorization spanning the selection-score
+and coordinate work required by one Thompson choice. Sequentially accepting
+two independent charges would permit a half-completed selection and does not
+satisfy the all-or-nothing contract below.
 
 Primary comparisons should use both a fixed-verifier slice and a fixed
 legal-action-score slice. A method that visits cheaper trajectories should not
@@ -199,7 +211,7 @@ The frozen v2 slices are:
 These slices are executed as two separate frozen budget profiles, not as two
 competing stopping limits in one run:
 
-- `score256`: `selection_action_scores` is the stopping axis with limit `256`;
+- `score256`: `legal_action_scores` is the stopping axis with limit `256`;
   the verifier and every other work axis are non-primary hard guards.
 - `verifier8`: `verifier_calls` is the stopping axis with limit `8`;
   selection scoring and every other work axis are non-primary hard guards.

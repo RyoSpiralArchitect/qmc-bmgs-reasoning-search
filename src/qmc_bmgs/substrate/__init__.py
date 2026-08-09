@@ -19,6 +19,7 @@ from qmc_bmgs.substrate.perturbations import (
 )
 from qmc_bmgs.substrate.trace import (
     HashChainedTrace,
+    TraceEventReservation,
     TraceValidationError,
     canonical_trace_bytes,
     validate_trace,
@@ -30,6 +31,7 @@ __all__ = [
     "HashChainedTrace",
     "LazyNormalSource",
     "PerturbationDraw",
+    "TraceEventReservation",
     "TraceValidationError",
     "TrackABudgetExceeded",
     "TrackAChargeReceipt",

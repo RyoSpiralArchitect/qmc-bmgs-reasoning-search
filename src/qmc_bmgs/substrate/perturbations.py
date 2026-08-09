@@ -6,7 +6,7 @@ import math
 import platform
 import sys
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Mapping, Sequence
 
@@ -600,6 +600,75 @@ class PerturbationDraw:
         return int(self.point["node_visit_index"])
 
 
+@dataclass(frozen=True)
+class PerturbationDrawPlan:
+    """Pure identity/dimension plan for one later precharged draw.
+
+    Constructing a plan does not reserve trace capacity, charge work, generate
+    an exploration point, or advance a node-local visit.  Private identity and
+    revision fields prevent a plan from being moved between sources or reused
+    after another draw commits.
+    """
+
+    task: CountdownTask
+    state: CountdownState
+    actions: tuple[CountdownAction, ...]
+    node_digest: str
+    node_visit_index: int
+    node_materialized: bool
+    required_event_slots: int
+    _source_token: object = field(repr=False, compare=False)
+    _source_revision: int = field(repr=False, compare=False)
+    _trace_event_count: int = field(repr=False, compare=False)
+
+
+_VALIDATED_STORED_MATERIAL_TOKEN = object()
+
+
+@dataclass(frozen=True)
+class ValidatedStoredPerturbationMaterial:
+    """Replay-only node/point material that passed independent generation."""
+
+    node: dict[str, Any]
+    point: dict[str, Any]
+    _validation_token: object = field(repr=False, compare=False)
+    _source_token: object = field(repr=False, compare=False)
+    _source_revision: int = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True)
+class PreparedPerturbationDraw:
+    """Generated but uncommitted material for one atomic search batch."""
+
+    plan: PerturbationDrawPlan
+    node: dict[str, Any]
+    point: dict[str, Any]
+    receipt: TrackAChargeReceipt
+    node_materialized: bool
+    used_stored_material: bool
+    _ledger: TrackAWorkLedger = field(repr=False, compare=False)
+    _source_token: object = field(repr=False, compare=False)
+    _source_revision: int = field(repr=False, compare=False)
+
+    @property
+    def uniforms(self) -> tuple[float, ...]:
+        return tuple(self.point["uniforms"])
+
+    @property
+    def normals(self) -> tuple[float, ...]:
+        return tuple(self.point["normals"])
+
+    @property
+    def uncharged_events(self) -> tuple[tuple[str, dict[str, Any]], ...]:
+        """Return node/point events whose receipt belongs to the search step."""
+
+        events: list[tuple[str, dict[str, Any]]] = []
+        if self.node_materialized:
+            events.append(("node_materialized", deepcopy(self.node)))
+        events.append(("perturbation_draw", deepcopy(self.point)))
+        return tuple(events)
+
+
 class LazyNormalSource:
     """Materialize only selected-source points at actually visited states."""
 
@@ -639,6 +708,8 @@ class LazyNormalSource:
         self._next_visit: dict[str, int] = {}
         self._bound_ledger: TrackAWorkLedger | None = None
         self._poisoned = False
+        self._source_token = object()
+        self._revision = 0
 
     @property
     def source(self) -> str:
@@ -668,6 +739,379 @@ class LazyNormalSource:
             "poisoned": self._poisoned,
             "trace_event_count": self.trace.event_count,
         }
+
+    def _require_current_plan(
+        self,
+        plan: PerturbationDrawPlan,
+        *,
+        require_unchanged_trace: bool,
+    ) -> None:
+        if type(plan) is not PerturbationDrawPlan:
+            raise TypeError("plan must be exactly PerturbationDrawPlan")
+        if plan._source_token is not self._source_token:
+            raise ValueError("draw plan belongs to another normal source")
+        if plan._source_revision != self._revision:
+            raise ValueError("draw plan is stale after another source commit")
+        if require_unchanged_trace and plan._trace_event_count != self.trace.event_count:
+            raise ValueError("draw plan is stale after trace advancement")
+        if self._poisoned:
+            raise TrackARunPoisoned("normal source is poisoned after a partial failure")
+        self.trace.assert_identity_unchanged()
+        if self._task_index.get(plan.task.task_fingerprint) != plan.task:
+            raise ValueError("draw plan task is not sealed in the run identity")
+        canonical_state, action_order = _validate_request(
+            task=plan.task,
+            state=plan.state,
+            actions=plan.actions,
+            source=self._source,
+            exploration_seed=self._exploration_seed,
+            node_visit_index=plan.node_visit_index,
+        )
+        expected_node = _node_record(
+            task=plan.task,
+            state=canonical_state,
+            action_order=action_order,
+            source=self._source,
+            exploration_seed=self._exploration_seed,
+        )
+        if expected_node["node_digest"] != plan.node_digest:
+            raise ValueError("draw plan node identity drifted")
+        current_visit = self._next_visit.get(plan.node_digest, 0)
+        if current_visit != plan.node_visit_index:
+            raise ValueError("draw plan node visit is stale")
+        materialized = plan.node_digest not in self._nodes
+        if materialized != plan.node_materialized:
+            raise ValueError("draw plan materialization state is stale")
+        expected_slots = 2 if materialized else 1
+        if plan.required_event_slots != expected_slots:
+            raise ValueError("draw plan event-slot count drifted")
+
+    def plan_draw(
+        self,
+        *,
+        task: CountdownTask,
+        state: CountdownState,
+        actions: Sequence[CountdownAction],
+    ) -> PerturbationDrawPlan:
+        """Plan one source point without charging, RNG, trace, or cursor mutation."""
+
+        if self._poisoned:
+            raise TrackARunPoisoned("normal source is poisoned after a partial failure")
+        self.trace.assert_identity_unchanged()
+        if type(task) is not CountdownTask:
+            raise TypeError("task must be a CountdownTask")
+        if (
+            self._source != self._run_identity["selected_source"]
+            or self._exploration_seed != self._run_identity["exploration_seed"]
+        ):
+            raise TraceValidationError("normal source drifted from sealed run identity")
+        if self._task_index.get(task.task_fingerprint) != task:
+            raise ValueError("task is not sealed in the run identity")
+
+        canonical_state, action_order = _validate_request(
+            task=task,
+            state=state,
+            actions=actions,
+            source=self._source,
+            exploration_seed=self._exploration_seed,
+            node_visit_index=0,
+        )
+        candidate_node = _node_record(
+            task=task,
+            state=canonical_state,
+            action_order=action_order,
+            source=self._source,
+            exploration_seed=self._exploration_seed,
+        )
+        node_digest = candidate_node["node_digest"]
+        visit_index = self._next_visit.get(node_digest, 0)
+        _validate_request(
+            task=task,
+            state=canonical_state,
+            actions=action_order,
+            source=self._source,
+            exploration_seed=self._exploration_seed,
+            node_visit_index=visit_index,
+        )
+        node_materialized = node_digest not in self._nodes
+        return PerturbationDrawPlan(
+            task=task,
+            state=canonical_state,
+            actions=action_order,
+            node_digest=node_digest,
+            node_visit_index=visit_index,
+            node_materialized=node_materialized,
+            required_event_slots=2 if node_materialized else 1,
+            _source_token=self._source_token,
+            _source_revision=self._revision,
+            _trace_event_count=self.trace.event_count,
+        )
+
+    def abort_plan(self, plan: PerturbationDrawPlan) -> None:
+        """Discard an uncharged plan; the source remains byte-for-byte unchanged."""
+
+        self._require_current_plan(plan, require_unchanged_trace=True)
+
+    @staticmethod
+    def _validated_search_step_delta(
+        receipt: TrackAChargeReceipt,
+        action_count: int,
+    ) -> dict[str, int]:
+        if type(receipt) is not TrackAChargeReceipt:
+            raise TypeError("receipt must be exactly TrackAChargeReceipt")
+        expected_axes = tuple(TRACK_A_WORK_AXES)
+        increment_axes = tuple(axis for axis, _ in receipt.increments)
+        usage_axes = tuple(axis for axis, _ in receipt.usage_after)
+        if increment_axes != expected_axes or usage_axes != expected_axes:
+            raise ValueError("search-step receipt axes/order drifted")
+        delta = dict(receipt.increments)
+        if any(type(value) is not int or value < 0 for value in delta.values()):
+            raise ValueError("search-step receipt increments are invalid")
+        usage = dict(receipt.usage_after)
+        if any(type(value) is not int or value < 0 for value in usage.values()):
+            raise ValueError("search-step receipt usage is invalid")
+        proposal_evaluations = delta["proposal_state_evaluations"]
+        if proposal_evaluations not in {0, 1}:
+            raise ValueError("search-step proposal evaluation count is invalid")
+        expected_proposal_scores = action_count if proposal_evaluations else 0
+        expected = {
+            "proposal_state_evaluations": proposal_evaluations,
+            "proposal_action_scores": expected_proposal_scores,
+            "legal_action_scores": action_count,
+            "generated_perturbation_coordinates": action_count,
+            "edge_selections": 1,
+            "transitions": 1,
+            "verifier_calls": 0,
+        }
+        if delta != expected:
+            raise ValueError("receipt is not one complete Thompson search step")
+        return delta
+
+    def _validate_precharged_receipt(
+        self,
+        *,
+        ledger: TrackAWorkLedger,
+        receipt: TrackAChargeReceipt,
+        action_count: int,
+    ) -> None:
+        if not isinstance(ledger, TrackAWorkLedger):
+            raise TypeError("ledger must be a TrackAWorkLedger")
+        if ledger.budget.to_dict() != self._run_identity["work_limits"]:
+            raise ValueError("ledger limits do not match the sealed run identity")
+        if self._bound_ledger is not None and ledger is not self._bound_ledger:
+            raise ValueError("normal source is already bound to another ledger")
+        self._validated_search_step_delta(receipt, action_count)
+        snapshot = ledger.snapshot()
+        if type(receipt.charge_index) is not int or receipt.charge_index < 0:
+            raise ValueError("search-step receipt charge index is invalid")
+        if snapshot["charge_count"] != receipt.charge_index + 1:
+            raise ValueError("search-step receipt is not the latest ledger charge")
+        if snapshot["usage"] != dict(receipt.usage_after):
+            raise ValueError("search-step receipt does not match ledger usage")
+
+    def validate_stored_material_for_replay(
+        self,
+        plan: PerturbationDrawPlan,
+        *,
+        node: Mapping[str, Any],
+        point: Mapping[str, Any],
+    ) -> ValidatedStoredPerturbationMaterial:
+        """Independently regenerate stored material before replay may inject it."""
+
+        self._require_current_plan(plan, require_unchanged_trace=True)
+        if type(node) is not dict or type(point) is not dict:
+            raise TypeError("stored replay node and point must be exact dictionaries")
+        expected_node, expected_point = generate_perturbation_point(
+            task=plan.task,
+            state=plan.state,
+            actions=plan.actions,
+            source=self._source,
+            exploration_seed=self._exploration_seed,
+            node_visit_index=plan.node_visit_index,
+        )
+        if node != expected_node or point != expected_point:
+            raise TraceValidationError(
+                "stored perturbation material failed independent validation"
+            )
+        return ValidatedStoredPerturbationMaterial(
+            node=deepcopy(expected_node),
+            point=deepcopy(expected_point),
+            _validation_token=_VALIDATED_STORED_MATERIAL_TOKEN,
+            _source_token=self._source_token,
+            _source_revision=self._revision,
+        )
+
+    def _poison(self, reason_code: str) -> None:
+        if not isinstance(reason_code, str) or not reason_code:
+            raise ValueError("poison reason code must be a non-empty string")
+        self._poisoned = True
+        self.trace.poison(reason_code)
+
+    def poison_after_accepted_charge(self, reason_code: str) -> None:
+        """Fail closed when accepted search work cannot be fully committed."""
+
+        self._poison(reason_code)
+
+    def materialize_precharged(
+        self,
+        plan: PerturbationDrawPlan,
+        *,
+        ledger: TrackAWorkLedger,
+        receipt: TrackAChargeReceipt,
+        stored_material: ValidatedStoredPerturbationMaterial | None = None,
+    ) -> PreparedPerturbationDraw:
+        """Generate one point only after a combined search-step charge exists."""
+
+        self._require_current_plan(plan, require_unchanged_trace=True)
+        # Once this check succeeds, the ledger has accepted the complete step.
+        # Any later failure makes that receipt impossible to close and poisons
+        # the run rather than continuing from half-committed work.
+        try:
+            self._validate_precharged_receipt(
+                ledger=ledger,
+                receipt=receipt,
+                action_count=len(plan.actions),
+            )
+            if stored_material is None:
+                node, point = generate_perturbation_point(
+                    task=plan.task,
+                    state=plan.state,
+                    actions=plan.actions,
+                    source=self._source,
+                    exploration_seed=self._exploration_seed,
+                    node_visit_index=plan.node_visit_index,
+                )
+                used_stored_material = False
+            else:
+                if (
+                    type(stored_material) is not ValidatedStoredPerturbationMaterial
+                    or stored_material._validation_token
+                    is not _VALIDATED_STORED_MATERIAL_TOKEN
+                    or stored_material._source_token is not self._source_token
+                    or stored_material._source_revision != self._revision
+                ):
+                    raise ValueError("stored replay material is not validated here")
+                node = deepcopy(stored_material.node)
+                point = deepcopy(stored_material.point)
+                used_stored_material = True
+            if (
+                node["node_digest"] != plan.node_digest
+                or point["node_digest"] != plan.node_digest
+                or point["node_visit_index"] != plan.node_visit_index
+            ):
+                raise ValueError("prepared perturbation material drifted from plan")
+            return PreparedPerturbationDraw(
+                plan=plan,
+                node=deepcopy(node),
+                point=deepcopy(point),
+                receipt=receipt,
+                node_materialized=plan.node_materialized,
+                used_stored_material=used_stored_material,
+                _ledger=ledger,
+                _source_token=self._source_token,
+                _source_revision=self._revision,
+            )
+        except Exception as error:
+            self._poison("accepted_search_materialization_failure")
+            raise TrackARunPoisoned(
+                "accepted search-step charge could not materialize; discard run"
+            ) from error
+
+    def poison_prepared(
+        self,
+        prepared: PreparedPerturbationDraw,
+        *,
+        reason_code: str = "accepted_search_commit_failure",
+    ) -> None:
+        """Explicitly poison a prepared step that the caller cannot commit."""
+
+        if type(prepared) is not PreparedPerturbationDraw:
+            raise TypeError("prepared must be exactly PreparedPerturbationDraw")
+        if prepared._source_token is not self._source_token:
+            raise ValueError("prepared draw belongs to another normal source")
+        self._poison(reason_code)
+
+    def commit_prepared(
+        self,
+        prepared: PreparedPerturbationDraw,
+    ) -> PerturbationDraw:
+        """Advance the source only after its uncharged events and receipt exist."""
+
+        if type(prepared) is not PreparedPerturbationDraw:
+            raise TypeError("prepared must be exactly PreparedPerturbationDraw")
+        if prepared._source_token is not self._source_token:
+            raise ValueError("prepared draw belongs to another normal source")
+        if prepared._source_revision != self._revision:
+            raise ValueError("prepared draw is stale after another source commit")
+        self._require_current_plan(
+            prepared.plan,
+            require_unchanged_trace=False,
+        )
+        try:
+            self._validate_precharged_receipt(
+                ledger=prepared._ledger,
+                receipt=prepared.receipt,
+                action_count=len(prepared.plan.actions),
+            )
+            new_events = self.trace.events[prepared.plan._trace_event_count :]
+            expected_charge = {
+                "charge_index": prepared.receipt.charge_index,
+                "delta": dict(prepared.receipt.increments),
+                "usage_after": dict(prepared.receipt.usage_after),
+            }
+            point_positions = [
+                index
+                for index, event in enumerate(new_events)
+                if event["kind"] == "perturbation_draw"
+                and event["payload"] == prepared.point
+            ]
+            node_positions = [
+                index
+                for index, event in enumerate(new_events)
+                if event["kind"] == "node_materialized"
+                and event["payload"] == prepared.node
+            ]
+            receipt_positions = [
+                index
+                for index, event in enumerate(new_events)
+                if event["charge"] == expected_charge
+            ]
+            if len(point_positions) != 1 or new_events[point_positions[0]]["charge"]:
+                raise ValueError("prepared point is not present as one uncharged event")
+            if prepared.node_materialized:
+                if (
+                    len(node_positions) != 1
+                    or new_events[node_positions[0]]["charge"] is not None
+                    or node_positions[0] > point_positions[0]
+                ):
+                    raise ValueError(
+                        "prepared node is not present before its uncharged point"
+                    )
+            elif node_positions:
+                raise ValueError("existing prepared node was materialized again")
+            if (
+                len(receipt_positions) != 1
+                or receipt_positions[0] <= point_positions[0]
+            ):
+                raise ValueError("search-step receipt does not follow its point")
+
+            node_digest = prepared.plan.node_digest
+            if prepared.node_materialized:
+                self._nodes[node_digest] = deepcopy(prepared.node)
+            self._next_visit[node_digest] = prepared.plan.node_visit_index + 1
+            self._bound_ledger = prepared._ledger
+            self._revision += 1
+            return PerturbationDraw(
+                node=deepcopy(prepared.node),
+                point=deepcopy(prepared.point),
+                receipt=prepared.receipt,
+                node_materialized=prepared.node_materialized,
+            )
+        except Exception as error:
+            self._poison("accepted_search_commit_failure")
+            raise TrackARunPoisoned(
+                "accepted search-step charge could not commit; discard run"
+            ) from error
 
     def draw(
         self,
@@ -760,6 +1204,7 @@ class LazyNormalSource:
                 self._nodes[node_digest] = node
             self._next_visit[node_digest] = visit_index + 1
             self._bound_ledger = ledger
+            self._revision += 1
             return PerturbationDraw(
                 deepcopy(node),
                 deepcopy(point),
@@ -769,8 +1214,7 @@ class LazyNormalSource:
         except Exception as error:
             if reservation.remaining:
                 reservation.cancel()
-            self._poisoned = True
-            self.trace.poison("accepted_perturbation_commit_failure")
+            self._poison("accepted_perturbation_commit_failure")
             raise TrackARunPoisoned(
                 "accepted perturbation charge could not be committed; discard run"
             ) from error

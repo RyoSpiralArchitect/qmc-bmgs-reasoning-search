@@ -125,6 +125,50 @@ class TrackAWorkLedger:
             raise ValueError("charge must contain positive work")
         return validated
 
+    def preflight(self, **increments: int) -> tuple[str, ...]:
+        """Return every axis that would block one charge, without mutation.
+
+        The validation and axis order are exactly the same as :meth:`charge`.
+        A caller may use this to derive a deterministic stop reason, but the
+        subsequent charge remains authoritative.  Track A runs are
+        single-threaded, so no cross-thread reservation semantics are implied.
+        """
+
+        validated = self._validated_increments(increments)
+        limits = self.budget.to_dict()
+        with self._lock:
+            return tuple(
+                axis
+                for axis in TRACK_A_WORK_AXES
+                if self._usage[axis] + validated[axis] > limits[axis]
+            )
+
+    @staticmethod
+    def search_step_increments(
+        action_count: int,
+        *,
+        proposal_cache_miss: bool,
+        generate_perturbations: bool,
+    ) -> dict[str, int]:
+        """Build the one-receipt work vector for a complete search step."""
+
+        count = _require_plain_positive_int(action_count, "action_count")
+        if type(proposal_cache_miss) is not bool:
+            raise TypeError("proposal_cache_miss must be bool")
+        if type(generate_perturbations) is not bool:
+            raise TypeError("generate_perturbations must be bool")
+        return {
+            "proposal_state_evaluations": int(proposal_cache_miss),
+            "proposal_action_scores": count if proposal_cache_miss else 0,
+            "legal_action_scores": count,
+            "generated_perturbation_coordinates": (
+                count if generate_perturbations else 0
+            ),
+            "edge_selections": 1,
+            "transitions": 1,
+            "verifier_calls": 0,
+        }
+
     def charge(self, **increments: int) -> TrackAChargeReceipt:
         """Atomically charge work or raise without changing any ledger field."""
 
@@ -151,6 +195,29 @@ class TrackAWorkLedger:
                     (axis, self._usage[axis]) for axis in TRACK_A_WORK_AXES
                 ),
             )
+
+    def charge_search_step(
+        self,
+        action_count: int,
+        *,
+        proposal_cache_miss: bool,
+        generate_perturbations: bool,
+    ) -> TrackAChargeReceipt:
+        """Atomically authorize one scored edge selection and transition.
+
+        A proposal miss, every legal-action score, the optional one-coordinate
+        perturbation per action, the selected edge, and its transition share a
+        single receipt.  Rejection therefore cannot leave a half-authorized
+        Thompson selection.
+        """
+
+        return self.charge(
+            **self.search_step_increments(
+                action_count,
+                proposal_cache_miss=proposal_cache_miss,
+                generate_perturbations=generate_perturbations,
+            )
+        )
 
     def charge_selection(self, scored_action_count: int) -> TrackAChargeReceipt:
         """Charge scoring every legal action at one selection point."""

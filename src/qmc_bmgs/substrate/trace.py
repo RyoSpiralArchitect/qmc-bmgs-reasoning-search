@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from qmc_bmgs.substrate.budget import (
     TRACK_A_LEDGER_SCHEMA_VERSION,
@@ -133,7 +133,7 @@ def _validate_base_run_identity(payload: Any) -> dict[str, Any]:
             raise TraceValidationError(f"run identity {field_name} is invalid")
     if payload["run_identity_schema_version"] != RUN_IDENTITY_SCHEMA_VERSION:
         raise TraceValidationError("unsupported run identity schema")
-    if payload["selected_source"] not in {"iid", "sobol"}:
+    if payload["selected_source"] not in {"none", "iid", "sobol"}:
         raise TraceValidationError("run identity selected source is invalid")
     _require_nonnegative_int(
         payload["exploration_seed"],
@@ -198,6 +198,11 @@ class HashChainedTrace:
         init=False,
         repr=False,
     )
+    _serialization_in_progress: bool = field(
+        default=False,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         frozen = _frozen_json_value(self.run_identity, field_name="run_identity")
@@ -231,6 +236,8 @@ class HashChainedTrace:
     def reserve_event_slots(self, count: int) -> TraceEventReservation:
         """Atomically claim event capacity or fail without changing the trace."""
 
+        if self._serialization_in_progress:
+            raise TraceValidationError("reentrant trace mutation is forbidden")
         self.assert_identity_unchanged()
         if self._poison_reason is not None:
             raise TraceValidationError("cannot reserve slots on a poisoned trace")
@@ -280,6 +287,154 @@ class HashChainedTrace:
         reservation._remaining = 0
         reservation._active = False
 
+    def _consume_exact_event_reservation(
+        self,
+        reservation: TraceEventReservation,
+        count: int,
+    ) -> None:
+        self._require_active_reservation(reservation)
+        if reservation._remaining != count:
+            raise TraceValidationError(
+                "event reservation size does not match batch size"
+            )
+        self._event_reservations = [
+            item for item in self._event_reservations if item is not reservation
+        ]
+        reservation._remaining = 0
+        reservation._active = False
+
+    def append_batch(
+        self,
+        events: Sequence[tuple[str, Mapping[str, Any]]],
+        *,
+        receipt: TrackAChargeReceipt,
+        receipt_event_index: int,
+        reservation: TraceEventReservation,
+    ) -> tuple[dict[str, Any], ...]:
+        """Commit a preauthorized event batch with exactly one receipt owner.
+
+        All payload serialization, receipt closure, reservation checks, and
+        event hashes are completed before any trace field changes.  The
+        reservation must cover exactly this batch.  Once the irreversible
+        commit starts, only assignments of already-built plain Python values
+        remain; no caller-controlled callback is invoked afterward.
+        """
+
+        self.assert_identity_unchanged()
+        if self._poison_reason is not None:
+            raise TraceValidationError("cannot append to a poisoned trace")
+        if self._serialization_in_progress:
+            raise TraceValidationError("reentrant trace mutation is forbidden")
+        if type(events) not in {list, tuple}:
+            raise TypeError("events must be a sequence of (kind, payload) pairs")
+        if not events:
+            raise TraceValidationError("event batch cannot be empty")
+        if type(receipt_event_index) is not int or not (
+            0 <= receipt_event_index < len(events)
+        ):
+            raise TraceValidationError("receipt_event_index is outside the batch")
+        if type(receipt) is not TrackAChargeReceipt:
+            raise TypeError("receipt must be exactly TrackAChargeReceipt")
+
+        self._require_active_reservation(reservation)
+        if reservation._remaining != len(events):
+            raise TraceValidationError(
+                "event reservation size does not match batch size"
+            )
+
+        self._serialization_in_progress = True
+        try:
+            frozen_events: list[tuple[str, dict[str, Any]]] = []
+            for event_index, event_spec in enumerate(events):
+                if type(event_spec) is not tuple or len(event_spec) != 2:
+                    raise TypeError(
+                        f"events[{event_index}] must be exactly a (kind, payload) tuple"
+                    )
+                kind, payload = event_spec
+                if not isinstance(kind, str) or not kind:
+                    raise TraceValidationError(
+                        f"events[{event_index}] kind must be a non-empty string"
+                    )
+                frozen_payload = _frozen_json_value(
+                    payload,
+                    field_name=f"events[{event_index}] payload",
+                )
+                if not isinstance(frozen_payload, dict):
+                    raise TraceValidationError(
+                        f"events[{event_index}] payload must be a JSON object"
+                    )
+                frozen_events.append((kind, frozen_payload))
+
+            receipt_payload = receipt.to_dict()
+        finally:
+            self._serialization_in_progress = False
+        charge_index = _require_nonnegative_int(
+            receipt_payload["charge_index"],
+            "receipt.charge_index",
+        )
+        if charge_index != self._charge_count:
+            raise TraceValidationError("receipt charge index is not contiguous")
+        frozen_delta = _validate_usage_mapping(
+            receipt_payload["increments"],
+            axes=TRACK_A_WORK_AXES,
+            field_name="receipt.increments",
+        )
+        if not any(frozen_delta.values()):
+            raise TraceValidationError("receipt must contain positive work")
+        frozen_usage = _validate_usage_mapping(
+            receipt_payload["usage_after"],
+            axes=TRACK_A_WORK_AXES,
+            field_name="receipt.usage_after",
+        )
+        next_usage = {
+            axis: self._usage[axis] + frozen_delta[axis]
+            for axis in TRACK_A_WORK_AXES
+        }
+        if frozen_usage != next_usage:
+            raise TraceValidationError("receipt usage does not close")
+        if any(next_usage[axis] > self._limits[axis] for axis in TRACK_A_WORK_AXES):
+            raise TraceValidationError("receipt exceeds trace work limits")
+        charge = {
+            "charge_index": charge_index,
+            "delta": frozen_delta,
+            "usage_after": frozen_usage,
+        }
+
+        # Payload and receipt conversion above may invoke user-controlled
+        # Mapping or monkeypatched dataclass methods. Recheck after every such
+        # callback and before constructing the final immutable batch.
+        self.assert_identity_unchanged()
+        if self._poison_reason is not None:
+            raise TraceValidationError("cannot append to a poisoned trace")
+        self._require_active_reservation(reservation)
+        if reservation._remaining != len(frozen_events):
+            raise TraceValidationError(
+                "event reservation size does not match batch size"
+            )
+
+        previous = (
+            self._events[-1]["event_digest"] if self._events else GENESIS_DIGEST
+        )
+        built_events: list[dict[str, Any]] = []
+        for offset, (kind, payload) in enumerate(frozen_events):
+            core = {
+                "charge": charge if offset == receipt_event_index else None,
+                "index": len(self._events) + offset,
+                "kind": kind,
+                "payload": payload,
+                "previous_event_digest": previous,
+            }
+            built = {**core, "event_digest": sha256_json(core)}
+            built_events.append(built)
+            previous = built["event_digest"]
+
+        committed_events = [*self._events, *built_events]
+        self._consume_exact_event_reservation(reservation, len(built_events))
+        self._events = committed_events
+        self._usage = next_usage
+        self._charge_count += 1
+        return tuple(_frozen_json_value(built_events, field_name="event batch"))
+
     def append(
         self,
         kind: str,
@@ -288,6 +443,8 @@ class HashChainedTrace:
         receipt: TrackAChargeReceipt | None = None,
         reservation: TraceEventReservation | None = None,
     ) -> dict[str, Any]:
+        if self._serialization_in_progress:
+            raise TraceValidationError("reentrant trace mutation is forbidden")
         self.assert_identity_unchanged()
         if self._poison_reason is not None:
             raise TraceValidationError("cannot append to a poisoned trace")
@@ -369,6 +526,8 @@ class HashChainedTrace:
         return _frozen_json_value(event, field_name="event")
 
     def poison(self, reason_code: str) -> None:
+        if self._serialization_in_progress:
+            raise TraceValidationError("reentrant trace mutation is forbidden")
         if not isinstance(reason_code, str) or not reason_code:
             raise ValueError("poison reason code must be a non-empty string")
         self._poison_reason = reason_code

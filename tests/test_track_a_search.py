@@ -12,8 +12,13 @@ from unittest.mock import patch
 from qmc_bmgs.benchmarks.countdown import CountdownTask
 from qmc_bmgs.substrate.budget import TRACK_A_WORK_AXES, TrackAWorkBudget
 from qmc_bmgs.substrate.countdown_search import (
+    DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
     DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION,
     DIMENSION_NORMALIZED_SELECTION_RULE_ID,
+    GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION,
+    GREEDY_ANCHORED_SELECTION_RULE_ID,
+    MIN_POSITIVE_BINARY64,
+    RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID,
     TrackABudgetProfile,
     TrackAMethodSpec,
     _action_dimension_noise_normalizer,
@@ -179,6 +184,62 @@ class TrackASearchTests(unittest.TestCase):
                 posterior_sd_scale=1.0,
                 selection_rule_id="wrong/v1",
                 schema_version=DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION,
+            )
+
+        dense = TrackAMethodSpec.dimension_normalized_dense_thompson("iid")
+        self.assertEqual(
+            dense.to_dict(),
+            {
+                "beam_width": None,
+                "c_puct": None,
+                "greedy_anchor_trajectory_count": 0,
+                "method": "thompson",
+                "method_id": ("thompson_reciprocal_error_terminal_dimnorm_noise/v3"),
+                "posterior_sd_scale": 1.0,
+                "prior_bonus": 1.0,
+                "schema_version": DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
+                "selected_source": "iid",
+                "selection_rule_id": DIMENSION_NORMALIZED_SELECTION_RULE_ID,
+                "terminal_value_rule_id": (
+                    RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID
+                ),
+            },
+        )
+        anchored = TrackAMethodSpec.greedy_anchored_dimension_normalized_dense_thompson(
+            "sobol"
+        )
+        self.assertEqual(
+            anchored.to_dict(),
+            {
+                "beam_width": None,
+                "c_puct": None,
+                "greedy_anchor_trajectory_count": 1,
+                "method": "thompson",
+                "method_id": (
+                    "thompson_greedy_anchor_reciprocal_error_terminal_dimnorm_noise/v4"
+                ),
+                "posterior_sd_scale": 1.0,
+                "prior_bonus": 1.0,
+                "schema_version": GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION,
+                "selected_source": "sobol",
+                "selection_rule_id": GREEDY_ANCHORED_SELECTION_RULE_ID,
+                "terminal_value_rule_id": (
+                    RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID
+                ),
+            },
+        )
+        with self.assertRaisesRegex(ValueError, "plain integer"):
+            TrackAMethodSpec(
+                method="thompson",
+                selected_source="iid",
+                prior_bonus=1.0,
+                posterior_sd_scale=1.0,
+                selection_rule_id=GREEDY_ANCHORED_SELECTION_RULE_ID,
+                terminal_value_rule_id=(
+                    RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID
+                ),
+                greedy_anchor_trajectory_count=True,  # type: ignore[arg-type]
+                schema_version=GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION,
             )
 
     def test_budget_profile_requires_one_supported_positive_primary_axis(self) -> None:
@@ -561,6 +622,352 @@ class TrackASearchTests(unittest.TestCase):
         self.assertEqual(selection["selection_values"], expected)
         self.assertEqual(selection["action_index"], 1)
 
+    def test_dense_terminal_value_is_one_factor_and_replays(self) -> None:
+        profile = _verifier_profile(2)
+        for source in ("iid", "sobol"):
+            v2_method = TrackAMethodSpec.dimension_normalized_thompson(source)
+            dense_method = TrackAMethodSpec.dimension_normalized_dense_thompson(source)
+            v2 = run_countdown_track_a_search(
+                TASK,
+                proposal=HEURISTIC,
+                method=v2_method,
+                budget_profile=profile,
+                exploration_seed=7168,
+            )
+            dense = run_countdown_track_a_search(
+                TASK,
+                proposal=HEURISTIC,
+                method=dense_method,
+                budget_profile=profile,
+                exploration_seed=7168,
+            )
+
+            self.assertEqual(
+                _events(v2.record, "perturbation_draw")[0]["payload"],
+                _events(dense.record, "perturbation_draw")[0]["payload"],
+            )
+            self.assertEqual(
+                _events(v2.record, "terminal_verified")[0]["payload"]["actions"],
+                _events(dense.record, "terminal_verified")[0]["payload"]["actions"],
+            )
+            terminal = _events(dense.record, "terminal_verified")[0]["payload"]
+            backup = _events(dense.record, "trajectory_backed_up")[0]["payload"]
+            final_value = terminal["verification"]["final_value"]
+            target = terminal["verification"]["target"]
+            absolute_error = abs(final_value - target)
+            expected = 1.0 / (1 + absolute_error)
+            self.assertEqual(backup["terminal_value"], expected)
+            self.assertEqual(
+                backup["terminal_value_rule_id"],
+                RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID,
+            )
+            self.assertEqual(backup["terminal_absolute_error"], absolute_error)
+            self.assertEqual(backup["terminal_value_numerator"], 1)
+            self.assertEqual(
+                backup["terminal_value_denominator"],
+                1 + absolute_error,
+            )
+            self.assertEqual(
+                backup["terminal_value_floor"],
+                MIN_POSITIVE_BINARY64,
+            )
+            self.assertIs(backup["terminal_value_floor_applied"], False)
+            self.assertGreater(backup["terminal_value"], 0.0)
+            self.assertLessEqual(backup["terminal_value"], 1.0)
+            if absolute_error:
+                self.assertLessEqual(backup["terminal_value"], 0.5)
+            self.assertEqual(
+                replay_countdown_track_a_search_bytes(
+                    dense.canonical_bytes,
+                    task=TASK,
+                    proposal=HEURISTIC,
+                    method=dense_method,
+                    budget_profile=profile,
+                    exploration_seed=7168,
+                    expected_run_identity_digest=dense.run_identity_digest,
+                ),
+                dense.canonical_bytes,
+            )
+
+    def test_greedy_anchor_is_explicit_counted_and_then_uses_thompson(self) -> None:
+        profile = _verifier_profile(2)
+        greedy = run_countdown_track_a_search(
+            TASK,
+            proposal=HEURISTIC,
+            method=TrackAMethodSpec.greedy(),
+            budget_profile=profile,
+            exploration_seed=0,
+        )
+        greedy_terminal = _events(greedy.record, "terminal_verified")[0]["payload"]
+
+        for source in ("iid", "sobol"):
+            method = (
+                TrackAMethodSpec.greedy_anchored_dimension_normalized_dense_thompson(
+                    source
+                )
+            )
+            result = run_countdown_track_a_search(
+                TASK,
+                proposal=HEURISTIC,
+                method=method,
+                budget_profile=profile,
+                exploration_seed=7168,
+            )
+            terminals = _events(result.record, "terminal_verified")
+            self.assertEqual(
+                terminals[0]["payload"]["actions"], greedy_terminal["actions"]
+            )
+            self.assertEqual(
+                terminals[0]["payload"]["states"], greedy_terminal["states"]
+            )
+            anchor_backup = _events(result.record, "trajectory_backed_up")[0]["payload"]
+            self.assertEqual(anchor_backup["terminal_absolute_error"], 0)
+            self.assertEqual(anchor_backup["terminal_value_numerator"], 1)
+            self.assertEqual(anchor_backup["terminal_value_denominator"], 1)
+            self.assertEqual(
+                anchor_backup["terminal_value_floor"],
+                MIN_POSITIVE_BINARY64,
+            )
+            self.assertIs(anchor_backup["terminal_value_floor_applied"], False)
+            self.assertEqual(anchor_backup["terminal_value"], 1.0)
+
+            selections = [
+                event["payload"]
+                for event in _events(result.record, "selection_committed")
+            ]
+            anchored = [item for item in selections if item["trajectory_index"] == 0]
+            posterior = [item for item in selections if item["trajectory_index"] == 1]
+            self.assertEqual(len(anchored), TASK.max_steps)
+            self.assertEqual(len(posterior), TASK.max_steps)
+            self.assertTrue(
+                all(
+                    item["selection_semantics"]["selection_phase"] == "greedy_anchor"
+                    for item in anchored
+                )
+            )
+            self.assertTrue(
+                all(
+                    item["selection_semantics"]["perturbation_point_usage"]
+                    == "not_generated"
+                    for item in anchored
+                )
+            )
+            self.assertTrue(
+                all(
+                    item["selection_semantics"]["selection_phase"]
+                    == "posterior_perturbation"
+                    for item in posterior
+                )
+            )
+            root_proposal = _events(result.record, "proposal_materialized")[0][
+                "payload"
+            ]["proposal"]
+            self.assertEqual(
+                anchored[0]["selection_values"], root_proposal["prior_logp"]
+            )
+            self.assertTrue(all(item["point_digest"] is None for item in anchored))
+            self.assertTrue(all(item["point_digest"] is not None for item in posterior))
+            points = _events(result.record, "perturbation_draw")
+            self.assertEqual(len(points), len(posterior))
+            self.assertEqual(
+                result.summary["selected_source_point_count"], len(posterior)
+            )
+            self.assertTrue(
+                all(
+                    event["charge"]["delta"]["generated_perturbation_coordinates"] == 0
+                    for event in _events(result.record, "selection_committed")
+                    if event["payload"]["trajectory_index"] == 0
+                )
+            )
+            self.assertTrue(
+                all(
+                    event["charge"]["delta"]["generated_perturbation_coordinates"]
+                    == len(event["payload"]["scored_action_indices"])
+                    for event in _events(result.record, "selection_committed")
+                    if event["payload"]["trajectory_index"] == 1
+                )
+            )
+            usage = result.summary["ledger_usage"]
+            self.assertEqual(
+                usage["generated_perturbation_coordinates"],
+                usage["legal_action_scores"]
+                - sum(len(item["scored_action_indices"]) for item in anchored),
+            )
+            first_root_point = points[0]["payload"]
+            self.assertEqual(first_root_point["node_visit_index"], 0)
+            self.assertEqual(
+                replay_countdown_track_a_search_bytes(
+                    result.canonical_bytes,
+                    task=TASK,
+                    proposal=HEURISTIC,
+                    method=method,
+                    budget_profile=profile,
+                    exploration_seed=7168,
+                    expected_run_identity_digest=result.run_identity_digest,
+                ),
+                result.canonical_bytes,
+            )
+
+    def test_greedy_anchor_only_run_never_plans_or_consumes_a_point(self) -> None:
+        method = TrackAMethodSpec.greedy_anchored_dimension_normalized_dense_thompson(
+            "iid"
+        )
+        with patch.object(
+            LazyNormalSource,
+            "plan_draw",
+            side_effect=AssertionError("anchor must not plan a perturbation"),
+        ):
+            result = run_countdown_track_a_search(
+                TASK,
+                proposal=HEURISTIC,
+                method=method,
+                budget_profile=_verifier_profile(1),
+                exploration_seed=7168,
+            )
+            self.assertEqual(
+                replay_countdown_track_a_search_bytes(
+                    result.canonical_bytes,
+                    task=TASK,
+                    proposal=HEURISTIC,
+                    method=method,
+                    budget_profile=_verifier_profile(1),
+                    exploration_seed=7168,
+                    expected_run_identity_digest=result.run_identity_digest,
+                ),
+                result.canonical_bytes,
+            )
+        self.assertEqual(_events(result.record, "node_materialized"), [])
+        self.assertEqual(_events(result.record, "perturbation_draw"), [])
+        self.assertEqual(result.summary["selected_source_point_count"], 0)
+        self.assertEqual(
+            result.summary["ledger_usage"]["generated_perturbation_coordinates"],
+            0,
+        )
+
+    def test_dense_terminal_underflow_is_floored_and_replay_valid(self) -> None:
+        task = CountdownTask((1, 1, 1, 1, 1, 10**324), target=1)
+        proposal = TrackAProposalSpec("uniform/v1")
+        method = TrackAMethodSpec.greedy_anchored_dimension_normalized_dense_thompson(
+            "iid"
+        )
+        profile = _verifier_profile(1)
+        result = run_countdown_track_a_search(
+            task,
+            proposal=proposal,
+            method=method,
+            budget_profile=profile,
+            exploration_seed=7168,
+        )
+        backup = _events(result.record, "trajectory_backed_up")[0]["payload"]
+        self.assertGreaterEqual(backup["terminal_absolute_error"], 10**324)
+        self.assertEqual(backup["terminal_value_numerator"], 1)
+        self.assertGreaterEqual(backup["terminal_value_denominator"], 10**324)
+        self.assertEqual(
+            backup["terminal_value_floor"],
+            MIN_POSITIVE_BINARY64,
+        )
+        self.assertIs(backup["terminal_value_floor_applied"], True)
+        self.assertEqual(backup["terminal_value"], MIN_POSITIVE_BINARY64)
+        self.assertEqual(
+            replay_countdown_track_a_search_bytes(
+                result.canonical_bytes,
+                task=task,
+                proposal=proposal,
+                method=method,
+                budget_profile=profile,
+                exploration_seed=7168,
+                expected_run_identity_digest=result.run_identity_digest,
+            ),
+            result.canonical_bytes,
+        )
+
+    def test_dense_and_anchor_semantic_tampering_fails_stage_one(self) -> None:
+        profile = _verifier_profile(2)
+        dense_method = TrackAMethodSpec.dimension_normalized_dense_thompson("iid")
+        dense = run_countdown_track_a_search(
+            TASK,
+            proposal=HEURISTIC,
+            method=dense_method,
+            budget_profile=profile,
+            exploration_seed=7168,
+        )
+        dense_tamper = copy.deepcopy(dense.record)
+        backup = _events(dense_tamper, "trajectory_backed_up")[0]["payload"]
+        backup["terminal_value_rule_id"] = "wrong/v1"
+        _rehash_trace(dense_tamper)
+        with self.assertRaisesRegex(TraceValidationError, "terminal-value rule"):
+            replay_countdown_track_a_search_bytes(
+                canonical_trace_bytes(dense_tamper),
+                task=TASK,
+                proposal=HEURISTIC,
+                method=dense_method,
+                budget_profile=profile,
+                exploration_seed=7168,
+                expected_run_identity_digest=dense.run_identity_digest,
+            )
+
+        dense_evidence_tamper = copy.deepcopy(dense.record)
+        backup = _events(dense_evidence_tamper, "trajectory_backed_up")[0]["payload"]
+        backup["terminal_value_denominator"] += 1
+        _rehash_trace(dense_evidence_tamper)
+        with self.assertRaisesRegex(TraceValidationError, "value evidence"):
+            replay_countdown_track_a_search_bytes(
+                canonical_trace_bytes(dense_evidence_tamper),
+                task=TASK,
+                proposal=HEURISTIC,
+                method=dense_method,
+                budget_profile=profile,
+                exploration_seed=7168,
+                expected_run_identity_digest=dense.run_identity_digest,
+            )
+
+        anchor_method = (
+            TrackAMethodSpec.greedy_anchored_dimension_normalized_dense_thompson("iid")
+        )
+        anchor = run_countdown_track_a_search(
+            TASK,
+            proposal=HEURISTIC,
+            method=anchor_method,
+            budget_profile=profile,
+            exploration_seed=7168,
+        )
+        anchor_tamper = copy.deepcopy(anchor.record)
+        selection = _events(anchor_tamper, "selection_committed")[0]["payload"]
+        selection["selection_semantics"]["selection_phase"] = "posterior_perturbation"
+        _rehash_trace(anchor_tamper)
+        with self.assertRaisesRegex(
+            TraceValidationError,
+            "dimension-normalized selection semantics",
+        ):
+            replay_countdown_track_a_search_bytes(
+                canonical_trace_bytes(anchor_tamper),
+                task=TASK,
+                proposal=HEURISTIC,
+                method=anchor_method,
+                budget_profile=profile,
+                exploration_seed=7168,
+                expected_run_identity_digest=anchor.run_identity_digest,
+            )
+
+        anchor_point_tamper = copy.deepcopy(anchor.record)
+        first_point_digest = _events(
+            anchor_point_tamper,
+            "perturbation_draw",
+        )[0]["payload"]["point_digest"]
+        selection = _events(anchor_point_tamper, "selection_committed")[0]["payload"]
+        selection["point_digest"] = first_point_digest
+        _rehash_trace(anchor_point_tamper)
+        with self.assertRaisesRegex(TraceValidationError, "unperturbed selection"):
+            replay_countdown_track_a_search_bytes(
+                canonical_trace_bytes(anchor_point_tamper),
+                task=TASK,
+                proposal=HEURISTIC,
+                method=anchor_method,
+                budget_profile=profile,
+                exploration_seed=7168,
+                expected_run_identity_digest=anchor.run_identity_digest,
+            )
+
     def test_score_stop_preflights_whole_dynamic_action_vector(self) -> None:
         result = run_countdown_track_a_search(
             TASK,
@@ -782,6 +1189,13 @@ results = [
     for method, seed in (
         (TrackAMethodSpec.puct(), 0),
         (TrackAMethodSpec.dimension_normalized_thompson(\"iid\"), 7168),
+        (TrackAMethodSpec.dimension_normalized_dense_thompson(\"iid\"), 7168),
+        (
+            TrackAMethodSpec.greedy_anchored_dimension_normalized_dense_thompson(
+                \"iid\"
+            ),
+            7168,
+        ),
     )
 ]
 print(\"|\".join(result.record[\"deterministic_digest\"] for result in results))

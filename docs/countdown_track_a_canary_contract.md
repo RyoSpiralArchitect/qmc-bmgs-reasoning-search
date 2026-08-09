@@ -119,7 +119,7 @@ not converted into a failed search row. The execution environment must be
 pinned or containerized before the first outcome is materialized.
 
 The runtime qualifier recomputes the perturbation conformance probes on every
-call, bypassing the normal metadata cache. Its result explicitly does not
+call, invalidating and repopulating the normal metadata cache. Its result explicitly does not
 authorize execution. The future runner must itself verify a bundle path, match
 the qualifier digest to that verified bundle, prove
 `implementation_base.merged_revision` is an ancestor of its clean checkout,
@@ -129,6 +129,10 @@ and build identity must be sealed separately before outcomes; the PR3
 `implementation_base` is a substrate ancestry anchor, not the future runner's
 required HEAD. A caller-created
 `VerifiedCanaryBundle` or a saved qualifier result is never an authority token.
+The runner preflight must additionally seal host/OS/Python-build details and a
+canary-task-independent search numeric micro-fixture, because the current
+runtime manifest alone does not fully fingerprint libm or executable search
+behavior.
 
 ```bash
 qmc-bmgs-countdown-track-a-canary-manifest --qualify-runtime

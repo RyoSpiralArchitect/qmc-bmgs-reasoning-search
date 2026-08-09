@@ -289,6 +289,8 @@ seal digestは
 generator conformance digestへ固定している。一般的なpackage install可否とは分け、
 実行前にportableなartifact監査とlive exact-runtime qualificationの両方を要求する。
 runtime不一致は失敗rowではなく`NOT_RUN`として扱う。
+qualifier単体は実行を認可しない。次runnerがverified bundle、fresh qualifier、cleanな
+`implementation_base` revisionを同一preflight内で結合して初めてcellを開ける。
 
 ```bash
 qmc-bmgs-countdown-track-a-canary-manifest --qualify-runtime

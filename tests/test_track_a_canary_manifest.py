@@ -24,6 +24,7 @@ from qmc_bmgs.experiments.countdown_track_a_canary_manifest import (
     write_track_a_canary_bundle,
 )
 from qmc_bmgs.experiments import countdown_track_a_canary_manifest as manifest_module
+from qmc_bmgs.substrate import perturbations as perturbations_module
 from qmc_bmgs.substrate.trace import canonical_json, sha256_json
 
 
@@ -351,7 +352,12 @@ class TrackACanaryManifestTests(unittest.TestCase):
         for row in runtimes.values():
             self.assertEqual(row["digest"], sha256_json(row["metadata"]))
 
-        def frozen_perturbation(source: str) -> dict[str, object]:
+        def frozen_perturbation(
+            source: str,
+            *,
+            refresh_conformance: bool = False,
+        ) -> dict[str, object]:
+            self.assertIs(type(refresh_conformance), bool)
             return deepcopy(frozen[source]["metadata"])
 
         with (
@@ -367,7 +373,8 @@ class TrackACanaryManifestTests(unittest.TestCase):
             ),
         ):
             qualification = qualify_track_a_canary_runtime()
-        self.assertEqual(qualification["status"], "QUALIFIED")
+        self.assertEqual(qualification["status"], "RUNTIME_QUALIFIED")
+        self.assertFalse(qualification["execution_authorized"])
 
         changed = deepcopy(frozen["search"]["metadata"])
         changed["python_version"] = "tampered"
@@ -381,6 +388,18 @@ class TrackACanaryManifestTests(unittest.TestCase):
                 manifest_module,
                 "perturbation_runtime_metadata",
                 side_effect=frozen_perturbation,
+            ),
+            self.assertRaisesRegex(CanaryManifestError, "frozen canary runtime"),
+        ):
+            qualify_track_a_canary_runtime()
+
+    def test_runtime_qualification_recomputes_perturbation_conformance(self) -> None:
+        manifest_module.perturbation_runtime_metadata("iid")
+        with (
+            patch.object(
+                perturbations_module,
+                "_iid_uniforms",
+                return_value=(0.5,) * 8,
             ),
             self.assertRaisesRegex(CanaryManifestError, "frozen canary runtime"),
         ):

@@ -428,9 +428,15 @@ def qualify_track_a_canary_runtime() -> dict[str, Any]:
 
     expected = frozen_track_a_canary_runtime_bindings()
     observed_metadata = {
-        "iid": perturbation_runtime_metadata("iid"),
+        "iid": perturbation_runtime_metadata(
+            "iid",
+            refresh_conformance=True,
+        ),
         "search": search_runtime_metadata(),
-        "sobol": perturbation_runtime_metadata("sobol"),
+        "sobol": perturbation_runtime_metadata(
+            "sobol",
+            refresh_conformance=True,
+        ),
     }
     for label, metadata in observed_metadata.items():
         try:
@@ -445,8 +451,9 @@ def qualify_track_a_canary_runtime() -> dict[str, Any]:
             )
     return {
         "bundle_id": BUNDLE_ID,
+        "execution_authorized": False,
         "runtime_bindings_digest": sha256_json(expected),
-        "status": "QUALIFIED",
+        "status": "RUNTIME_QUALIFIED",
     }
 
 

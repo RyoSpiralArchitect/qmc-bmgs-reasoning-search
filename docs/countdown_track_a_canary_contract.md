@@ -118,6 +118,14 @@ qualification against those bindings. A runtime mismatch is `NOT_RUN`; it is
 not converted into a failed search row. The execution environment must be
 pinned or containerized before the first outcome is materialized.
 
+The runtime qualifier recomputes the perturbation conformance probes on every
+call, bypassing the normal metadata cache. Its result explicitly does not
+authorize execution. The future runner must itself verify a bundle path, match
+the qualifier digest to that verified bundle, prove the clean source revision
+equals `implementation_base.merged_revision`, and bind every emitted record to
+the aggregate seal and method-manifest digest. A caller-created
+`VerifiedCanaryBundle` or a saved qualifier result is never an authority token.
+
 ```bash
 qmc-bmgs-countdown-track-a-canary-manifest --qualify-runtime
 ```

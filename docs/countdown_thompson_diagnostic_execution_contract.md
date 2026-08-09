@@ -91,7 +91,12 @@ PYTHONPATH=src python -m \
 The only successful status is
 `PREOUTCOME_AUTHORIZATION_CANDIDATE_WRITTEN`. Its claim boundary is planning
 only: no diagnostic outcome was opened. A refusal reports `NOT_RUN` and must not
-be reclassified as diagnostic evidence.
+be reclassified as diagnostic evidence. Invalid or incomplete CLI arguments are
+also canonical `NOT_RUN`, rather than an unstructured usage traceback. If the
+candidate's parent-directory durability and exact rollback both cannot be
+proven, planning reports `PUBLICATION_STATE_AMBIGUOUS`. A file left at that path
+is not an authorization candidate, must not be committed or used, and the
+storage failure must be resolved before planning again at a new path.
 
 The authorization candidate binds at least the exact output identity, 240-cell
 scope, bundle and schedule digests, runtime qualification, runner/search source
@@ -140,7 +145,11 @@ Do not retry an authorization that has a durable attempt marker. Before
 `STARTED`, a refusal is `NOT_RUN` and opens no diagnostic search outcome. Once
 `STARTED` is durable, any incomplete or failed execution is `INVALID`; the
 attempt evidence is retained and the one-shot authority is spent. Operators
-must preserve that evidence rather than delete it and rerun.
+must preserve that evidence rather than delete it and rerun. If commit
+durability and exact commit-receipt rollback both cannot be proven, the runner
+reports `PUBLICATION_STATE_AMBIGUOUS`. This also spends the one-shot authority:
+preserve the attempt and output paths, do not analyze the artifact, and do not
+retry.
 
 A valid completed artifact is one directory containing exactly:
 
@@ -178,7 +187,11 @@ three-file artifact closure, all 240 records, provider-call zero, budget
 evidence, source attestations, and both replay stages before constructing a
 summary. It writes one canonical no-overwrite summary only after every gate
 passes. Success reports `PASS`; any CLI, integrity, analysis, or publication
-failure reports canonical `INVALID` and emits no diagnostic result.
+failure with durably proven absence reports canonical `INVALID` and emits no
+diagnostic result. If summary durability and exact rollback both cannot be
+proven, it reports `PUBLICATION_STATE_AMBIGUOUS`; any file at the requested
+destination remains unauthoritative and must not be used as diagnostic
+evidence.
 
 The summary decision is exactly one of:
 

@@ -391,7 +391,9 @@ PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_diagnostic_anal
 実行時はclean source checkoutからmodule invocationを使い、`--repository-root .`を明示する。
 plan、別PRでのauthorization review、1回限りのrun、独立analysisの順序と完全なコマンドは
 [`docs/countdown_thompson_diagnostic_execution_contract.md`](docs/countdown_thompson_diagnostic_execution_contract.md)
-に固定した。v2/v3/v4のどれもbase searchとしてgreedy/beamを上回れなければ、locked-128は
+に固定した。通常の拒否は`NOT_RUN`/`INVALID`、directory durabilityとexact rollbackの両方が
+証明不能なI/O障害は`PUBLICATION_STATE_AMBIGUOUS`として分離し、残存fileをevidenceに使わない。
+v2/v3/v4のどれもbase searchとしてgreedy/beamを上回れなければ、locked-128は
 開かず`STOP_REPAIR_NO_LOCKED_128_RUN`とする。
 
 自然言語reasoningへの一般化や一般的なQMC優位は、まだ主張しません。

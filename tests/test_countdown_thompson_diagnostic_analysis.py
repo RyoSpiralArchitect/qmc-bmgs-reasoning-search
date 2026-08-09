@@ -749,6 +749,126 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                     output, analysis._canonical_bytes(payload)
                 )
 
+    def test_summary_parent_sync_retry_proves_success(self) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_fsync = analysis.os.fsync
+        call_count = 0
+
+        def fail_first_parent_sync(descriptor: int) -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise OSError("transient summary parent sync failure")
+            original_fsync(descriptor)
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "summary.json"
+            with patch.object(
+                analysis.os,
+                "fsync",
+                side_effect=fail_first_parent_sync,
+            ):
+                analysis._atomic_write_no_replace(output, payload)
+            self.assertEqual(output.read_bytes(), payload)
+
+    def test_summary_sync_failure_rolls_back_or_reports_ambiguity(self) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_fsync = analysis.os.fsync
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "summary.json"
+            call_count = 0
+
+            def fail_commit_and_retry(descriptor: int) -> None:
+                nonlocal call_count
+                call_count += 1
+                if call_count in {2, 3}:
+                    raise OSError("summary parent sync failure")
+                original_fsync(descriptor)
+
+            with patch.object(
+                analysis.os,
+                "fsync",
+                side_effect=fail_commit_and_retry,
+            ):
+                with self.assertRaisesRegex(OSError, "summary parent sync failure"):
+                    analysis._atomic_write_no_replace(output, payload)
+            self.assertFalse(output.exists())
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "summary.json"
+            call_count = 0
+            original_unlink = analysis._unlink_if_identity
+
+            def fail_every_parent_sync(descriptor: int) -> None:
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 2:
+                    raise OSError("persistent summary parent sync failure")
+                original_fsync(descriptor)
+
+            def refuse_summary_rollback(
+                directory_fd: int,
+                filename: str,
+                identity: tuple[int, int],
+            ) -> bool:
+                if filename == output.name:
+                    raise OSError("summary rollback failure")
+                return original_unlink(directory_fd, filename, identity)
+
+            with (
+                patch.object(
+                    analysis.os,
+                    "fsync",
+                    side_effect=fail_every_parent_sync,
+                ),
+                patch.object(
+                    analysis,
+                    "_unlink_if_identity",
+                    side_effect=refuse_summary_rollback,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisPublicationAmbiguousError,
+                    "must not be used",
+                ):
+                    analysis._atomic_write_no_replace(output, payload)
+            self.assertEqual(output.read_bytes(), payload)
+
+    def test_summary_publication_ambiguity_has_a_distinct_cli_status(self) -> None:
+        with (
+            patch.object(
+                analysis,
+                "write_countdown_thompson_diagnostic_summary",
+                side_effect=analysis.DiagnosticAnalysisPublicationAmbiguousError(
+                    "synthetic publication ambiguity"
+                ),
+            ),
+            patch("builtins.print") as printed,
+        ):
+            status = analysis.main(
+                [
+                    "--analyze",
+                    "artifact",
+                    "--bundle",
+                    "bundle",
+                    "--authorization-file",
+                    "authorization.json",
+                    "--authorization-digest",
+                    "0" * 64,
+                    "--output",
+                    "summary.json",
+                    "--repository-root",
+                    ".",
+                ]
+            )
+        self.assertEqual(status, 3)
+        self.assertIn("PUBLICATION_STATE_AMBIGUOUS", printed.call_args.args[0])
+
 
 def _score256_profile() -> TrackABudgetProfile:
     return TrackABudgetProfile(

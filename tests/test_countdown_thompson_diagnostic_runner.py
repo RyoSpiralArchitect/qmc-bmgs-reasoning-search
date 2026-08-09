@@ -501,6 +501,82 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 )
             )
 
+    def test_persistent_authorization_sync_failure_durably_revokes_candidate(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            authorization_path = root / "authorization.json"
+            preflight = _preflight(output)
+            original_fsync = runner.os.fsync
+            call_count = 0
+
+            def fail_initial_and_retry_sync(descriptor: int) -> None:
+                nonlocal call_count
+                call_count += 1
+                if call_count in {2, 3}:
+                    raise OSError("persistent authorization parent sync failure")
+                original_fsync(descriptor)
+
+            with (
+                patch.object(runner, "_fresh_preflight", return_value=preflight),
+                patch.object(
+                    runner.os,
+                    "fsync",
+                    side_effect=fail_initial_and_retry_sync,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticNotRunError,
+                    "durably revoked",
+                ):
+                    runner.write_countdown_thompson_diagnostic_execution_plan(
+                        root / "bundle",
+                        output,
+                        authorization_path,
+                        repository_root=root,
+                    )
+            self.assertFalse(authorization_path.exists())
+
+    def test_authorization_rollback_sync_failure_is_publication_ambiguous(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            authorization_path = root / "authorization.json"
+            preflight = _preflight(output)
+            original_fsync = runner.os.fsync
+            call_count = 0
+
+            def fail_publication_and_rollback_sync(descriptor: int) -> None:
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 2:
+                    raise OSError("authorization rollback sync failure")
+                original_fsync(descriptor)
+
+            with (
+                patch.object(runner, "_fresh_preflight", return_value=preflight),
+                patch.object(
+                    runner.os,
+                    "fsync",
+                    side_effect=fail_publication_and_rollback_sync,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "durability and exact rollback",
+                ):
+                    runner.write_countdown_thompson_diagnostic_execution_plan(
+                        root / "bundle",
+                        output,
+                        authorization_path,
+                        repository_root=root,
+                    )
+            self.assertFalse(authorization_path.exists())
+
     def test_authorization_parent_drift_revokes_candidate_before_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -528,8 +604,8 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 ),
             ):
                 with self.assertRaisesRegex(
-                    runner.DiagnosticRunnerError,
-                    "authorization parent path identity changed",
+                    runner.DiagnosticNotRunError,
+                    "durably revoked",
                 ):
                     runner.write_countdown_thompson_diagnostic_execution_plan(
                         root / "bundle",
@@ -1267,6 +1343,146 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             self.assertFalse((attempt / "invalid.json").exists())
             self.assertFalse((root / ".artifact.publish-lock").exists())
 
+    def test_persistent_artifact_parent_sync_failure_revokes_commit_as_invalid(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_write = runner._write_canonical_file_noreplace_at
+            original_fsync = runner.os.fsync
+            root_stat = root.stat()
+            root_identity = (root_stat.st_dev, root_stat.st_ino)
+            commit_written = False
+
+            def arm_after_commit(
+                directory_fd: int,
+                filename: str,
+                payload: dict[str, object],
+            ) -> None:
+                nonlocal commit_written
+                original_write(directory_fd, filename, payload)
+                if filename == "commit.json":
+                    commit_written = True
+
+            def fail_parent_sync(descriptor: int) -> None:
+                observed = runner.os.fstat(descriptor)
+                if (
+                    commit_written
+                    and (
+                        observed.st_dev,
+                        observed.st_ino,
+                    )
+                    == root_identity
+                ):
+                    raise OSError("persistent artifact parent sync failure")
+                original_fsync(descriptor)
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_write_canonical_file_noreplace_at",
+                    side_effect=arm_after_commit,
+                ),
+                patch.object(runner.os, "fsync", side_effect=fail_parent_sync),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticInvalidRunError,
+                    "persistent artifact parent sync failure",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+            self.assertEqual(
+                {path.name for path in output.iterdir()},
+                {"manifest.json", "records.jsonl"},
+            )
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue((attempt / "invalid.json").is_file())
+            self.assertFalse((root / ".artifact.publish-lock").exists())
+
+    def test_artifact_commit_rollback_sync_failure_is_publication_ambiguous(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_write = runner._write_canonical_file_noreplace_at
+            original_fsync = runner.os.fsync
+            root_stat = root.stat()
+            root_identity = (root_stat.st_dev, root_stat.st_ino)
+            commit_written = False
+
+            def arm_after_commit(
+                directory_fd: int,
+                filename: str,
+                payload: dict[str, object],
+            ) -> None:
+                nonlocal commit_written
+                original_write(directory_fd, filename, payload)
+                if filename == "commit.json":
+                    commit_written = True
+
+            def fail_publication_directory_sync(descriptor: int) -> None:
+                if not commit_written:
+                    original_fsync(descriptor)
+                    return
+                observed = runner.os.fstat(descriptor)
+                observed_identity = (observed.st_dev, observed.st_ino)
+                output_stat = output.stat()
+                output_identity = (output_stat.st_dev, output_stat.st_ino)
+                if commit_written and observed_identity in {
+                    root_identity,
+                    output_identity,
+                }:
+                    raise OSError("artifact commit rollback sync failure")
+                original_fsync(descriptor)
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_write_canonical_file_noreplace_at",
+                    side_effect=arm_after_commit,
+                ),
+                patch.object(
+                    runner.os,
+                    "fsync",
+                    side_effect=fail_publication_directory_sync,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "durability and exact rollback",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+            self.assertEqual(
+                {path.name for path in output.iterdir()},
+                {"manifest.json", "records.jsonl"},
+            )
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertFalse((attempt / "invalid.json").exists())
+            self.assertFalse((root / ".artifact.publish-lock").exists())
+
     def test_exception_after_successful_rename_keeps_committed_authority(
         self,
     ) -> None:
@@ -1769,25 +1985,50 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     )
 
     def test_cli_keeps_plan_self_test_and_run_authority_separate(self) -> None:
-        with self.assertRaises(SystemExit):
-            runner.main(
-                [
-                    "--run",
-                    "bundle",
-                    "--output",
-                    "artifact",
-                    "--authorization-file",
-                    "authorization.json",
-                    "--authorization-digest",
-                    "0" * 64,
-                    "--repository-root",
-                    ".",
-                ]
-            )
-        with self.assertRaises(SystemExit):
-            runner.main(["--self-test", "--output", "artifact"])
-        with self.assertRaises(SystemExit):
-            runner.main(["--self-test", "--repository-root", "."])
+        def assert_canonical_refusal(
+            arguments: list[str],
+            reason_fragment: str,
+        ) -> None:
+            with (
+                patch("builtins.print") as printed,
+                patch("sys.stderr") as stderr,
+            ):
+                with self.assertRaises(SystemExit) as stopped:
+                    runner.main(arguments)
+            stderr.write.assert_not_called()
+            self.assertEqual(stopped.exception.code, 2)
+            raw = printed.call_args.args[0]
+            refusal = json.loads(raw)
+            self.assertEqual(raw, runner.canonical_json(refusal))
+            self.assertEqual(refusal["status"], "NOT_RUN")
+            self.assertIn(reason_fragment, refusal["reason"])
+            self.assertIn("no execution-evidence authority", refusal["claim_boundary"])
+            self.assertIn("no retry authority", refusal["claim_boundary"])
+
+        assert_canonical_refusal([], "one of the arguments")
+        assert_canonical_refusal(
+            [
+                "--run",
+                "bundle",
+                "--output",
+                "artifact",
+                "--authorization-file",
+                "authorization.json",
+                "--authorization-digest",
+                "0" * 64,
+                "--repository-root",
+                ".",
+            ],
+            "--run requires",
+        )
+        assert_canonical_refusal(
+            ["--self-test", "--output", "artifact"],
+            "--self-test accepts no execution",
+        )
+        assert_canonical_refusal(
+            ["--self-test", "--repository-root", "."],
+            "--self-test accepts no execution",
+        )
         with (
             patch.object(runner, "_self_test", return_value={"status": "PASS"}),
             patch("builtins.print") as printed,
@@ -1799,37 +2040,37 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             "write_countdown_thompson_diagnostic_execution_plan",
             side_effect=AssertionError("planning must require an explicit root"),
         ):
-            with self.assertRaises(SystemExit):
-                runner.main(
-                    [
-                        "--plan",
-                        "bundle",
-                        "--output",
-                        "artifact",
-                        "--authorization-out",
-                        "authorization.json",
-                    ]
-                )
+            assert_canonical_refusal(
+                [
+                    "--plan",
+                    "bundle",
+                    "--output",
+                    "artifact",
+                    "--authorization-out",
+                    "authorization.json",
+                ],
+                "--plan requires explicit --repository-root",
+            )
         with patch.object(
             runner,
             "run_countdown_thompson_diagnostic",
             side_effect=AssertionError("execution must require an explicit root"),
         ):
-            with self.assertRaises(SystemExit):
-                runner.main(
-                    [
-                        "--run",
-                        "bundle",
-                        "--output",
-                        "artifact",
-                        "--authorization-file",
-                        "authorization.json",
-                        "--authorization-digest",
-                        "0" * 64,
-                        "--authorization-revision",
-                        _AUTHORIZATION_REVISION,
-                    ]
-                )
+            assert_canonical_refusal(
+                [
+                    "--run",
+                    "bundle",
+                    "--output",
+                    "artifact",
+                    "--authorization-file",
+                    "authorization.json",
+                    "--authorization-digest",
+                    "0" * 64,
+                    "--authorization-revision",
+                    _AUTHORIZATION_REVISION,
+                ],
+                "--run requires explicit --repository-root",
+            )
         with patch.object(
             runner,
             "write_countdown_thompson_diagnostic_execution_plan",
@@ -1934,6 +2175,65 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
         invalid = json.loads(printed.call_args.args[0])
         self.assertEqual(invalid["status"], "INVALID")
         self.assertIn("durable attempt evidence", invalid["claim_boundary"])
+
+        ambiguity_cases = (
+            (
+                "write_countdown_thompson_diagnostic_execution_plan",
+                [
+                    "--plan",
+                    "bundle",
+                    "--output",
+                    "artifact",
+                    "--authorization-out",
+                    "authorization.json",
+                    "--repository-root",
+                    ".",
+                ],
+            ),
+            (
+                "run_countdown_thompson_diagnostic",
+                [
+                    "--run",
+                    "bundle",
+                    "--output",
+                    "artifact",
+                    "--authorization-file",
+                    "authorization.json",
+                    "--authorization-digest",
+                    "0" * 64,
+                    "--authorization-revision",
+                    _AUTHORIZATION_REVISION,
+                    "--repository-root",
+                    ".",
+                ],
+            ),
+        )
+        for target, arguments in ambiguity_cases:
+            with self.subTest(ambiguous_target=target):
+                with (
+                    patch.object(
+                        runner,
+                        target,
+                        side_effect=(
+                            runner.DiagnosticPublicationStateAmbiguousError(
+                                "synthetic publication ambiguity"
+                            )
+                        ),
+                    ),
+                    patch("builtins.print") as printed,
+                ):
+                    with self.assertRaises(SystemExit) as stopped:
+                        runner.main(arguments)
+                self.assertEqual(stopped.exception.code, 3)
+                raw = printed.call_args.args[0]
+                ambiguous = json.loads(raw)
+                self.assertEqual(raw, runner.canonical_json(ambiguous))
+                self.assertEqual(
+                    ambiguous["status"],
+                    "PUBLICATION_STATE_AMBIGUOUS",
+                )
+                self.assertIn("no file is authorized", ambiguous["claim_boundary"])
+                self.assertIn("no retry authority", ambiguous["claim_boundary"])
 
     def test_build_attestation_binds_all_runner_sources_and_import_origins(
         self,

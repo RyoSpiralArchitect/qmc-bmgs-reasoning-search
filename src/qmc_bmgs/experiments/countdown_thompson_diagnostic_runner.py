@@ -25,7 +25,7 @@ import time
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, NoReturn, Sequence
 
 from qmc_bmgs.benchmarks.countdown import CountdownTask
 from qmc_bmgs.experiments import countdown_thompson_diagnostic_analysis as analysis
@@ -139,6 +139,10 @@ class DiagnosticNotRunError(DiagnosticRunnerError):
 
 class DiagnosticInvalidRunError(DiagnosticRunnerError):
     """An authorized attempt that reached STARTED but did not commit."""
+
+
+class DiagnosticPublicationStateAmbiguousError(DiagnosticRunnerError):
+    """Publication durability and exact rollback could not be established."""
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -451,6 +455,32 @@ def _published_file_matches(
             pass
 
 
+def _revoke_published_file_at(
+    directory_fd: int,
+    filename: str,
+    staging_identity: tuple[int, int],
+    expected: bytes,
+) -> bool:
+    """Remove one exact published file and durably prove its absence."""
+
+    if not _published_file_matches(
+        directory_fd,
+        filename,
+        staging_identity,
+        expected,
+    ):
+        return False
+    try:
+        os.unlink(filename, dir_fd=directory_fd)
+        os.fsync(directory_fd)
+        os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def _unlink_exact_file_at(
     directory_fd: int,
     filename: str,
@@ -509,7 +539,103 @@ def _published_artifact_matches(
     except (OSError, DiagnosticRunnerError):
         return False
     finally:
-        os.close(output_fd)
+        try:
+            os.close(output_fd)
+        except OSError:
+            pass
+
+
+def _retry_committed_artifact_durability(
+    *,
+    parent: Path,
+    parent_fd: int,
+    parent_stat: os.stat_result,
+    output_name: str,
+    staging_identity: tuple[int, int],
+    run_manifest: Mapping[str, Any],
+    records_byte_count: int,
+    records_sha256: str,
+    commit_receipt: Mapping[str, Any],
+) -> bool:
+    """Retry both directory barriers before accepting an exact commit."""
+
+    output_fd = -1
+    try:
+        _assert_directory_path_identity(
+            parent,
+            parent_fd,
+            parent_stat,
+            "run output parent",
+        )
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        output_fd = os.open(output_name, flags, dir_fd=parent_fd)
+        observed = os.fstat(output_fd)
+        if (observed.st_dev, observed.st_ino) != staging_identity:
+            return False
+        os.fsync(output_fd)
+        os.fsync(parent_fd)
+        _assert_directory_path_identity(
+            parent,
+            parent_fd,
+            parent_stat,
+            "run output parent",
+        )
+    except BaseException:
+        return False
+    finally:
+        if output_fd >= 0:
+            try:
+                os.close(output_fd)
+            except OSError:
+                pass
+    return _published_artifact_matches(
+        parent_fd,
+        output_name,
+        staging_identity,
+        run_manifest,
+        records_byte_count=records_byte_count,
+        records_sha256=records_sha256,
+        commit_receipt=commit_receipt,
+    )
+
+
+def _revoke_exact_artifact_commit(
+    parent_fd: int,
+    output_name: str,
+    staging_identity: tuple[int, int],
+    commit_receipt: Mapping[str, Any],
+) -> bool:
+    """Durably remove commit.json from the exact published artifact inode."""
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        output_fd = os.open(output_name, flags, dir_fd=parent_fd)
+    except OSError:
+        return False
+    try:
+        observed = os.fstat(output_fd)
+        if (observed.st_dev, observed.st_ino) != staging_identity:
+            return False
+        if not _unlink_exact_file_at(
+            output_fd,
+            "commit.json",
+            _canonical_bytes(commit_receipt),
+        ):
+            return False
+        try:
+            os.stat("commit.json", dir_fd=output_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        return False
+    finally:
+        try:
+            os.close(output_fd)
+        except OSError:
+            pass
 
 
 def _write_canonical_file_noreplace(
@@ -518,10 +644,10 @@ def _write_canonical_file_noreplace(
 ) -> None:
     """Stage, fsync, and atomically publish one authority file.
 
-    Once a no-replace rename may have succeeded, an exact staged inode at the
-    destination is the candidate authority. A later directory-sync exception
-    therefore resolves as success instead of reporting NOT_RUN while that
-    exact candidate remains visible.
+    Once a no-replace rename may have succeeded, success requires a durable
+    parent-directory barrier plus the exact staged inode and bytes. A failed
+    barrier is retried; persistent failure must durably revoke the candidate or
+    report an explicitly ambiguous publication state.
     """
 
     parent = destination.parent
@@ -602,32 +728,46 @@ def _write_canonical_file_noreplace(
                 parent_stat,
                 "authorization parent",
             )
-        except BaseException:
+        except BaseException as publication_error:
             exact_candidate = _published_file_matches(
                 parent_fd,
                 destination.name,
                 staging_identity,
                 raw,
             )
-            path_is_stable = True
+            if not exact_candidate:
+                raise
             try:
+                os.fsync(parent_fd)
                 _assert_directory_path_identity(
                     parent,
                     parent_fd,
                     parent_stat,
                     "authorization parent",
                 )
-            except DiagnosticRunnerError:
-                path_is_stable = False
-            if exact_candidate and path_is_stable:
-                return
-            if exact_candidate:
-                _unlink_exact_file_at(
+                if _published_file_matches(
                     parent_fd,
                     destination.name,
+                    staging_identity,
                     raw,
-                )
-            raise
+                ):
+                    return
+            except BaseException:
+                pass
+            if _revoke_published_file_at(
+                parent_fd,
+                destination.name,
+                staging_identity,
+                raw,
+            ):
+                raise DiagnosticNotRunError(
+                    "authorization candidate publication was durably revoked "
+                    "after a durability failure"
+                ) from publication_error
+            raise DiagnosticPublicationStateAmbiguousError(
+                "authorization candidate durability and exact rollback are "
+                "both unproven"
+            ) from publication_error
         if not _published_file_matches(
             parent_fd,
             destination.name,
@@ -2104,7 +2244,11 @@ def _publish_run_artifact(
                 "status": "COMMITTED",
             }
         return manifest_payload
-    except (DiagnosticNotRunError, DiagnosticInvalidRunError):
+    except (
+        DiagnosticNotRunError,
+        DiagnosticInvalidRunError,
+        DiagnosticPublicationStateAmbiguousError,
+    ):
         raise
     except BaseException as error:
         raise DiagnosticNotRunError(str(error)) from error
@@ -2412,7 +2556,7 @@ def _publish_run_artifact_locked(
             )
         return run_manifest, commit_receipt
     except BaseException as error:
-        if (
+        exact_commit_is_visible = (
             "run_manifest" in locals()
             and "staging_identity" in locals()
             and "commit_receipt" in locals()
@@ -2425,41 +2569,29 @@ def _publish_run_artifact_locked(
                 records_sha256=records_hasher.hexdigest(),
                 commit_receipt=commit_receipt,
             )
-        ):
-            try:
-                _assert_directory_path_identity(
-                    output.parent,
-                    parent_fd,
-                    parent_stat,
-                    "run output parent",
-                )
-            except DiagnosticRunnerError:
-                revoked = False
-                output_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-                output_flags |= getattr(os, "O_NOFOLLOW", 0)
-                try:
-                    rollback_fd = os.open(
-                        output.name,
-                        output_flags,
-                        dir_fd=parent_fd,
-                    )
-                except OSError:
-                    pass
-                else:
-                    try:
-                        revoked = _unlink_exact_file_at(
-                            rollback_fd,
-                            "commit.json",
-                            _canonical_bytes(commit_receipt),
-                        )
-                    finally:
-                        os.close(rollback_fd)
-                if not revoked:
-                    # Once an exact artifact-local commit receipt cannot be
-                    # revoked, it remains the only non-contradictory authority.
-                    return run_manifest, commit_receipt
-            else:
+        )
+        if exact_commit_is_visible:
+            if _retry_committed_artifact_durability(
+                parent=output.parent,
+                parent_fd=parent_fd,
+                parent_stat=parent_stat,
+                output_name=output.name,
+                staging_identity=staging_identity,
+                run_manifest=run_manifest,
+                records_byte_count=records_byte_count,
+                records_sha256=records_hasher.hexdigest(),
+                commit_receipt=commit_receipt,
+            ):
                 return run_manifest, commit_receipt
+            if not _revoke_exact_artifact_commit(
+                parent_fd,
+                output.name,
+                staging_identity,
+                commit_receipt,
+            ):
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "artifact commit durability and exact rollback are both unproven"
+                ) from error
         try:
             _write_attempt_receipt(
                 attempt,
@@ -2473,8 +2605,14 @@ def _publish_run_artifact_locked(
         raise DiagnosticInvalidRunError(str(error)) from error
     finally:
         if staging_fd >= 0:
-            os.close(staging_fd)
-        os.close(attempt.directory_fd)
+            try:
+                os.close(staging_fd)
+            except OSError:
+                pass
+        try:
+            os.close(attempt.directory_fd)
+        except OSError:
+            pass
 
 
 def run_countdown_thompson_diagnostic(
@@ -2497,7 +2635,10 @@ def run_countdown_thompson_diagnostic(
             output_path=Path(output_path),
             repository_root=Path(repository_root),
         )
-    except DiagnosticInvalidRunError:
+    except (
+        DiagnosticInvalidRunError,
+        DiagnosticPublicationStateAmbiguousError,
+    ):
         raise
     except Exception as error:
         raise DiagnosticNotRunError(str(error)) from error
@@ -2545,8 +2686,47 @@ def _self_test() -> dict[str, Any]:
     }
 
 
+class _CanonicalArgumentParser(argparse.ArgumentParser):
+    """Emit machine-readable refusals without argparse usage prose."""
+
+    def error(self, message: str) -> None:
+        print(
+            canonical_json(
+                {
+                    "claim_boundary": (
+                        "argument refusal only; no diagnostic search outcome was "
+                        "opened; no execution-evidence authority and no retry "
+                        "authority are implied"
+                    ),
+                    "reason": message,
+                    "status": "NOT_RUN",
+                }
+            )
+        )
+        raise SystemExit(2)
+
+
+def _raise_publication_state_ambiguous(
+    error: DiagnosticPublicationStateAmbiguousError,
+) -> NoReturn:
+    print(
+        canonical_json(
+            {
+                "claim_boundary": (
+                    "publication durability and exact rollback are unresolved; "
+                    "no file is authorized as diagnostic evidence and no retry "
+                    "authority is implied"
+                ),
+                "reason": str(error),
+                "status": "PUBLICATION_STATE_AMBIGUOUS",
+            }
+        )
+    )
+    raise SystemExit(3) from error
+
+
 def main(argv: Sequence[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = _CanonicalArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--plan", type=Path, metavar="SEALED_BUNDLE")
     modes.add_argument("--run", type=Path, metavar="SEALED_BUNDLE")
@@ -2594,6 +2774,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                 args.authorization_out,
                 repository_root=args.repository_root,
             )
+        except DiagnosticPublicationStateAmbiguousError as error:
+            _raise_publication_state_ambiguous(error)
         except (DiagnosticRunnerError, FileExistsError, OSError, ValueError) as error:
             print(
                 canonical_json(
@@ -2632,6 +2814,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                 args.authorization_revision,
                 repository_root=args.repository_root,
             )
+        except DiagnosticPublicationStateAmbiguousError as error:
+            _raise_publication_state_ambiguous(error)
         except DiagnosticNotRunError as error:
             print(
                 canonical_json(

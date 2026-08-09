@@ -142,6 +142,10 @@ class DiagnosticAnalysisError(ValueError):
     """Raised before any summary exists when a run artifact fails closed."""
 
 
+class DiagnosticAnalysisPublicationAmbiguousError(DiagnosticAnalysisError):
+    """Raised when summary durability or exact rollback cannot be proven."""
+
+
 class RunnerLabels(TypedDict):
     task_fingerprint: str
     proposal_label: str
@@ -2536,6 +2540,49 @@ def _unlink_if_identity(
     return True
 
 
+def _summary_publication_is_exact(
+    destination: Path,
+    parent_fd: int,
+    parent_identity: tuple[int, int],
+    staged_identity: tuple[int, int],
+) -> bool:
+    try:
+        published = os.stat(
+            destination.name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+    except OSError:
+        return False
+    if (published.st_dev, published.st_ino) != staged_identity:
+        return False
+    current_parent_fd = -1
+    try:
+        current_parent_fd, current_parent_stat = _open_stable_directory(
+            destination.parent,
+            "summary parent after publication",
+        )
+        if (
+            current_parent_stat.st_dev,
+            current_parent_stat.st_ino,
+        ) != parent_identity:
+            return False
+        current_published = os.stat(
+            destination.name,
+            dir_fd=current_parent_fd,
+            follow_symlinks=False,
+        )
+        return (current_published.st_dev, current_published.st_ino) == staged_identity
+    except (DiagnosticAnalysisError, OSError):
+        return False
+    finally:
+        if current_parent_fd >= 0:
+            try:
+                os.close(current_parent_fd)
+            except OSError:
+                pass
+
+
 def _atomic_write_no_replace(
     path: Path,
     payload: bytes,
@@ -2666,17 +2713,45 @@ def _atomic_write_no_replace(
                 )
         finally:
             os.close(current_parent_fd)
-    except BaseException:
+    except BaseException as error:
         if linked and staged_identity is not None and parent_fd >= 0:
             try:
-                if _unlink_if_identity(
+                os.fsync(parent_fd)
+                if _summary_publication_is_exact(
+                    destination,
+                    parent_fd,
+                    (parent_stat.st_dev, parent_stat.st_ino),
+                    staged_identity,
+                ):
+                    return
+            except (DiagnosticAnalysisError, OSError):
+                pass
+
+            rollback_durable = False
+            try:
+                removed = _unlink_if_identity(
                     parent_fd,
                     destination.name,
                     staged_identity,
-                ):
+                )
+                if removed:
+                    linked = False
                     os.fsync(parent_fd)
+                    rollback_durable = True
+                else:
+                    rollback_durable = not _summary_publication_is_exact(
+                        destination,
+                        parent_fd,
+                        (parent_stat.st_dev, parent_stat.st_ino),
+                        staged_identity,
+                    )
             except OSError:
-                pass
+                rollback_durable = False
+            if not rollback_durable:
+                raise DiagnosticAnalysisPublicationAmbiguousError(
+                    "summary publication durability and rollback are ambiguous; "
+                    "the destination must not be used as diagnostic evidence"
+                ) from error
         raise
     finally:
         if temporary_name and staged_identity is not None and parent_fd >= 0:
@@ -2861,6 +2936,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "status": "PASS",
                 "summary_digest": summary["deterministic_digest"],
             }
+    except DiagnosticAnalysisPublicationAmbiguousError as error:
+        print(
+            canonical_json(
+                {
+                    "claim_boundary": (
+                        "summary publication durability is unresolved; no file at "
+                        "the requested destination is authorized as diagnostic evidence"
+                    ),
+                    "reason": str(error),
+                    "status": "PUBLICATION_STATE_AMBIGUOUS",
+                }
+            )
+        )
+        return 3
     except (
         AssertionError,
         DiagnosticAnalysisError,

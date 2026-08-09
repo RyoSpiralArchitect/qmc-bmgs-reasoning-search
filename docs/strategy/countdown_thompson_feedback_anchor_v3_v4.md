@@ -25,21 +25,24 @@ For a valid complete Countdown trajectory with positive final integer `x` and
 positive target `t`, let `e = |x - t|`. V3 backs up
 
 ```text
-terminal_value = 1 / (1 + e)
+terminal_value = max(1 / (1 + e), 2^-1074)
 ```
 
 Exact success remains one. Every non-exact complete value is at most one half,
 so a near miss cannot approach the exact-success value arbitrarily closely.
-The rule supplies a monotone absolute-error gradient without reading a
-solution witness. The value is copied unchanged to every edge on the
-trajectory with discount one, using the existing reverse Welford update.
+The smallest positive binary64 value prevents a valid arbitrarily large
+integer error from underflowing to an unreplayable zero; only errors beyond
+binary64 resolution share that floor. The rule supplies a monotone
+absolute-error gradient without reading a solution witness. The value is
+copied unchanged to every edge on the trajectory with discount one, using the
+existing reverse Welford update.
 
-The rule id is `reciprocal_absolute_error/v1`; the method id is
+The rule id is `reciprocal_absolute_error_binary64_floor/v1`; the method id is
 `thompson_reciprocal_error_terminal_dimnorm_noise/v3`. Backup events record
-the integer absolute error, numerator `1`, denominator `1 + e`, rule id, and
-applied float. Stage-one replay checks their exact arithmetic closure and
-stage two independently re-verifies the trajectory and regenerates the exact
-backup bytes.
+the integer absolute error, numerator `1`, denominator `1 + e`, fixed binary64
+floor, whether that floor was applied, rule id, and applied float. Stage-one
+replay checks their exact arithmetic closure and stage two independently
+re-verifies the trajectory and regenerates the exact backup bytes.
 
 This is reward shaping for an engineering diagnostic. It is not a Bayesian
 posterior likelihood and cannot be credited as a QMC improvement.

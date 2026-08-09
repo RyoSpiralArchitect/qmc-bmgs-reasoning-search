@@ -38,7 +38,7 @@ engineering research repoです。
   Thompson 4変種は`0/192`、greedy/beam/PUCTは各`6/12`でした。多armのNormal極値が
   priorを飲み込むbase-search不全として保持し、semantic routing/pruningとlocked-128を
   保留して、一因子のaction-dimension正規化v2へ進みます。
-- v2の次の診断ablationは、`1/(1+absolute error)` terminal valueを加えるv3と、
+- v2の次の診断ablationは、binary64正値floor付き`1/(1+absolute error)`を加えるv3と、
   座標を消費しないgreedy 1 trajectoryを明示的に先行させるv4です。いずれも旧methodを
   置換せず、anchor成功とその後のThompson追加成功を分離して評価します。
 

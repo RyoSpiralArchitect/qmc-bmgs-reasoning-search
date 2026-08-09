@@ -59,7 +59,10 @@ DIMENSION_NORMALIZED_SELECTION_RULE_ID = "probability_prior_sqrt_2_ln_action_noi
 GREEDY_ANCHORED_SELECTION_RULE_ID = (
     "one_greedy_trajectory_then_probability_prior_sqrt_2_ln_action_noise/v1"
 )
-RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID = "reciprocal_absolute_error/v1"
+RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID = (
+    "reciprocal_absolute_error_binary64_floor/v1"
+)
+MIN_POSITIVE_BINARY64 = float.fromhex("0x0.0000000000001p-1022")
 
 _METHODS = {"greedy", "beam", "puct", "thompson"}
 _SOURCES = {"none", "iid", "sobol"}
@@ -467,10 +470,14 @@ def _dense_terminal_value_evidence(
     error = abs(final_value - target)
     numerator = 1
     denominator = 1 + error
+    unfloored_value = numerator / denominator
+    floor_applied = unfloored_value == 0.0
     return {
         "terminal_absolute_error": error,
-        "terminal_value": numerator / denominator,
+        "terminal_value": (MIN_POSITIVE_BINARY64 if floor_applied else unfloored_value),
         "terminal_value_denominator": denominator,
+        "terminal_value_floor": MIN_POSITIVE_BINARY64,
+        "terminal_value_floor_applied": floor_applied,
         "terminal_value_numerator": numerator,
     }
 
@@ -1896,6 +1903,15 @@ def _validate_stage_one_material(
                 absolute_error = payload.get("terminal_absolute_error")
                 numerator = payload.get("terminal_value_numerator")
                 denominator = payload.get("terminal_value_denominator")
+                floor_value = payload.get("terminal_value_floor")
+                floor_applied = payload.get("terminal_value_floor_applied")
+                unfloored_value = (
+                    numerator / denominator
+                    if type(numerator) is int
+                    and type(denominator) is int
+                    and denominator > 0
+                    else None
+                )
                 if (
                     type(absolute_error) is not int
                     or absolute_error < 0
@@ -1903,7 +1919,12 @@ def _validate_stage_one_material(
                     or numerator != 1
                     or type(denominator) is not int
                     or denominator != 1 + absolute_error
-                    or terminal_value != numerator / denominator
+                    or type(floor_value) is not float
+                    or floor_value != MIN_POSITIVE_BINARY64
+                    or type(floor_applied) is not bool
+                    or floor_applied is not (unfloored_value == 0.0)
+                    or terminal_value
+                    != (floor_value if floor_applied else unfloored_value)
                 ):
                     raise TraceValidationError(
                         "stage 1 dense terminal-value evidence drifted"
@@ -1925,6 +1946,8 @@ def _validate_stage_one_material(
                 for key in (
                     "terminal_absolute_error",
                     "terminal_value_denominator",
+                    "terminal_value_floor",
+                    "terminal_value_floor_applied",
                     "terminal_value_numerator",
                     "terminal_value_rule_id",
                 )

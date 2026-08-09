@@ -152,7 +152,7 @@ Two post-v2 diagnostic methods are explicit new method-spec branches. V3
 keeps the v2 selector and replaces binary failure backup with
 
 ```text
-1 / (1 + abs(final_value - target))
+max(1 / (1 + abs(final_value - target)), 2^-1074)
 ```
 
 for every valid complete positive-integer Countdown trajectory. V4 first runs
@@ -228,8 +228,9 @@ A dimension-normalized v2 ordinary selection additionally records
 than trusting it; version-one selections do not gain the field and retain
 their historical bytes.
 
-V3 backup events additionally bind the reciprocal absolute-error rule and its
-integer numerator/denominator evidence. V4
+V3 backup events additionally bind the reciprocal absolute-error rule, its
+integer numerator/denominator evidence, and the minimum-positive-binary64
+underflow floor. V4
 selection events bind whether a selection is the one greedy anchor or a later
 posterior-perturbation step. Stage one requires no point and zero coordinate
 work for the anchor, and one replay-bound point per later selection. Stage two

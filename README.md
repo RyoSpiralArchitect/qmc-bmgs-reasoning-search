@@ -34,6 +34,10 @@ engineering research repoです。
 - prior/noise gridは`(1,1)`をpreregistered gate-passing candidateとして凍結しましたが、
   adversarial reviewで安定性・CRN表記・held-out設計を修正。次はselected対baseline、
   IID対Sobol、simple search baselinesをtask-levelで分離評価します。
+- Track A canary v2は全936 cellのreplay gateを通過しましたが、heuristic `score256`の
+  Thompson 4変種は`0/192`、greedy/beam/PUCTは各`6/12`でした。多armのNormal極値が
+  priorを飲み込むbase-search不全として保持し、semantic routing/pruningとlocked-128を
+  保留して、一因子のaction-dimension正規化v2へ進みます。
 
 結果の短い読み方は [D4 result capsule](docs/results/d4_result.md)、
 [fresh channel-ablation capsule](docs/results/channel_ablation_fresh_n256.md)、
@@ -63,6 +67,10 @@ engineering research repoです。
 [Countdown adversarial review](docs/reviews/countdown_adversarial_review_20260726.md)
 と
 [Countdown next experiment v2](docs/strategy/countdown_next_experiment_v2.md)
+、実行済みcanaryの境界は
+[Track A canary v2 observation](docs/observations/countdown_track_a_canary_v2_20260810.md)
+、次の一因子修正は
+[Thompson dimension-normalization v2](docs/strategy/countdown_thompson_dimension_normalization_v2.md)
 を参照してください。
 
 ## Layout

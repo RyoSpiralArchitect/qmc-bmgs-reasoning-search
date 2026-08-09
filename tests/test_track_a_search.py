@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import os
 import subprocess
 import sys
@@ -11,8 +12,11 @@ from unittest.mock import patch
 from qmc_bmgs.benchmarks.countdown import CountdownTask
 from qmc_bmgs.substrate.budget import TRACK_A_WORK_AXES, TrackAWorkBudget
 from qmc_bmgs.substrate.countdown_search import (
+    DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION,
+    DIMENSION_NORMALIZED_SELECTION_RULE_ID,
     TrackABudgetProfile,
     TrackAMethodSpec,
+    _action_dimension_noise_normalizer,
     build_search_run_identity,
     replay_countdown_track_a_search_bytes,
     run_countdown_track_a_search,
@@ -97,6 +101,34 @@ class TrackASearchTests(unittest.TestCase):
             TrackAMethodSpec.candidate_thompson("sobol").prior_bonus,
             1.0,
         )
+        self.assertEqual(
+            TrackAMethodSpec.candidate_thompson("iid").to_dict(),
+            {
+                "beam_width": None,
+                "c_puct": None,
+                "method": "thompson",
+                "method_id": "thompson_binary_terminal/v1",
+                "posterior_sd_scale": 1.0,
+                "prior_bonus": 1.0,
+                "schema_version": "qmc-bmgs-track-a-method-spec/v1",
+                "selected_source": "iid",
+            },
+        )
+        dimension_normalized = TrackAMethodSpec.dimension_normalized_thompson("sobol")
+        self.assertEqual(
+            dimension_normalized.to_dict(),
+            {
+                "beam_width": None,
+                "c_puct": None,
+                "method": "thompson",
+                "method_id": "thompson_binary_terminal_dimnorm_noise/v2",
+                "posterior_sd_scale": 1.0,
+                "prior_bonus": 1.0,
+                "schema_version": DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION,
+                "selected_source": "sobol",
+                "selection_rule_id": DIMENSION_NORMALIZED_SELECTION_RULE_ID,
+            },
+        )
 
         with self.assertRaisesRegex(ValueError, "exploration_seed=0"):
             build_search_run_identity(
@@ -130,6 +162,23 @@ class TrackASearchTests(unittest.TestCase):
                 selected_source="none",
                 prior_bonus=1.0,
                 posterior_sd_scale=1.0,
+            )
+        with self.assertRaisesRegex(ValueError, "does not define"):
+            TrackAMethodSpec(
+                method="thompson",
+                selected_source="iid",
+                prior_bonus=1.0,
+                posterior_sd_scale=1.0,
+                selection_rule_id=DIMENSION_NORMALIZED_SELECTION_RULE_ID,
+            )
+        with self.assertRaisesRegex(ValueError, "fields do not match"):
+            TrackAMethodSpec(
+                method="thompson",
+                selected_source="iid",
+                prior_bonus=1.0,
+                posterior_sd_scale=1.0,
+                selection_rule_id="wrong/v1",
+                schema_version=DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION,
             )
 
     def test_budget_profile_requires_one_supported_positive_primary_axis(self) -> None:
@@ -326,9 +375,7 @@ class TrackASearchTests(unittest.TestCase):
                     delta = selection["charge"]["delta"]
                     count = len(selection["payload"]["scored_action_indices"])
                     self.assertEqual(delta["legal_action_scores"], count)
-                    self.assertEqual(
-                        delta["generated_perturbation_coordinates"], count
-                    )
+                    self.assertEqual(delta["generated_perturbation_coordinates"], count)
                     self.assertEqual(delta["edge_selections"], 1)
                     self.assertEqual(delta["transitions"], 1)
                 for material in _events(result.record, "perturbation_draw"):
@@ -366,6 +413,153 @@ class TrackASearchTests(unittest.TestCase):
             len(first_point(results[("iid", "frozen")])["uniforms"]),
             53,
         )
+
+    def test_dimension_normalized_thompson_is_one_factor_and_replays(self) -> None:
+        self.assertEqual(_action_dimension_noise_normalizer(1), 1.0)
+        for action_count in (2, 27, 55):
+            self.assertEqual(
+                _action_dimension_noise_normalizer(action_count),
+                math.sqrt(2.0 * math.log(action_count)),
+            )
+        with self.assertRaisesRegex(ValueError, "positive plain integer"):
+            _action_dimension_noise_normalizer(True)
+        with self.assertRaisesRegex(ValueError, "positive plain integer"):
+            _action_dimension_noise_normalizer(0)
+
+        profile = _verifier_profile(1)
+        for source in ("iid", "sobol"):
+            legacy_method = TrackAMethodSpec.candidate_thompson(source)
+            v2_method = TrackAMethodSpec.dimension_normalized_thompson(source)
+            legacy = run_countdown_track_a_search(
+                TASK,
+                proposal=HEURISTIC,
+                method=legacy_method,
+                budget_profile=profile,
+                exploration_seed=7168,
+            )
+            v2 = run_countdown_track_a_search(
+                TASK,
+                proposal=HEURISTIC,
+                method=v2_method,
+                budget_profile=profile,
+                exploration_seed=7168,
+            )
+
+            legacy_point = _events(legacy.record, "perturbation_draw")[0]["payload"]
+            v2_point = _events(v2.record, "perturbation_draw")[0]["payload"]
+            self.assertEqual(legacy_point, v2_point)
+            self.assertNotEqual(
+                legacy.run_identity_digest,
+                v2.run_identity_digest,
+            )
+
+            legacy_selection = _events(legacy.record, "selection_committed")[0][
+                "payload"
+            ]
+            v2_selection = _events(v2.record, "selection_committed")[0]["payload"]
+            self.assertNotIn("selection_semantics", legacy_selection)
+            semantics = v2_selection["selection_semantics"]
+            self.assertEqual(
+                semantics,
+                {
+                    "action_count": 53,
+                    "noise_dimension_normalizer": math.sqrt(2.0 * math.log(53)),
+                    "selection_rule_id": DIMENSION_NORMALIZED_SELECTION_RULE_ID,
+                },
+            )
+
+            proposal = _events(v2.record, "proposal_materialized")[0]["payload"]
+            prior_logp = proposal["proposal"]["prior_logp"]
+            normals = v2_point["normals"]
+            expected_values = [
+                math.exp(logp)
+                + 1.0
+                / (_action_dimension_noise_normalizer(len(prior_logp)) * math.sqrt(1.0))
+                * normal
+                for logp, normal in zip(prior_logp, normals)
+            ]
+            self.assertEqual(v2_selection["selection_values"], expected_values)
+            self.assertEqual(
+                v2_selection["action_index"],
+                max(range(len(expected_values)), key=expected_values.__getitem__),
+            )
+            self.assertEqual(
+                replay_countdown_track_a_search_bytes(
+                    v2.canonical_bytes,
+                    task=TASK,
+                    proposal=HEURISTIC,
+                    method=v2_method,
+                    budget_profile=profile,
+                    exploration_seed=7168,
+                    expected_run_identity_digest=v2.run_identity_digest,
+                ),
+                v2.canonical_bytes,
+            )
+
+    def test_dimension_normalized_selection_semantics_tampering_fails_stage_one(
+        self,
+    ) -> None:
+        profile = _verifier_profile(1)
+        method = TrackAMethodSpec.dimension_normalized_thompson("iid")
+        result = run_countdown_track_a_search(
+            TASK,
+            proposal=HEURISTIC,
+            method=method,
+            budget_profile=profile,
+            exploration_seed=7168,
+        )
+        for field, value in (
+            ("action_count", 52),
+            ("action_count", 53.0),
+            ("noise_dimension_normalizer", 1.0),
+            ("noise_dimension_normalizer", True),
+            ("selection_rule_id", "wrong/v1"),
+        ):
+            with self.subTest(field=field, value=value):
+                tampered = copy.deepcopy(result.record)
+                selection = _events(tampered, "selection_committed")[0]
+                selection["payload"]["selection_semantics"][field] = value
+                _rehash_trace(tampered)
+                tampered_bytes = canonical_trace_bytes(tampered)
+                validate_trace_bytes(tampered_bytes)
+                with self.assertRaisesRegex(
+                    TraceValidationError,
+                    "dimension-normalized selection semantics",
+                ):
+                    replay_countdown_track_a_search_bytes(
+                        tampered_bytes,
+                        task=TASK,
+                        proposal=HEURISTIC,
+                        method=method,
+                        budget_profile=profile,
+                        exploration_seed=7168,
+                        expected_run_identity_digest=result.run_identity_digest,
+                    )
+
+    def test_dimension_normalized_uniform_prior_is_a_common_constant(self) -> None:
+        profile = _verifier_profile(1)
+        method = TrackAMethodSpec.dimension_normalized_thompson("iid")
+        result = run_countdown_track_a_search(
+            TASK,
+            proposal=TrackAProposalSpec("uniform/v1"),
+            method=method,
+            budget_profile=profile,
+            exploration_seed=7168,
+        )
+        proposal = _events(result.record, "proposal_materialized")[0]["payload"][
+            "proposal"
+        ]
+        point = _events(result.record, "perturbation_draw")[0]["payload"]
+        selection = _events(result.record, "selection_committed")[0]["payload"]
+        action_count = len(proposal["prior_logp"])
+        normalizer = _action_dimension_noise_normalizer(action_count)
+        self.assertEqual(len(set(proposal["prior_logp"])), 1)
+        expected = [
+            math.exp(logp) + 1.0 / (normalizer * math.sqrt(1.0)) * normal
+            for logp, normal in zip(proposal["prior_logp"], point["normals"])
+        ]
+        self.assertEqual(selection["selection_values"], expected)
+        self.assertEqual(selection["action_index"], 1)
 
     def test_score_stop_preflights_whole_dynamic_action_vector(self) -> None:
         result = run_countdown_track_a_search(
@@ -454,7 +648,9 @@ class TrackASearchTests(unittest.TestCase):
         point = point_event["payload"]
         point["uniforms"][0] = point["uniforms"][0] / 2.0
         point["uniform_digest"] = sha256_json(point["uniforms"])
-        point_core = {key: value for key, value in point.items() if key != "point_digest"}
+        point_core = {
+            key: value for key, value in point.items() if key != "point_digest"
+        }
         point["point_digest"] = sha256_json(point_core)
         selection = _events(point_tamper, "selection_committed")[0]
         selection["payload"]["point_digest"] = point["point_digest"]
@@ -476,9 +672,7 @@ class TrackASearchTests(unittest.TestCase):
         points = _events(duplicate_reference, "perturbation_draw")
         selections = _events(duplicate_reference, "selection_committed")
         self.assertGreaterEqual(len(points), 2)
-        selections[1]["payload"]["point_digest"] = points[0]["payload"][
-            "point_digest"
-        ]
+        selections[1]["payload"]["point_digest"] = points[0]["payload"]["point_digest"]
         _rehash_trace(duplicate_reference)
         duplicate_bytes = canonical_trace_bytes(duplicate_reference)
         validate_trace_bytes(duplicate_bytes)
@@ -575,16 +769,22 @@ from qmc_bmgs.substrate.countdown_search import (
 from qmc_bmgs.substrate.proposals import TrackAProposalSpec
 values = {axis: 20000 for axis in TRACK_A_WORK_AXES}
 values[\"verifier_calls\"] = 1
-result = run_countdown_track_a_search(
-    CountdownTask((1, 2, 3, 4, 5, 6), 720),
-    proposal=TrackAProposalSpec(\"greedy_rollout_target_error/v1\"),
-    method=TrackAMethodSpec.puct(),
-    budget_profile=TrackABudgetProfile(
-        \"hash_seed_test\", \"verifier_calls\", TrackAWorkBudget(**values)
-    ),
-    exploration_seed=0,
-)
-print(result.record[\"deterministic_digest\"])
+results = [
+    run_countdown_track_a_search(
+        CountdownTask((1, 2, 3, 4, 5, 6), 720),
+        proposal=TrackAProposalSpec(\"greedy_rollout_target_error/v1\"),
+        method=method,
+        budget_profile=TrackABudgetProfile(
+            \"hash_seed_test\", \"verifier_calls\", TrackAWorkBudget(**values)
+        ),
+        exploration_seed=seed,
+    )
+    for method, seed in (
+        (TrackAMethodSpec.puct(), 0),
+        (TrackAMethodSpec.dimension_normalized_thompson(\"iid\"), 7168),
+    )
+]
+print(\"|\".join(result.record[\"deterministic_digest\"] for result in results))
 """
         digests = []
         for seed in ("0", "1", "777"):

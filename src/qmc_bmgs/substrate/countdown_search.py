@@ -48,10 +48,12 @@ from qmc_bmgs.substrate.trace import (
 
 
 METHOD_SPEC_SCHEMA_VERSION = "qmc-bmgs-track-a-method-spec/v1"
+DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION = "qmc-bmgs-track-a-method-spec/v2"
 BUDGET_PROFILE_SCHEMA_VERSION = "qmc-bmgs-track-a-budget-profile/v1"
 SEARCH_SCHEMA_VERSION = "qmc-bmgs-track-a-countdown-search/v1"
 SEARCH_EVENT_SCHEMA_VERSION = "qmc-bmgs-track-a-search-event/v1"
 NO_PERTURBATION_METADATA_VERSION = "qmc-bmgs-no-perturbation-source/v1"
+DIMENSION_NORMALIZED_SELECTION_RULE_ID = "probability_prior_sqrt_2_ln_action_noise/v1"
 
 _METHODS = {"greedy", "beam", "puct", "thompson"}
 _SOURCES = {"none", "iid", "sobol"}
@@ -89,10 +91,14 @@ class TrackAMethodSpec:
     prior_bonus: float | None = None
     posterior_sd_scale: float | None = None
     beam_width: int | None = None
+    selection_rule_id: str | None = None
     schema_version: str = METHOD_SPEC_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        if self.schema_version != METHOD_SPEC_SCHEMA_VERSION:
+        if self.schema_version not in {
+            METHOD_SPEC_SCHEMA_VERSION,
+            DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION,
+        }:
             raise ValueError("unsupported Track A method-spec schema")
         if type(self.method) is not str:
             raise ValueError("method must be a plain string")
@@ -103,7 +109,33 @@ class TrackAMethodSpec:
         if self.selected_source not in _SOURCES:
             raise ValueError("selected_source must be none, iid, or sobol")
 
-        if self.method == "greedy":
+        if self.schema_version == DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION:
+            if self.method != "thompson":
+                raise ValueError(
+                    "dimension-normalized method-spec v2 requires Thompson"
+                )
+            if self.selected_source not in {"iid", "sobol"}:
+                raise ValueError("Thompson requires an IID or Sobol source")
+            _require_finite_float(
+                self.prior_bonus,
+                "prior_bonus",
+                minimum=0.0,
+            )
+            _require_finite_float(
+                self.posterior_sd_scale,
+                "posterior_sd_scale",
+                minimum=0.0,
+                strict=True,
+            )
+            expected = (
+                self.selected_source,
+                None,
+                self.prior_bonus,
+                self.posterior_sd_scale,
+                None,
+                DIMENSION_NORMALIZED_SELECTION_RULE_ID,
+            )
+        elif self.method == "greedy":
             expected = ("none", None, None, None, None)
         elif self.method == "beam":
             if type(self.beam_width) is not int:
@@ -146,6 +178,10 @@ class TrackAMethodSpec:
             self.posterior_sd_scale,
             self.beam_width,
         )
+        if self.schema_version == DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION:
+            observed = (*observed, self.selection_rule_id)
+        elif self.selection_rule_id is not None:
+            raise ValueError("method-spec v1 does not define selection_rule_id")
         if observed != expected:
             raise ValueError(f"fields do not match {self.method} method semantics")
 
@@ -192,8 +228,23 @@ class TrackAMethodSpec:
             posterior_sd_scale=1.0,
         )
 
+    @classmethod
+    def dimension_normalized_thompson(cls, source: str) -> TrackAMethodSpec:
+        """Return the outcome-free, one-factor Thompson scale repair."""
+
+        return cls(
+            method="thompson",
+            selected_source=source,
+            prior_bonus=1.0,
+            posterior_sd_scale=1.0,
+            selection_rule_id=DIMENSION_NORMALIZED_SELECTION_RULE_ID,
+            schema_version=DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION,
+        )
+
     @property
     def method_id(self) -> str:
+        if self.schema_version == DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION:
+            return "thompson_binary_terminal_dimnorm_noise/v2"
         return {
             "greedy": "greedy/v1",
             "beam": "layer_synchronous_beam_width_2/v1",
@@ -206,7 +257,7 @@ class TrackAMethodSpec:
         return self.method == "thompson"
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "beam_width": self.beam_width,
             "c_puct": self.c_puct,
             "method": self.method,
@@ -216,6 +267,19 @@ class TrackAMethodSpec:
             "schema_version": self.schema_version,
             "selected_source": self.selected_source,
         }
+        if self.schema_version == DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION:
+            payload["selection_rule_id"] = self.selection_rule_id
+        return payload
+
+
+def _action_dimension_noise_normalizer(action_count: int) -> float:
+    """Scale a normal vector so its many-arm maximum stays order one."""
+
+    if type(action_count) is not int or action_count < 1:
+        raise ValueError("action_count must be a positive plain integer")
+    if action_count == 1:
+        return 1.0
+    return math.sqrt(2.0 * math.log(action_count))
 
 
 @dataclass(frozen=True)
@@ -232,7 +296,9 @@ class TrackABudgetProfile:
         if self.schema_version != BUDGET_PROFILE_SCHEMA_VERSION:
             raise ValueError("unsupported Track A budget-profile schema")
         if self.primary_axis not in _PRIMARY_AXES:
-            raise ValueError("primary_axis must be legal_action_scores or verifier_calls")
+            raise ValueError(
+                "primary_axis must be legal_action_scores or verifier_calls"
+            )
         if type(self.budget) is not TrackAWorkBudget:
             raise TypeError("budget must be a TrackAWorkBudget")
         if getattr(self.budget, self.primary_axis) < 1:
@@ -472,9 +538,7 @@ class _SearchSession:
         method: TrackAMethodSpec,
         budget_profile: TrackABudgetProfile,
         exploration_seed: int,
-        replay_material: Mapping[
-            tuple[str, int], tuple[dict[str, Any], dict[str, Any]]
-        ]
+        replay_material: Mapping[tuple[str, int], tuple[dict[str, Any], dict[str, Any]]]
         | None = None,
     ) -> None:
         self.task = task
@@ -540,9 +604,7 @@ class _SearchSession:
         }
         self.stop_blocked_axes = blocked
         non_primary = tuple(
-            axis
-            for axis in blocked
-            if axis != self.budget_profile.primary_axis
+            axis for axis in blocked if axis != self.budget_profile.primary_axis
         )
         self.stop_reason = (
             "guard_budget_blocked" if non_primary else "primary_budget_blocked"
@@ -615,10 +677,7 @@ class _SearchSession:
             assert self.method.c_puct == 1.0
             return [
                 item.mean
-                + self.method.c_puct
-                * math.exp(logp)
-                * scale
-                / (1.0 + item.visits)
+                + self.method.c_puct * math.exp(logp) * scale / (1.0 + item.visits)
                 for item, logp in zip(node.posteriors, node.row.prior_logp)
             ]
         if self.method.method != "thompson" or normals is None:
@@ -627,11 +686,19 @@ class _SearchSession:
             raise AssertionError("perturbation dimension drifted")
         assert self.method.prior_bonus is not None
         assert self.method.posterior_sd_scale is not None
+        noise_dimension_normalizer = 1.0
+        if (
+            self.method.schema_version
+            == DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION
+        ):
+            noise_dimension_normalizer = _action_dimension_noise_normalizer(
+                len(node.row.actions)
+            )
         return [
             item.mean
             + self.method.prior_bonus * math.exp(logp)
             + self.method.posterior_sd_scale
-            / math.sqrt(item.visits + 1.0)
+            / (noise_dimension_normalizer * math.sqrt(item.visits + 1.0))
             * normal
             for item, logp, normal in zip(
                 node.posteriors,
@@ -797,30 +864,38 @@ class _SearchSession:
                 child=child,
                 prior_logp=node.row.prior_logp[action_index],
             )
-            selection_payload = _event_payload(
-                {
-                    "action": action.to_dict(),
-                    "action_index": action_index,
-                    "action_order_digest": node.row.action_order_digest,
-                    "child_state": list(child),
-                    "cumulative_prior_logp_after": (
-                        extended.cumulative_prior_logp
+            selection_fields: dict[str, Any] = {
+                "action": action.to_dict(),
+                "action_index": action_index,
+                "action_order_digest": node.row.action_order_digest,
+                "child_state": list(child),
+                "cumulative_prior_logp_after": extended.cumulative_prior_logp,
+                "cumulative_prior_logp_before": path.cumulative_prior_logp,
+                "depth": len(path.actions),
+                "method": self.method.to_dict(),
+                "point_digest": point_digest,
+                "posterior_before_digest": self._posterior_digest(node),
+                "proposal_behavior_digest": node.row.behavior_digest,
+                "scored_action_indices": list(range(len(actions))),
+                "selected_value": values[action_index],
+                "selection_values": values,
+                "selection_values_digest": sha256_json(values),
+                "state": list(state),
+                "task_fingerprint": self.task.task_fingerprint,
+                "trajectory_index": trajectory_index,
+            }
+            if (
+                self.method.schema_version
+                == DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION
+            ):
+                selection_fields["selection_semantics"] = {
+                    "action_count": len(actions),
+                    "noise_dimension_normalizer": (
+                        _action_dimension_noise_normalizer(len(actions))
                     ),
-                    "cumulative_prior_logp_before": path.cumulative_prior_logp,
-                    "depth": len(path.actions),
-                    "method": self.method.to_dict(),
-                    "point_digest": point_digest,
-                    "posterior_before_digest": self._posterior_digest(node),
-                    "proposal_behavior_digest": node.row.behavior_digest,
-                    "scored_action_indices": list(range(len(actions))),
-                    "selected_value": values[action_index],
-                    "selection_values": values,
-                    "selection_values_digest": sha256_json(values),
-                    "state": list(state),
-                    "task_fingerprint": self.task.task_fingerprint,
-                    "trajectory_index": trajectory_index,
+                    "selection_rule_id": DIMENSION_NORMALIZED_SELECTION_RULE_ID,
                 }
-            )
+            selection_payload = _event_payload(selection_fields)
             events: list[tuple[str, Mapping[str, Any]]] = []
             if miss:
                 events.append(self._proposal_event(node))
@@ -1104,9 +1179,10 @@ class _SearchSession:
                             "cumulative_prior_logp": cumulative,
                             "parent_index": parent_index,
                             "state": list(path.state),
-                            "trace_key": [list(item) for item in _action_trace_key(
-                                extended.actions
-                            )],
+                            "trace_key": [
+                                list(item)
+                                for item in _action_trace_key(extended.actions)
+                            ],
                         }
                     )
                 events: list[tuple[str, Mapping[str, Any]]] = [
@@ -1193,9 +1269,7 @@ class _SearchSession:
     def _observe_storage(self, *, active_paths: Sequence[_Path] = ()) -> None:
         nodes = self._nodes_payload()
         retained = {
-            "active_paths": [
-                self._path_storage_payload(path) for path in active_paths
-            ],
+            "active_paths": [self._path_storage_payload(path) for path in active_paths],
             "nodes": nodes,
             "normal_source": (
                 self.normal_source.state_snapshot()
@@ -1399,9 +1473,8 @@ def _validate_stage_one_material(
             if type(stored) is not dict:
                 raise TraceValidationError("stage 1 proposal row is not an object")
             state_payload = stored.get("state")
-            if (
-                type(state_payload) is not list
-                or any(type(value) is not int for value in state_payload)
+            if type(state_payload) is not list or any(
+                type(value) is not int for value in state_payload
             ):
                 raise TraceValidationError("stage 1 proposal state is invalid")
             try:
@@ -1469,9 +1542,7 @@ def _validate_stage_one_material(
                 raise TraceValidationError(
                     "stage 1 perturbation node-local visit has a gap"
                 )
-            actions = tuple(
-                _action_from_payload(item) for item in node["action_order"]
-            )
+            actions = tuple(_action_from_payload(item) for item in node["action_order"])
             expected_node, expected_point = generate_perturbation_point(
                 task=task,
                 state=tuple(node["state"]),
@@ -1508,16 +1579,38 @@ def _validate_stage_one_material(
                 raise TraceValidationError(
                     "stage 1 selection-score receipt does not close"
                 )
+            semantics = payload.get("selection_semantics")
+            if method.schema_version == DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION:
+                expected_semantics = {
+                    "action_count": len(scored),
+                    "noise_dimension_normalizer": (
+                        _action_dimension_noise_normalizer(len(scored))
+                    ),
+                    "selection_rule_id": DIMENSION_NORMALIZED_SELECTION_RULE_ID,
+                }
+                if semantics != expected_semantics:
+                    raise TraceValidationError(
+                        "stage 1 dimension-normalized selection semantics drifted"
+                    )
+                if (
+                    type(semantics) is not dict
+                    or type(semantics.get("action_count")) is not int
+                    or type(semantics.get("noise_dimension_normalizer")) is not float
+                ):
+                    raise TraceValidationError(
+                        "stage 1 dimension-normalized selection semantics types drifted"
+                    )
+            elif "selection_semantics" in payload:
+                raise TraceValidationError(
+                    "stage 1 legacy selection contains v2 semantics"
+                )
             point_digest = payload.get("point_digest")
             if method.stochastic:
                 if point_digest not in point_digests:
                     raise TraceValidationError(
                         "stage 1 selection references unknown point material"
                     )
-                if (
-                    charge["delta"]["generated_perturbation_coordinates"]
-                    != len(scored)
-                ):
+                if charge["delta"]["generated_perturbation_coordinates"] != len(scored):
                     raise TraceValidationError(
                         "stage 1 coordinate receipt does not close"
                     )
@@ -1634,14 +1727,18 @@ def replay_countdown_track_a_search_bytes(
         proposal=proposal,
         method=method,
     )
-    replayed = _SearchSession(
-        task=task,
-        proposal=proposal,
-        method=method,
-        budget_profile=budget_profile,
-        exploration_seed=exploration_seed,
-        replay_material=validated_material,
-    ).run().canonical_bytes
+    replayed = (
+        _SearchSession(
+            task=task,
+            proposal=proposal,
+            method=method,
+            budget_profile=budget_profile,
+            exploration_seed=exploration_seed,
+            replay_material=validated_material,
+        )
+        .run()
+        .canonical_bytes
+    )
     if replayed != payload:
         raise TraceValidationError("stage 2 search replay was not byte-identical")
     return replayed

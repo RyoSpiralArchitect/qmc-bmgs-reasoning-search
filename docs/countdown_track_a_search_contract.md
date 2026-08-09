@@ -128,6 +128,26 @@ method identifiers remain outside the node-stream identity, so matching
 source, task, state, exploration seed, action order, and node-local visit use
 the same point across the two Thompson calibrations.
 
+The post-canary dimension-normalized v2 is an explicit new method-spec branch;
+it does not silently alter either version-one calibration.  It retains the
+same probability prior and posterior update but divides the normal term by
+the complete action vector's extreme-value scale:
+
+```text
+d(A) = 1 if A == 1 else sqrt(2 * log(A))
+
+mean(a)
++ prior_bonus * prior(a)
++ posterior_sd_scale / (d(A) * sqrt(N(state,a) + 1)) * normal(a)
+```
+
+The first v2 freezes both coefficients at one.  Its method and selection-rule
+identities are versioned separately, while its node-local point identity stays
+paired with v1 until their selected paths diverge.  This isolates one proposed
+repair for the canary's many-arm noise mismatch; it is not performance or QMC
+evidence.  The rationale and falsification boundary are in the
+[v2 strategy note](strategy/countdown_thompson_dimension_normalization_v2.md).
+
 PUCT and Thompson continue after a first exact hit until the active budget
 profile stops them or the method has no further legal work.  This permits the
 preregistered first-hit, exact-terminal reuse, and successful-terminal
@@ -184,6 +204,12 @@ ledger.generated_perturbation_coordinates
 
 Deterministic selections reference no point and generate zero coordinates.
 Every accepted receipt index has exactly one owning event.
+
+A dimension-normalized v2 ordinary selection additionally records
+`selection_semantics` with the exact action count, rule id, and
+`sqrt(2 log A)` normalizer.  Stage-one replay recomputes this diagnostic rather
+than trusting it; version-one selections do not gain the field and retain
+their historical bytes.
 
 The run identity binds digests of the complete proposal, method, runtime, and
 budget-profile specifications.  In particular, the primary stopping axis is

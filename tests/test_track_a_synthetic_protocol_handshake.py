@@ -206,6 +206,8 @@ def _synthetic_git_lookup(
             f"{repository_root.resolve()}\n".encode(),
             b"",
         )
+    if arguments == ("status", "--porcelain=v1", "--untracked-files=all"):
+        return subprocess.CompletedProcess(["git", *arguments], 0, b"", b"")
     if arguments[:2] == ("cat-file", "-t"):
         return subprocess.CompletedProcess(
             ["git", *arguments],

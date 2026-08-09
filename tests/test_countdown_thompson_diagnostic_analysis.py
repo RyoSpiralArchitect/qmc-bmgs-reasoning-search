@@ -266,6 +266,37 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
         ):
             analysis._validate_build_attestation_structure(attestation)
 
+    def test_clean_checkout_gate_rejects_dirty_or_unreadable_status(self) -> None:
+        root = Path("/tmp/qmc-diagnostic-clean-checkout-fixture")
+        with patch.object(
+            analysis,
+            "_git_result",
+            return_value=SimpleNamespace(returncode=0, stdout=b"?? drift.json\n"),
+        ):
+            with self.assertRaisesRegex(
+                analysis.DiagnosticAnalysisError,
+                "must be clean",
+            ):
+                analysis._require_clean_git_checkout(root)
+
+        with patch.object(
+            analysis,
+            "_git_result",
+            return_value=SimpleNamespace(returncode=1, stdout=b""),
+        ):
+            with self.assertRaisesRegex(
+                analysis.DiagnosticAnalysisError,
+                "status is unreadable",
+            ):
+                analysis._require_clean_git_checkout(root)
+
+        with patch.object(
+            analysis,
+            "_git_result",
+            return_value=SimpleNamespace(returncode=0, stdout=b""),
+        ):
+            analysis._require_clean_git_checkout(root)
+
     def test_authorization_semantics_close_before_record_access(self) -> None:
         attestation = {"fixture": "already structurally validated"}
         qualification = {"fixture": "runtime-qualified"}

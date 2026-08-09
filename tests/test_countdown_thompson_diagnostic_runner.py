@@ -453,6 +453,92 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         repository_root=root,
                     )
 
+    def test_authorization_parent_sync_failure_returns_exact_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            authorization_path = root / "authorization.json"
+            preflight = _preflight(output)
+            original_fsync = runner.os.fsync
+            call_count = 0
+
+            def fail_after_authorization_rename(descriptor: int) -> None:
+                nonlocal call_count
+                call_count += 1
+                if call_count == 2:
+                    raise OSError("authorization parent sync failure")
+                original_fsync(descriptor)
+
+            with (
+                patch.object(runner, "_fresh_preflight", return_value=preflight),
+                patch.object(
+                    runner.os,
+                    "fsync",
+                    side_effect=fail_after_authorization_rename,
+                ),
+            ):
+                receipt = runner.write_countdown_thompson_diagnostic_execution_plan(
+                    root / "bundle",
+                    output,
+                    authorization_path,
+                    repository_root=root,
+                )
+            raw = authorization_path.read_bytes()
+            parsed = json.loads(raw)
+            self.assertEqual(raw, runner._canonical_bytes(parsed))
+            self.assertEqual(
+                receipt["authorization_digest"],
+                parsed["deterministic_digest"],
+            )
+            self.assertEqual(
+                receipt["status"],
+                "PREOUTCOME_AUTHORIZATION_CANDIDATE_WRITTEN",
+            )
+            self.assertFalse(
+                any(
+                    path.name.startswith(".authorization.json.tmp-")
+                    for path in root.iterdir()
+                )
+            )
+
+    def test_authorization_parent_drift_revokes_candidate_before_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            authorization_path = root / "authorization.json"
+            preflight = _preflight(output)
+            original_assert = runner._assert_directory_path_identity
+            call_count = 0
+
+            def drift_after_authorization_rename(*args: object) -> None:
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 3:
+                    raise runner.DiagnosticRunnerError(
+                        "authorization parent path identity changed"
+                    )
+                original_assert(*args)
+
+            with (
+                patch.object(runner, "_fresh_preflight", return_value=preflight),
+                patch.object(
+                    runner,
+                    "_assert_directory_path_identity",
+                    side_effect=drift_after_authorization_rename,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticRunnerError,
+                    "authorization parent path identity changed",
+                ):
+                    runner.write_countdown_thompson_diagnostic_execution_plan(
+                        root / "bundle",
+                        output,
+                        authorization_path,
+                        repository_root=root,
+                    )
+            self.assertFalse(authorization_path.exists())
+
     def test_authorization_missing_initializer_receipt_stops_before_preflight(
         self,
     ) -> None:
@@ -1560,6 +1646,105 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             self.assertFalse(output.exists())
             self.assertFalse((root / ".artifact.publish-lock").exists())
 
+    def test_output_parent_creation_failure_is_canonical_not_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "missing" / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            with (
+                patch.object(
+                    Path,
+                    "mkdir",
+                    side_effect=OSError("output parent creation failure"),
+                ),
+                patch.object(
+                    runner,
+                    "_open_stable_directory",
+                    side_effect=AssertionError("parent must not be opened"),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticNotRunError,
+                    "output parent creation failure",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+
+    def test_output_lock_creation_failure_is_canonical_not_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_mkdir = runner.os.mkdir
+
+            def fail_lock(
+                path: object,
+                mode: int = 0o777,
+                *,
+                dir_fd: int | None = None,
+            ) -> None:
+                if path == ".artifact.publish-lock" and dir_fd is not None:
+                    raise OSError("output lock creation failure")
+                original_mkdir(path, mode, dir_fd=dir_fd)
+
+            with (
+                patch.object(runner.os, "mkdir", side_effect=fail_lock),
+                patch.object(
+                    runner,
+                    "_publish_run_artifact_locked",
+                    side_effect=AssertionError("attempt must not start"),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticNotRunError,
+                    "output lock creation failure",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+            self.assertFalse((root / ".artifact.publish-lock").exists())
+
+    def test_initial_output_parent_identity_failure_is_canonical_not_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            with (
+                patch.object(
+                    runner,
+                    "_assert_directory_path_identity",
+                    side_effect=runner.DiagnosticRunnerError(
+                        "output parent identity failure"
+                    ),
+                ),
+                patch.object(
+                    runner,
+                    "_publish_run_artifact_locked",
+                    side_effect=AssertionError("attempt must not start"),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticNotRunError,
+                    "output parent identity failure",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+            self.assertFalse((root / ".artifact.publish-lock").exists())
+
     def test_output_lock_serializes_different_authorization_digests(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1595,10 +1780,56 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     "authorization.json",
                     "--authorization-digest",
                     "0" * 64,
+                    "--repository-root",
+                    ".",
                 ]
             )
         with self.assertRaises(SystemExit):
             runner.main(["--self-test", "--output", "artifact"])
+        with self.assertRaises(SystemExit):
+            runner.main(["--self-test", "--repository-root", "."])
+        with (
+            patch.object(runner, "_self_test", return_value={"status": "PASS"}),
+            patch("builtins.print") as printed,
+        ):
+            runner.main(["--self-test"])
+        self.assertEqual(json.loads(printed.call_args.args[0])["status"], "PASS")
+        with patch.object(
+            runner,
+            "write_countdown_thompson_diagnostic_execution_plan",
+            side_effect=AssertionError("planning must require an explicit root"),
+        ):
+            with self.assertRaises(SystemExit):
+                runner.main(
+                    [
+                        "--plan",
+                        "bundle",
+                        "--output",
+                        "artifact",
+                        "--authorization-out",
+                        "authorization.json",
+                    ]
+                )
+        with patch.object(
+            runner,
+            "run_countdown_thompson_diagnostic",
+            side_effect=AssertionError("execution must require an explicit root"),
+        ):
+            with self.assertRaises(SystemExit):
+                runner.main(
+                    [
+                        "--run",
+                        "bundle",
+                        "--output",
+                        "artifact",
+                        "--authorization-file",
+                        "authorization.json",
+                        "--authorization-digest",
+                        "0" * 64,
+                        "--authorization-revision",
+                        _AUTHORIZATION_REVISION,
+                    ]
+                )
         with patch.object(
             runner,
             "write_countdown_thompson_diagnostic_execution_plan",
@@ -1612,9 +1843,12 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     "artifact",
                     "--authorization-out",
                     "authorization.json",
+                    "--repository-root",
+                    ".",
                 ]
             )
         planned.assert_called_once()
+        self.assertEqual(planned.call_args.kwargs["repository_root"], Path("."))
 
         with (
             patch.object(
@@ -1633,6 +1867,8 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         "artifact",
                         "--authorization-out",
                         "authorization.json",
+                        "--repository-root",
+                        ".",
                     ]
                 )
         self.assertEqual(stopped.exception.code, 2)
@@ -1660,6 +1896,8 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     "0" * 64,
                     "--authorization-revision",
                     _AUTHORIZATION_REVISION,
+                    "--repository-root",
+                    ".",
                 ]
             )
         self.assertEqual(
@@ -1688,6 +1926,8 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         "0" * 64,
                         "--authorization-revision",
                         _AUTHORIZATION_REVISION,
+                        "--repository-root",
+                        ".",
                     ]
                 )
         self.assertEqual(stopped.exception.code, 3)

@@ -21,7 +21,6 @@ import secrets
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 from copy import deepcopy
 from dataclasses import dataclass
@@ -417,6 +416,41 @@ def _read_regular_file_at(directory_fd: int, filename: str) -> bytes:
         os.close(descriptor)
 
 
+def _published_file_matches(
+    directory_fd: int,
+    filename: str,
+    staging_identity: tuple[int, int],
+    expected: bytes,
+) -> bool:
+    """Prove one published file is the exact staged inode and byte payload."""
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(filename, flags, dir_fd=directory_fd)
+    except OSError:
+        return False
+    try:
+        observed = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or (
+                observed.st_dev,
+                observed.st_ino,
+            )
+            != staging_identity
+        ):
+            return False
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            return handle.read() == expected
+    except OSError:
+        return False
+    finally:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+
+
 def _unlink_exact_file_at(
     directory_fd: int,
     filename: str,
@@ -482,33 +516,140 @@ def _write_canonical_file_noreplace(
     destination: Path,
     payload: Mapping[str, Any],
 ) -> None:
-    """Stage, fsync, and atomically publish one authority file."""
+    """Stage, fsync, and atomically publish one authority file.
+
+    Once a no-replace rename may have succeeded, an exact staged inode at the
+    destination is the candidate authority. A later directory-sync exception
+    therefore resolves as success instead of reporting NOT_RUN while that
+    exact candidate remains visible.
+    """
 
     parent = destination.parent
     parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{destination.name}.tmp-",
-        dir=parent,
+    parent_fd, parent_stat = _open_stable_directory(
+        parent,
+        "authorization parent",
     )
-    temporary: Path | None = Path(temporary_name)
+    if destination.name != Path(destination.name).name or not destination.name:
+        try:
+            os.close(parent_fd)
+        except OSError:
+            pass
+        raise DiagnosticRunnerError("authorization filename is invalid")
+    raw = _canonical_bytes(payload)
+    temporary_name = ""
+    descriptor = -1
     try:
+        _assert_directory_path_identity(
+            parent,
+            parent_fd,
+            parent_stat,
+            "authorization parent",
+        )
+        for _attempt in range(128):
+            candidate = f".{destination.name}.tmp-{secrets.token_hex(16)}"
+            try:
+                descriptor = os.open(
+                    candidate,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=parent_fd,
+                )
+            except FileExistsError:
+                continue
+            temporary_name = candidate
+            break
+        if descriptor < 0:
+            raise DiagnosticRunnerError("could not allocate authorization staging file")
         with os.fdopen(descriptor, "wb") as handle:
-            handle.write(_canonical_bytes(payload))
+            descriptor = -1
+            handle.write(raw)
             handle.flush()
             os.fsync(handle.fileno())
-        manifest._rename_directory_noreplace(temporary, destination)
-        temporary = None
-        parent_fd = os.open(parent, os.O_RDONLY)
+            staged = os.fstat(handle.fileno())
+        staging_identity = (staged.st_dev, staged.st_ino)
+        _assert_directory_path_identity(
+            parent,
+            parent_fd,
+            parent_stat,
+            "authorization parent",
+        )
+        try:
+            _rename_noreplace_at(
+                parent_fd,
+                temporary_name,
+                parent_fd,
+                destination.name,
+            )
+        except BaseException:
+            if not _published_file_matches(
+                parent_fd,
+                destination.name,
+                staging_identity,
+                raw,
+            ):
+                raise
+        try:
+            os.unlink(temporary_name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+        temporary_name = ""
         try:
             os.fsync(parent_fd)
-        finally:
-            os.close(parent_fd)
-    finally:
-        if temporary is not None:
+            _assert_directory_path_identity(
+                parent,
+                parent_fd,
+                parent_stat,
+                "authorization parent",
+            )
+        except BaseException:
+            exact_candidate = _published_file_matches(
+                parent_fd,
+                destination.name,
+                staging_identity,
+                raw,
+            )
+            path_is_stable = True
             try:
-                temporary.unlink()
+                _assert_directory_path_identity(
+                    parent,
+                    parent_fd,
+                    parent_stat,
+                    "authorization parent",
+                )
+            except DiagnosticRunnerError:
+                path_is_stable = False
+            if exact_candidate and path_is_stable:
+                return
+            if exact_candidate:
+                _unlink_exact_file_at(
+                    parent_fd,
+                    destination.name,
+                    raw,
+                )
+            raise
+        if not _published_file_matches(
+            parent_fd,
+            destination.name,
+            staging_identity,
+            raw,
+        ):
+            raise DiagnosticRunnerError(
+                "published authorization identity or bytes drifted"
+            )
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temporary_name:
+            try:
+                os.unlink(temporary_name, dir_fd=parent_fd)
             except FileNotFoundError:
                 pass
+        try:
+            os.close(parent_fd)
+        except OSError:
+            # Closing a pinned descriptor cannot revoke an exact candidate.
+            pass
 
 
 def _git(repository_root: Path, *arguments: str) -> str:
@@ -1924,54 +2065,51 @@ def _publish_run_artifact(
 
     output = preflight.output_path
     parent = output.parent
-    parent.mkdir(parents=True, exist_ok=True)
+    parent_fd = -1
+    lock_created = False
+    lock_name = f".{output.name}.publish-lock"
     try:
+        parent.mkdir(parents=True, exist_ok=True)
         parent_fd, parent_stat = _open_stable_directory(
             parent,
             "run output parent",
         )
-    except DiagnosticRunnerError as error:
-        raise DiagnosticNotRunError(str(error)) from error
-    lock_name = f".{output.name}.publish-lock"
-    try:
         try:
             os.mkdir(lock_name, 0o700, dir_fd=parent_fd)
         except FileExistsError as error:
             raise DiagnosticNotRunError(
                 f"run artifact publication is locked: {parent / lock_name}"
             ) from error
-        try:
-            _assert_directory_path_identity(
-                parent,
-                parent_fd,
-                parent_stat,
-                "run output parent",
-            )
-            try:
-                manifest_payload, commit_payload = _publish_run_artifact_locked(
-                    preflight,
-                    authorization,
-                    reviewed_authorization_revision=reviewed_authorization_revision,
-                    repository_root=repository_root,
-                    parent_fd=parent_fd,
-                    parent_stat=parent_stat,
-                )
-                if _terminal_result:
-                    return {
-                        "artifact_commit_digest": commit_payload[
-                            "deterministic_digest"
-                        ],
-                        "artifact_id": manifest_payload["artifact_id"],
-                        "artifact_path": str(preflight.output_path),
-                        "run_manifest_digest": manifest_payload["deterministic_digest"],
-                        "status": "COMMITTED",
-                    }
-                return manifest_payload
-            except (DiagnosticNotRunError, DiagnosticInvalidRunError):
-                raise
-            except Exception as error:
-                raise DiagnosticNotRunError(str(error)) from error
-        finally:
+        lock_created = True
+        _assert_directory_path_identity(
+            parent,
+            parent_fd,
+            parent_stat,
+            "run output parent",
+        )
+        manifest_payload, commit_payload = _publish_run_artifact_locked(
+            preflight,
+            authorization,
+            reviewed_authorization_revision=reviewed_authorization_revision,
+            repository_root=repository_root,
+            parent_fd=parent_fd,
+            parent_stat=parent_stat,
+        )
+        if _terminal_result:
+            return {
+                "artifact_commit_digest": commit_payload["deterministic_digest"],
+                "artifact_id": manifest_payload["artifact_id"],
+                "artifact_path": str(preflight.output_path),
+                "run_manifest_digest": manifest_payload["deterministic_digest"],
+                "status": "COMMITTED",
+            }
+        return manifest_payload
+    except (DiagnosticNotRunError, DiagnosticInvalidRunError):
+        raise
+    except BaseException as error:
+        raise DiagnosticNotRunError(str(error)) from error
+    finally:
+        if lock_created and parent_fd >= 0:
             try:
                 os.rmdir(lock_name, dir_fd=parent_fd)
             except OSError:
@@ -1979,8 +2117,11 @@ def _publish_run_artifact(
                 # the execution authority.  Never rewrite outcome state because
                 # lock cleanup failed after an otherwise final transition.
                 pass
-    finally:
-        os.close(parent_fd)
+        if parent_fd >= 0:
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
 
 
 def _publish_run_artifact_locked(
@@ -2415,7 +2556,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--authorization-file", type=Path)
     parser.add_argument("--authorization-digest")
     parser.add_argument("--authorization-revision")
-    parser.add_argument("--repository-root", type=Path, default=Path.cwd())
+    parser.add_argument("--repository-root", type=Path)
     args = parser.parse_args(argv)
 
     if args.self_test:
@@ -2427,11 +2568,14 @@ def main(argv: Sequence[str] | None = None) -> None:
                 args.authorization_file,
                 args.authorization_digest,
                 args.authorization_revision,
+                args.repository_root,
             )
         ):
             parser.error("--self-test accepts no execution or authorization paths")
         result = _self_test()
     elif args.plan is not None:
+        if args.repository_root is None:
+            parser.error("--plan requires explicit --repository-root")
         if args.output is None or args.authorization_out is None:
             parser.error("--plan requires --output and --authorization-out")
         if any(
@@ -2465,6 +2609,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             )
             raise SystemExit(2) from error
     else:
+        if args.repository_root is None:
+            parser.error("--run requires explicit --repository-root")
         if (
             args.output is None
             or args.authorization_file is None

@@ -901,6 +901,21 @@ def _git_result(
     )
 
 
+def _require_clean_git_checkout(repository_root: Path) -> None:
+    result = _git_result(
+        repository_root,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+    )
+    if result.returncode != 0:
+        raise DiagnosticAnalysisError("repository checkout status is unreadable")
+    if result.stdout != b"":
+        raise DiagnosticAnalysisError(
+            "repository checkout must be clean before diagnostic analysis"
+        )
+
+
 def _require_git_commit_object(
     repository_root: Path,
     revision: str,
@@ -967,6 +982,7 @@ def _validate_git_provenance(
         raise DiagnosticAnalysisError("Git top-level path is not UTF-8") from error
     if observed_root != root:
         raise DiagnosticAnalysisError("repository root does not match Git top level")
+    _require_clean_git_checkout(root)
 
     authorized = attestation["authorized_runner_revision"]
     ancestors = [authorized, *attestation["required_ancestry"]]

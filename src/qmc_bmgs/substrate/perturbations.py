@@ -151,6 +151,17 @@ def _runtime_metadata(source: str) -> dict[str, Any]:
     return metadata
 
 
+def perturbation_runtime_metadata(source: str) -> dict[str, Any]:
+    """Return source runtime metadata without creating a task stream or point.
+
+    The fixed conformance digest in this payload checks the pinned numerical
+    runtime.  It is not a canary node stream and does not consume an
+    exploration seed, node visit, perturbation coordinate, or trace event.
+    """
+
+    return _runtime_metadata(source)
+
+
 def _validate_node_materialization_schema(payload: Mapping[str, Any]) -> None:
     """Reject JSON type aliases before Python's value equality can hide them."""
 

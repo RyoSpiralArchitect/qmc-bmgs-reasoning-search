@@ -14,6 +14,7 @@ from qmc_bmgs.substrate.countdown_search import (
     build_search_run_identity,
     replay_countdown_track_a_search_bytes,
     run_countdown_track_a_search,
+    search_runtime_metadata,
     search_run_identity_digest,
 )
 from qmc_bmgs.substrate.perturbations import (
@@ -26,6 +27,7 @@ from qmc_bmgs.substrate.perturbations import (
     build_perturbation_run_identity,
     generate_perturbation_point,
     perturbation_run_identity_digest,
+    perturbation_runtime_metadata,
     replay_perturbation_trace,
     replay_perturbation_trace_bytes,
 )
@@ -69,10 +71,12 @@ __all__ = [
     "evaluate_track_a_proposal",
     "generate_perturbation_point",
     "perturbation_run_identity_digest",
+    "perturbation_runtime_metadata",
     "replay_perturbation_trace",
     "replay_perturbation_trace_bytes",
     "replay_countdown_track_a_search_bytes",
     "run_countdown_track_a_search",
+    "search_runtime_metadata",
     "search_run_identity_digest",
     "validate_trace",
     "validate_trace_bytes",

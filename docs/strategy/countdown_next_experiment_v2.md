@@ -69,7 +69,9 @@ before evaluation search output exists.
 - Solvability is the only outcome-based inclusion condition and is computed by
   the existing exhaustive generator before search. No task may be removed,
   replaced, or reweighted from any method result.
-- Canary uses exploration seeds `7168..7171`. Locked evaluation uses
+- Stochastic canary methods use exploration seeds `7168..7171`. Deterministic
+  greedy, beam, and PUCT each contribute exactly one row at seed `0`; they are
+  never copied across fake seed labels. Locked stochastic evaluation uses
   `4096..4111`, giving 16 nested perturbation runs per task and method.
 
 The generator already freezes input range `1..10`, target range `100..999`,
@@ -107,6 +109,15 @@ The minimum matched method set is:
 
 The selected and baseline configurations are both required. Without both, the
 experiment cannot estimate calibration transfer.
+
+The canary proposal cross is also frozen. `uniform/v1` and
+`greedy_rollout_target_error/v1` each run the complete seven-method matrix.
+`oracle_path_count_positive_control/v1` runs greedy only and is excluded from
+all fair comparisons. With 12 tasks and two budget profiles this produces 936
+planned cells: 456 uniform, 456 heuristic, and 24 oracle-greedy. The full
+method-spec digest, not the shared Thompson `method_id`, is part of every cell
+identity. A runtime-bound method-manifest digest is also included so equal
+method specs from a different numerical runtime are not interchangeable.
 
 A later mechanism experiment may add randomized stratified or Latin-hypercube
 normal points. That is the appropriate control for separating marginal
@@ -216,11 +227,24 @@ competing stopping limits in one run:
 - `verifier8`: `verifier_calls` is the stopping axis with limit `8`;
   selection scoring and every other work axis are non-primary hard guards.
 
-The complete non-primary guard values for both profiles are sealed in the
-budget manifest before canary search. A canary cell is budget-invalid if a
-non-primary guard binds, and that cell fails the gate rather than being treated
-as an observation at the requested slice. The locked evaluation may begin only
-if every canary cell proves that its non-primary guards were nonbinding.
+The complete work limits are frozen before canary search, in canonical work-axis
+order:
+
+| profile | proposal states | proposal scores | legal scores | coordinates | edges | transitions | verifiers |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `score256` | 86 | 257 | 256 | 257 | 86 | 86 | 18 |
+| `verifier8` | 41 | 1121 | 1121 | 1121 | 41 | 41 | 8 |
+
+These guards are outcome-blind structural bounds plus one unit of headroom.
+For a nonterminal Countdown state the legal-action count is at least three and
+at most `4*C(n,2)`. Across state widths six through two the maxima are
+`60,40,24,12,4`: at most 140 scores and five transitions per trajectory.
+Thus score256 can accept at most 85 ordinary selections and 17 terminal
+trajectories, while verifier8 can consume at most 1120 scores and 40
+transitions. The width-two beam completes within 220 scores and ten retained
+edges. A canary cell is budget-invalid if a non-primary guard rejects work or
+finishes at exact exhaustion; locked evaluation may begin only if every cell
+retains positive non-primary headroom.
 
 Each method must stop before overshooting its profile's stopping axis. Before
 starting another `verifier8` trajectory, the runner preflights that one verifier
@@ -312,8 +336,9 @@ simultaneous 97.5% intervals.
 
 Before the full benchmark:
 
-1. canary every method under both frozen budget profiles on all 12 canary tasks
-   and all four canary seeds;
+1. execute the exact 936-cell proposal/method/budget schedule; deterministic
+   methods occur once at seed zero and only stochastic methods use all four
+   canary seeds;
 2. require no action truncation and exact action-order agreement;
 3. require generative material replay followed by byte-identical search replay
    from persisted visited-state material;
@@ -321,7 +346,13 @@ Before the full benchmark:
    every non-primary guard was nonbinding in every canary cell;
 5. require greedy/best-first/PUCT baselines to be functional;
 6. estimate projected provider calls, bank bytes, and wall time;
-7. publish the task/proposal/method manifest and its digest.
+7. publish the exclusion/task/proposal/method/budget/analysis manifests and
+   their byte-level seal before executing any cell.
+
+The canary has no inferential or promotion authority. It reports raw 12-task
+vectors and descriptive point estimates only: no confidence interval, p-value,
+or winner label. A method comparison is promoted, rejected, or called
+non-inferior only by the separately locked 128-task analysis below.
 
 If canary success is zero for all search methods, repair the substrate before
 spending a large seed budget. If simple baselines dominate, treat that as the

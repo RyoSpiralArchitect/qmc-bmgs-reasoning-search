@@ -62,6 +62,7 @@ def main() -> None:
         "qmc_bmgs.experiments.countdown_calibration_grid",
         "qmc_bmgs.experiments.countdown_track_a_substrate",
         "qmc_bmgs.experiments.countdown_track_a_search",
+        "qmc_bmgs.experiments.countdown_track_a_canary_manifest",
     ):
         _run([sys.executable, "-m", module, "--self-test"], cwd=outside)
     print("repository validation: PASS")

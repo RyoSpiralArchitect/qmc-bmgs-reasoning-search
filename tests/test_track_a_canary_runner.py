@@ -1519,6 +1519,33 @@ class TrackACanaryRunnerTests(unittest.TestCase):
             )
         planned.assert_called_once()
 
+        with (
+            patch.object(
+                runner,
+                "write_track_a_canary_execution_plan",
+                side_effect=FileExistsError("authorization destination exists"),
+            ),
+            patch("builtins.print") as printed,
+        ):
+            with self.assertRaises(SystemExit) as stopped:
+                runner.main(
+                    [
+                        "--plan",
+                        "bundle",
+                        "--output",
+                        "artifact",
+                        "--authorization-out",
+                        "authorization.json",
+                    ]
+                )
+        self.assertEqual(stopped.exception.code, 2)
+        refused_raw = printed.call_args.args[0]
+        refused = json.loads(refused_raw)
+        self.assertEqual(refused_raw, runner.canonical_json(refused))
+        self.assertEqual(refused["status"], "NOT_RUN")
+        self.assertIn("planning did not complete", refused["claim_boundary"])
+        self.assertEqual(refused["reason"], "authorization destination exists")
+
         with patch.object(
             runner,
             "run_track_a_canary",

@@ -73,6 +73,9 @@ file. Planning status
 written after outcome-blind checks. It is not authority to run until the
 separate authorization PR is reviewed and merged. At execution, the candidate
 must be a tracked file whose working-tree bytes exactly equal its Git blob.
+An expected planning refusal emits one canonical JSON object with
+`status="NOT_RUN"` and exit code 2; it never exposes a traceback as its
+operator-facing protocol and never counts as a canary result.
 
 ## One authorized execution
 

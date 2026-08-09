@@ -2354,12 +2354,27 @@ def main(argv: Sequence[str] | None = None) -> None:
             )
         ):
             parser.error("--plan does not accept run authorization inputs")
-        result = write_track_a_canary_execution_plan(
-            args.plan,
-            args.output,
-            args.authorization_out,
-            repository_root=args.repository_root,
-        )
+        try:
+            result = write_track_a_canary_execution_plan(
+                args.plan,
+                args.output,
+                args.authorization_out,
+                repository_root=args.repository_root,
+            )
+        except (CanaryRunnerError, FileExistsError, OSError, ValueError) as error:
+            print(
+                canonical_json(
+                    {
+                        "claim_boundary": (
+                            "planning did not complete; no canary search outcome "
+                            "was opened"
+                        ),
+                        "reason": str(error),
+                        "status": "NOT_RUN",
+                    }
+                )
+            )
+            raise SystemExit(2) from error
     else:
         if (
             args.output is None

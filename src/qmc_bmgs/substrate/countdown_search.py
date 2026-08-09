@@ -49,11 +49,17 @@ from qmc_bmgs.substrate.trace import (
 
 METHOD_SPEC_SCHEMA_VERSION = "qmc-bmgs-track-a-method-spec/v1"
 DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION = "qmc-bmgs-track-a-method-spec/v2"
+DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION = "qmc-bmgs-track-a-method-spec/v3"
+GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION = "qmc-bmgs-track-a-method-spec/v4"
 BUDGET_PROFILE_SCHEMA_VERSION = "qmc-bmgs-track-a-budget-profile/v1"
 SEARCH_SCHEMA_VERSION = "qmc-bmgs-track-a-countdown-search/v1"
 SEARCH_EVENT_SCHEMA_VERSION = "qmc-bmgs-track-a-search-event/v1"
 NO_PERTURBATION_METADATA_VERSION = "qmc-bmgs-no-perturbation-source/v1"
 DIMENSION_NORMALIZED_SELECTION_RULE_ID = "probability_prior_sqrt_2_ln_action_noise/v1"
+GREEDY_ANCHORED_SELECTION_RULE_ID = (
+    "one_greedy_trajectory_then_probability_prior_sqrt_2_ln_action_noise/v1"
+)
+RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID = "reciprocal_absolute_error/v1"
 
 _METHODS = {"greedy", "beam", "puct", "thompson"}
 _SOURCES = {"none", "iid", "sobol"}
@@ -92,12 +98,16 @@ class TrackAMethodSpec:
     posterior_sd_scale: float | None = None
     beam_width: int | None = None
     selection_rule_id: str | None = None
+    terminal_value_rule_id: str | None = None
+    greedy_anchor_trajectory_count: int | None = None
     schema_version: str = METHOD_SPEC_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         if self.schema_version not in {
             METHOD_SPEC_SCHEMA_VERSION,
             DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION,
+            DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
+            GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION,
         }:
             raise ValueError("unsupported Track A method-spec schema")
         if type(self.method) is not str:
@@ -109,7 +119,11 @@ class TrackAMethodSpec:
         if self.selected_source not in _SOURCES:
             raise ValueError("selected_source must be none, iid, or sobol")
 
-        if self.schema_version == DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION:
+        if self.schema_version in {
+            DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION,
+            DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
+            GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION,
+        }:
             if self.method != "thompson":
                 raise ValueError(
                     "dimension-normalized method-spec v2 requires Thompson"
@@ -127,13 +141,43 @@ class TrackAMethodSpec:
                 minimum=0.0,
                 strict=True,
             )
+            if type(self.selection_rule_id) is not str:
+                raise ValueError("selection_rule_id must be a plain string")
+            selection_rule_id = DIMENSION_NORMALIZED_SELECTION_RULE_ID
+            terminal_value_rule_id: str | None = None
+            greedy_anchor_trajectory_count: int | None = None
+            if self.schema_version == DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION:
+                if type(self.terminal_value_rule_id) is not str:
+                    raise ValueError("terminal_value_rule_id must be a plain string")
+                if type(self.greedy_anchor_trajectory_count) is not int:
+                    raise ValueError(
+                        "greedy_anchor_trajectory_count must be a plain integer"
+                    )
+                terminal_value_rule_id = (
+                    RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID
+                )
+                greedy_anchor_trajectory_count = 0
+            elif self.schema_version == GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION:
+                if type(self.terminal_value_rule_id) is not str:
+                    raise ValueError("terminal_value_rule_id must be a plain string")
+                if type(self.greedy_anchor_trajectory_count) is not int:
+                    raise ValueError(
+                        "greedy_anchor_trajectory_count must be a plain integer"
+                    )
+                selection_rule_id = GREEDY_ANCHORED_SELECTION_RULE_ID
+                terminal_value_rule_id = (
+                    RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID
+                )
+                greedy_anchor_trajectory_count = 1
             expected = (
                 self.selected_source,
                 None,
                 self.prior_bonus,
                 self.posterior_sd_scale,
                 None,
-                DIMENSION_NORMALIZED_SELECTION_RULE_ID,
+                selection_rule_id,
+                terminal_value_rule_id,
+                greedy_anchor_trajectory_count,
             )
         elif self.method == "greedy":
             expected = ("none", None, None, None, None)
@@ -178,10 +222,26 @@ class TrackAMethodSpec:
             self.posterior_sd_scale,
             self.beam_width,
         )
-        if self.schema_version == DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION:
-            observed = (*observed, self.selection_rule_id)
-        elif self.selection_rule_id is not None:
-            raise ValueError("method-spec v1 does not define selection_rule_id")
+        if self.schema_version in {
+            DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION,
+            DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
+            GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION,
+        }:
+            observed = (
+                *observed,
+                self.selection_rule_id,
+                self.terminal_value_rule_id,
+                self.greedy_anchor_trajectory_count,
+            )
+        elif any(
+            value is not None
+            for value in (
+                self.selection_rule_id,
+                self.terminal_value_rule_id,
+                self.greedy_anchor_trajectory_count,
+            )
+        ):
+            raise ValueError("method-spec v1 does not define v2+ semantics")
         if observed != expected:
             raise ValueError(f"fields do not match {self.method} method semantics")
 
@@ -241,10 +301,47 @@ class TrackAMethodSpec:
             schema_version=DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION,
         )
 
+    @classmethod
+    def dimension_normalized_dense_thompson(cls, source: str) -> TrackAMethodSpec:
+        """Add reciprocal absolute-error terminal feedback to v2 selection."""
+
+        return cls(
+            method="thompson",
+            selected_source=source,
+            prior_bonus=1.0,
+            posterior_sd_scale=1.0,
+            selection_rule_id=DIMENSION_NORMALIZED_SELECTION_RULE_ID,
+            terminal_value_rule_id=(RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID),
+            greedy_anchor_trajectory_count=0,
+            schema_version=DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
+        )
+
+    @classmethod
+    def greedy_anchored_dimension_normalized_dense_thompson(
+        cls,
+        source: str,
+    ) -> TrackAMethodSpec:
+        """Run one greedy trajectory before the v3 Thompson policy."""
+
+        return cls(
+            method="thompson",
+            selected_source=source,
+            prior_bonus=1.0,
+            posterior_sd_scale=1.0,
+            selection_rule_id=GREEDY_ANCHORED_SELECTION_RULE_ID,
+            terminal_value_rule_id=(RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID),
+            greedy_anchor_trajectory_count=1,
+            schema_version=GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION,
+        )
+
     @property
     def method_id(self) -> str:
         if self.schema_version == DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION:
             return "thompson_binary_terminal_dimnorm_noise/v2"
+        if self.schema_version == DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION:
+            return "thompson_reciprocal_error_terminal_dimnorm_noise/v3"
+        if self.schema_version == GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION:
+            return "thompson_greedy_anchor_reciprocal_error_terminal_dimnorm_noise/v4"
         return {
             "greedy": "greedy/v1",
             "beam": "layer_synchronous_beam_width_2/v1",
@@ -255,6 +352,21 @@ class TrackAMethodSpec:
     @property
     def stochastic(self) -> bool:
         return self.method == "thompson"
+
+    @property
+    def dimension_normalized(self) -> bool:
+        return self.schema_version in {
+            DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION,
+            DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
+            GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION,
+        }
+
+    @property
+    def dense_terminal_value(self) -> bool:
+        return self.schema_version in {
+            DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
+            GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION,
+        }
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -267,8 +379,13 @@ class TrackAMethodSpec:
             "schema_version": self.schema_version,
             "selected_source": self.selected_source,
         }
-        if self.schema_version == DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION:
+        if self.dimension_normalized:
             payload["selection_rule_id"] = self.selection_rule_id
+        if self.dense_terminal_value:
+            payload["terminal_value_rule_id"] = self.terminal_value_rule_id
+            payload["greedy_anchor_trajectory_count"] = (
+                self.greedy_anchor_trajectory_count
+            )
         return payload
 
 
@@ -280,6 +397,100 @@ def _action_dimension_noise_normalizer(action_count: int) -> float:
     if action_count == 1:
         return 1.0
     return math.sqrt(2.0 * math.log(action_count))
+
+
+def _dimension_normalized_selection_semantics(
+    method: TrackAMethodSpec,
+    *,
+    action_count: int,
+    trajectory_index: int,
+) -> dict[str, Any] | None:
+    if type(method) is not TrackAMethodSpec:
+        raise TypeError("method must be exactly TrackAMethodSpec")
+    if not method.dimension_normalized:
+        return None
+    if type(trajectory_index) is not int or trajectory_index < 0:
+        raise ValueError("trajectory_index must be a non-negative plain integer")
+    payload: dict[str, Any] = {
+        "action_count": action_count,
+        "noise_dimension_normalizer": _action_dimension_noise_normalizer(action_count),
+        "selection_rule_id": method.selection_rule_id,
+    }
+    if method.schema_version == GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION:
+        anchor_count = method.greedy_anchor_trajectory_count
+        assert anchor_count == 1
+        is_anchor = trajectory_index < anchor_count
+        payload["selection_phase"] = (
+            "greedy_anchor" if is_anchor else "posterior_perturbation"
+        )
+        payload["perturbation_point_usage"] = (
+            "not_generated" if is_anchor else "selection_input"
+        )
+    return payload
+
+
+def _selection_uses_perturbation(
+    method: TrackAMethodSpec,
+    *,
+    trajectory_index: int,
+) -> bool:
+    """Return whether this selection consumes a source point."""
+
+    if type(method) is not TrackAMethodSpec:
+        raise TypeError("method must be exactly TrackAMethodSpec")
+    if type(trajectory_index) is not int or trajectory_index < 0:
+        raise ValueError("trajectory_index must be a non-negative plain integer")
+    if not method.stochastic:
+        return False
+    if method.schema_version != GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION:
+        return True
+    anchor_count = method.greedy_anchor_trajectory_count
+    assert anchor_count == 1
+    return trajectory_index >= anchor_count
+
+
+def _dense_terminal_value_evidence(
+    verification: CountdownVerification,
+) -> dict[str, int | float]:
+    """Build exact integer evidence for reciprocal absolute-error feedback."""
+
+    if type(verification) is not CountdownVerification:
+        raise TypeError("verification must be exactly CountdownVerification")
+    final_value = verification.final_value
+    target = verification.target
+    if type(final_value) is not int or final_value <= 0:
+        raise AssertionError("complete Countdown verification lacks a final value")
+    if type(target) is not int or target <= 0:
+        raise AssertionError("Countdown verification target drifted")
+    if verification.success is not (final_value == target):
+        raise AssertionError("Countdown exact-success semantics drifted")
+    error = abs(final_value - target)
+    numerator = 1
+    denominator = 1 + error
+    return {
+        "terminal_absolute_error": error,
+        "terminal_value": numerator / denominator,
+        "terminal_value_denominator": denominator,
+        "terminal_value_numerator": numerator,
+    }
+
+
+def _terminal_backup_value(
+    method: TrackAMethodSpec,
+    verification: CountdownVerification,
+) -> float:
+    if type(method) is not TrackAMethodSpec:
+        raise TypeError("method must be exactly TrackAMethodSpec")
+    if type(verification) is not CountdownVerification:
+        raise TypeError("verification must be exactly CountdownVerification")
+    if not method.dense_terminal_value:
+        return 1.0 if verification.success else 0.0
+    if (
+        method.terminal_value_rule_id
+        != RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID
+    ):
+        raise AssertionError("dense terminal-value rule drifted")
+    return float(_dense_terminal_value_evidence(verification)["terminal_value"])
 
 
 @dataclass(frozen=True)
@@ -668,6 +879,8 @@ class _SearchSession:
         self,
         node: _SearchNode,
         normals: Sequence[float] | None,
+        *,
+        trajectory_index: int,
     ) -> list[float]:
         if self.method.method == "greedy":
             return list(node.row.prior_logp)
@@ -680,17 +893,25 @@ class _SearchSession:
                 + self.method.c_puct * math.exp(logp) * scale / (1.0 + item.visits)
                 for item, logp in zip(node.posteriors, node.row.prior_logp)
             ]
-        if self.method.method != "thompson" or normals is None:
+        if self.method.method != "thompson":
             raise AssertionError("method does not define an ordinary selection")
+        if not _selection_uses_perturbation(
+            self.method,
+            trajectory_index=trajectory_index,
+        ):
+            if normals is not None:
+                raise AssertionError(
+                    "greedy anchor unexpectedly received perturbations"
+                )
+            return list(node.row.prior_logp)
+        if normals is None:
+            raise AssertionError("Thompson selection lacks perturbations")
         if len(normals) != len(node.row.actions):
             raise AssertionError("perturbation dimension drifted")
         assert self.method.prior_bonus is not None
         assert self.method.posterior_sd_scale is not None
         noise_dimension_normalizer = 1.0
-        if (
-            self.method.schema_version
-            == DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION
-        ):
+        if self.method.dimension_normalized:
             noise_dimension_normalizer = _action_dimension_noise_normalizer(
                 len(node.row.actions)
             )
@@ -756,15 +977,21 @@ class _SearchSession:
         if not actions:
             raise AssertionError("ordinary step received a terminal state")
         miss = state not in self.nodes
+        uses_perturbation = _selection_uses_perturbation(
+            self.method,
+            trajectory_index=trajectory_index,
+        )
         increments = TrackAWorkLedger.search_step_increments(
             len(actions),
             proposal_cache_miss=miss,
-            generate_perturbations=self.method.stochastic,
+            generate_perturbations=uses_perturbation,
         )
 
         plan: Any | None = None
         material_count = 0
-        if self.normal_source is not None:
+        if uses_perturbation:
+            if self.normal_source is None:
+                raise AssertionError("perturbed selection lacks a normal source")
             plan = self.normal_source.plan_draw(
                 task=self.task,
                 state=state,
@@ -819,7 +1046,7 @@ class _SearchSession:
             receipt = self.ledger.charge_search_step(
                 len(actions),
                 proposal_cache_miss=miss,
-                generate_perturbations=self.method.stochastic,
+                generate_perturbations=uses_perturbation,
             )
         except TrackABudgetExceeded as error:
             reservation.cancel()
@@ -854,7 +1081,11 @@ class _SearchSession:
                 normals = self._prepared_normals(prepared)
                 point_digest = self._prepared_point_digest(prepared)
 
-            values = self._selection_values(node, normals)
+            values = self._selection_values(
+                node,
+                normals,
+                trajectory_index=trajectory_index,
+            )
             action_index = _argmax(values)
             action = actions[action_index]
             child = self.task.transition(state, action)
@@ -884,17 +1115,13 @@ class _SearchSession:
                 "task_fingerprint": self.task.task_fingerprint,
                 "trajectory_index": trajectory_index,
             }
-            if (
-                self.method.schema_version
-                == DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION
-            ):
-                selection_fields["selection_semantics"] = {
-                    "action_count": len(actions),
-                    "noise_dimension_normalizer": (
-                        _action_dimension_noise_normalizer(len(actions))
-                    ),
-                    "selection_rule_id": DIMENSION_NORMALIZED_SELECTION_RULE_ID,
-                }
+            selection_semantics = _dimension_normalized_selection_semantics(
+                self.method,
+                action_count=len(actions),
+                trajectory_index=trajectory_index,
+            )
+            if selection_semantics is not None:
+                selection_fields["selection_semantics"] = selection_semantics
             selection_payload = _event_payload(selection_fields)
             events: list[tuple[str, Mapping[str, Any]]] = []
             if miss:
@@ -997,20 +1224,24 @@ class _SearchSession:
             ]
             updates: list[dict[str, Any]] = []
             if backup:
-                value = 1.0 if verification.success else 0.0
+                value = _terminal_backup_value(self.method, verification)
                 updates = self._preview_backup(path, value)
+                backup_payload: dict[str, Any] = {
+                    "discount": 1.0,
+                    "order": "leaf_to_root",
+                    "terminal_value": value,
+                    "trajectory_index": trajectory_index,
+                    "updates": updates,
+                }
+                if self.method.dense_terminal_value:
+                    backup_payload.update(_dense_terminal_value_evidence(verification))
+                    backup_payload["terminal_value_rule_id"] = (
+                        self.method.terminal_value_rule_id
+                    )
                 events.append(
                     (
                         "trajectory_backed_up",
-                        _event_payload(
-                            {
-                                "discount": 1.0,
-                                "order": "leaf_to_root",
-                                "terminal_value": value,
-                                "trajectory_index": trajectory_index,
-                                "updates": updates,
-                            }
-                        ),
+                        _event_payload(backup_payload),
                     )
                 )
             self.trace.append_batch(
@@ -1580,14 +1811,17 @@ def _validate_stage_one_material(
                     "stage 1 selection-score receipt does not close"
                 )
             semantics = payload.get("selection_semantics")
-            if method.schema_version == DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION:
-                expected_semantics = {
-                    "action_count": len(scored),
-                    "noise_dimension_normalizer": (
-                        _action_dimension_noise_normalizer(len(scored))
-                    ),
-                    "selection_rule_id": DIMENSION_NORMALIZED_SELECTION_RULE_ID,
-                }
+            if method.dimension_normalized:
+                trajectory_index = payload.get("trajectory_index")
+                if type(trajectory_index) is not int or trajectory_index < 0:
+                    raise TraceValidationError(
+                        "stage 1 dimension-normalized trajectory index drifted"
+                    )
+                expected_semantics = _dimension_normalized_selection_semantics(
+                    method,
+                    action_count=len(scored),
+                    trajectory_index=trajectory_index,
+                )
                 if semantics != expected_semantics:
                     raise TraceValidationError(
                         "stage 1 dimension-normalized selection semantics drifted"
@@ -1596,16 +1830,32 @@ def _validate_stage_one_material(
                     type(semantics) is not dict
                     or type(semantics.get("action_count")) is not int
                     or type(semantics.get("noise_dimension_normalizer")) is not float
+                    or type(semantics.get("selection_rule_id")) is not str
                 ):
                     raise TraceValidationError(
                         "stage 1 dimension-normalized selection semantics types drifted"
                     )
+                if method.schema_version == GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION:
+                    if (
+                        type(semantics.get("selection_phase")) is not str
+                        or type(semantics.get("perturbation_point_usage")) is not str
+                    ):
+                        raise TraceValidationError(
+                            "stage 1 greedy-anchor selection semantics types drifted"
+                        )
             elif "selection_semantics" in payload:
                 raise TraceValidationError(
                     "stage 1 legacy selection contains v2 semantics"
                 )
             point_digest = payload.get("point_digest")
-            if method.stochastic:
+            trajectory_index = payload.get("trajectory_index")
+            if type(trajectory_index) is not int or trajectory_index < 0:
+                raise TraceValidationError("stage 1 selection trajectory index drifted")
+            uses_perturbation = _selection_uses_perturbation(
+                method,
+                trajectory_index=trajectory_index,
+            )
+            if uses_perturbation:
                 if point_digest not in point_digests:
                     raise TraceValidationError(
                         "stage 1 selection references unknown point material"
@@ -1624,7 +1874,63 @@ def _validate_stage_one_material(
                 or charge["delta"]["generated_perturbation_coordinates"] != 0
             ):
                 raise TraceValidationError(
-                    "stage 1 deterministic selection references random material"
+                    "stage 1 unperturbed selection references random material"
+                )
+        elif kind == "trajectory_backed_up":
+            if event["charge"] is not None:
+                raise TraceValidationError("stage 1 backup event must be uncharged")
+            terminal_value = payload.get("terminal_value")
+            if type(terminal_value) is not float or not math.isfinite(terminal_value):
+                raise TraceValidationError(
+                    "stage 1 backup terminal value is not a finite plain float"
+                )
+            if method.dense_terminal_value:
+                if (
+                    payload.get("terminal_value_rule_id")
+                    != RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID
+                    or type(payload.get("terminal_value_rule_id")) is not str
+                ):
+                    raise TraceValidationError(
+                        "stage 1 dense terminal-value rule drifted"
+                    )
+                absolute_error = payload.get("terminal_absolute_error")
+                numerator = payload.get("terminal_value_numerator")
+                denominator = payload.get("terminal_value_denominator")
+                if (
+                    type(absolute_error) is not int
+                    or absolute_error < 0
+                    or type(numerator) is not int
+                    or numerator != 1
+                    or type(denominator) is not int
+                    or denominator != 1 + absolute_error
+                    or terminal_value != numerator / denominator
+                ):
+                    raise TraceValidationError(
+                        "stage 1 dense terminal-value evidence drifted"
+                    )
+                if not 0.0 < terminal_value <= 1.0:
+                    raise TraceValidationError(
+                        "stage 1 dense terminal value is outside (0, 1]"
+                    )
+                if (terminal_value == 1.0) is not (absolute_error == 0):
+                    raise TraceValidationError(
+                        "stage 1 dense exact-success value drifted"
+                    )
+                if absolute_error > 0 and terminal_value > 0.5:
+                    raise TraceValidationError(
+                        "stage 1 dense failure value exceeds one half"
+                    )
+            elif any(
+                key in payload
+                for key in (
+                    "terminal_absolute_error",
+                    "terminal_value_denominator",
+                    "terminal_value_numerator",
+                    "terminal_value_rule_id",
+                )
+            ):
+                raise TraceValidationError(
+                    "stage 1 binary backup contains dense terminal semantics"
                 )
         elif kind == "beam_layer_selection_committed":
             if method.method != "beam":

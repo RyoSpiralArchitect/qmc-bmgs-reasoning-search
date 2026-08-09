@@ -148,6 +148,23 @@ repair for the canary's many-arm noise mismatch; it is not performance or QMC
 evidence.  The rationale and falsification boundary are in the
 [v2 strategy note](strategy/countdown_thompson_dimension_normalization_v2.md).
 
+Two post-v2 diagnostic methods are explicit new method-spec branches. V3
+keeps the v2 selector and replaces binary failure backup with
+
+```text
+1 / (1 + abs(final_value - target))
+```
+
+for every valid complete positive-integer Countdown trajectory. V4 first runs
+one complete greedy proposal trajectory, backs it up with that v3 value, and
+then uses v3 Thompson selection from trajectory index one. The anchor generates
+and charges no perturbation coordinates. Later stochastic selections begin
+their node-local streams at visit zero, and every anchor selection explicitly
+binds `point_digest=null` plus zero coordinate work. This preserves semantic
+work accounting without hiding the anchor's deterministic cost. The exact
+ablation and attribution boundary is in the
+[v3/v4 strategy note](strategy/countdown_thompson_feedback_anchor_v3_v4.md).
+
 PUCT and Thompson continue after a first exact hit until the active budget
 profile stops them or the method has no further legal work.  This permits the
 preregistered first-hit, exact-terminal reuse, and successful-terminal
@@ -210,6 +227,13 @@ A dimension-normalized v2 ordinary selection additionally records
 `sqrt(2 log A)` normalizer.  Stage-one replay recomputes this diagnostic rather
 than trusting it; version-one selections do not gain the field and retain
 their historical bytes.
+
+V3 backup events additionally bind the reciprocal absolute-error rule and its
+integer numerator/denominator evidence. V4
+selection events bind whether a selection is the one greedy anchor or a later
+posterior-perturbation step. Stage one requires no point and zero coordinate
+work for the anchor, and one replay-bound point per later selection. Stage two
+re-verifies the terminal and regenerates the complete search from empty state.
 
 The run identity binds digests of the complete proposal, method, runtime, and
 budget-profile specifications.  In particular, the primary stopping axis is

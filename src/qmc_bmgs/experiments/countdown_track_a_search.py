@@ -63,6 +63,30 @@ def _variants() -> tuple[_Variant, ...]:
             "thompson_dimension_normalized_sobol",
             TrackAMethodSpec.dimension_normalized_thompson("sobol"),
         ),
+        _Variant(
+            "thompson_dimension_normalized_dense_iid",
+            TrackAMethodSpec.dimension_normalized_dense_thompson("iid"),
+        ),
+        _Variant(
+            "thompson_dimension_normalized_dense_sobol",
+            TrackAMethodSpec.dimension_normalized_dense_thompson("sobol"),
+        ),
+        _Variant(
+            "thompson_greedy_anchor_dense_iid",
+            (
+                TrackAMethodSpec.greedy_anchored_dimension_normalized_dense_thompson(
+                    "iid"
+                )
+            ),
+        ),
+        _Variant(
+            "thompson_greedy_anchor_dense_sobol",
+            (
+                TrackAMethodSpec.greedy_anchored_dimension_normalized_dense_thompson(
+                    "sobol"
+                )
+            ),
+        ),
     )
 
 
@@ -103,6 +127,37 @@ def _root_score_count(record: dict[str, object], root_state: list[int]) -> int:
     raise AssertionError("search trace does not contain a root selection")
 
 
+def _anchor_score_count(record: dict[str, object]) -> int:
+    events = record.get("events")
+    if type(events) is not list:
+        raise AssertionError("search trace events drifted")
+    total = 0
+    for event in events:
+        if type(event) is not dict or event.get("kind") != "selection_committed":
+            continue
+        payload = event.get("payload")
+        if type(payload) is not dict or payload.get("trajectory_index") != 0:
+            continue
+        semantics = payload.get("selection_semantics")
+        if type(semantics) is not dict:
+            continue
+        if semantics.get("selection_phase") != "greedy_anchor":
+            continue
+        scored = payload.get("scored_action_indices")
+        point_digest = payload.get("point_digest")
+        charge = event.get("charge")
+        if (
+            type(scored) is not list
+            or point_digest is not None
+            or type(charge) is not dict
+            or type(charge.get("delta")) is not dict
+            or charge["delta"].get("generated_perturbation_coordinates") != 0
+        ):
+            raise AssertionError("greedy-anchor coordinate evidence drifted")
+        total += len(scored)
+    return total
+
+
 def _self_test() -> dict[str, object]:
     task = CountdownTask((1, 2, 3, 4, 5, 6), target=720)
     proposal = TrackAProposalSpec("greedy_rollout_target_error/v1")
@@ -133,7 +188,14 @@ def _self_test() -> dict[str, object]:
 
         coordinates = usage["generated_perturbation_coordinates"]
         legal_scores = usage["legal_action_scores"]
-        if variant.method.stochastic:
+        if variant.method.greedy_anchor_trajectory_count == 1:
+            anchor_scores = _anchor_score_count(result.record)
+            if anchor_scores <= 0 or coordinates != legal_scores - anchor_scores:
+                raise AssertionError(
+                    f"{variant.label} anchor coordinate work did not close"
+                )
+            coordinate_contract = "coordinates_exclude_greedy_anchor_scores"
+        elif variant.method.stochastic:
             if coordinates != legal_scores or coordinates <= 0:
                 raise AssertionError(
                     f"{variant.label} perturbation/selection work did not close"
@@ -190,7 +252,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--self-test",
         action="store_true",
-        help="run nine local methods through two-stage byte replay",
+        help="run thirteen local methods through two-stage byte replay",
     )
     args = parser.parse_args(argv)
     if not args.self_test:

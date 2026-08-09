@@ -137,8 +137,11 @@ The candidate does explore more distinct root actions: about `2.9` per run
 under `score256` and `7.6--8.0` under `verifier8`, versus `1.4--1.5` for PUCT.
 That breadth did not convert to exact reward.
 
-Across the four `score256` Thompson variants, all 397 task-namespaced completed
-trajectories had distinct action paths.  In contrast, PUCT produced 26
+Within each `score256` Thompson variant, every completed task-namespaced path
+was unique: frozen IID `99/99`, frozen Sobol `99/99`, candidate IID `100/100`,
+and candidate Sobol `99/99`.  Pooling across method labels leaves 292 unique
+task-and-action paths among 397 trajectories; the 105 duplicate extras are
+mostly the matched frozen/candidate paths.  In contrast, PUCT produced 26
 completed trajectories but only 13 task-namespaced unique paths, and selected
 the heuristic root rank 1 on `25/26` of them.  The candidate and frozen
 configuration still chose the same first root action in about 90% of matched

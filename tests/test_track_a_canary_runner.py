@@ -110,11 +110,38 @@ def _payloads() -> tuple[dict[str, object], CanaryCell]:
 
 
 def _build_attestation(revision: str = "d" * 40) -> runner._BuildAttestation:
+    empty_receipt = {
+        "byte_count": 0,
+        "sha256": runner._sha256_bytes(b""),
+    }
+    search_receipts = {
+        relative: dict(empty_receipt) for relative in runner._SEARCH_SOURCE_PATHS
+    }
+    runner_receipts = {
+        relative: dict(empty_receipt) for relative in runner._RUNNER_SOURCE_PATHS
+    }
+    search_core = {
+        "host_build": {},
+        "numeric_microfixture": {},
+        "search_microfixture": {"trace_byte_count": 123},
+        "source_files": search_receipts,
+    }
+    search_build_digest = sha256_json(search_core)
+    runner_core = {
+        "runner_source_files": runner_receipts,
+        "search_build_digest": search_build_digest,
+    }
     payload = {
         "authorized_runner_revision": revision,
-        "runner_build_digest": "e" * 64,
-        "search_microfixture": {"trace_byte_count": 123},
-        "search_build_digest": "f" * 64,
+        "host_build": search_core["host_build"],
+        "numeric_microfixture": search_core["numeric_microfixture"],
+        "required_ancestry": list(runner.REQUIRED_ANCESTRY),
+        "runner_build_digest": sha256_json(runner_core),
+        "runner_source_files": runner_receipts,
+        "schema_version": runner.BUILD_ATTESTATION_SCHEMA_VERSION,
+        "search_build_digest": search_build_digest,
+        "search_microfixture": search_core["search_microfixture"],
+        "search_source_files": search_receipts,
     }
     return runner._BuildAttestation(payload=payload, current_head=revision)
 
@@ -323,6 +350,60 @@ class TrackACanaryRunnerTests(unittest.TestCase):
                         output_path=output,
                         repository_root=root,
                     )
+
+    def test_authorization_missing_initializer_receipt_stops_before_preflight(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            authorization_path = root / "authorization.json"
+            payload = runner._authorization_payload(_preflight(output))
+            build = payload["runner_build_attestation"]
+            self.assertIsInstance(build, dict)
+            build["search_source_files"].pop("src/qmc_bmgs/__init__.py")
+            payload["deterministic_digest"] = sha256_json(
+                {
+                    key: value
+                    for key, value in payload.items()
+                    if key != "deterministic_digest"
+                }
+            )
+            authorization_path.write_bytes(runner._canonical_bytes(payload))
+            with (
+                patch.object(
+                    runner,
+                    "_fresh_preflight",
+                    side_effect=AssertionError(
+                        "sealed bundle preflight must not start"
+                    ),
+                ) as fresh_preflight,
+                patch.object(
+                    runner,
+                    "_validate_reviewed_authorization_blob",
+                    side_effect=AssertionError("Git review gate must not be reached"),
+                ) as review_gate,
+                patch.object(
+                    runner,
+                    "run_countdown_track_a_search",
+                    side_effect=AssertionError("canary search must not run"),
+                ) as search,
+            ):
+                with self.assertRaisesRegex(
+                    runner.CanaryRunnerError,
+                    "authorized search protected path set drifted",
+                ):
+                    runner._load_and_match_authorization(
+                        authorization_path,
+                        payload["deterministic_digest"],
+                        _AUTHORIZATION_REVISION,
+                        bundle_path=root / "sealed-bundle",
+                        output_path=output,
+                        repository_root=root,
+                    )
+            fresh_preflight.assert_not_called()
+            review_gate.assert_not_called()
+            search.assert_not_called()
 
     def test_authorization_symlink_and_preflight_swap_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -854,10 +935,12 @@ class TrackACanaryRunnerTests(unittest.TestCase):
                 manifest["attempt_started_receipt"]["deterministic_digest"],
             )
             self.assertEqual(
-                manifest["runner_build_attestation"]["runner_build_digest"], "e" * 64
+                manifest["runner_build_attestation"]["runner_build_digest"],
+                preflight.build.payload["runner_build_digest"],
             )
             self.assertEqual(
-                manifest["runner_build_attestation"]["search_build_digest"], "f" * 64
+                manifest["runner_build_attestation"]["search_build_digest"],
+                preflight.build.payload["search_build_digest"],
             )
             lines = (output / "records.jsonl").read_bytes().splitlines()
             self.assertEqual(len(lines), 1)
@@ -1493,6 +1576,7 @@ class TrackACanaryRunnerTests(unittest.TestCase):
     ) -> None:
         repository = Path(runner.__file__).resolve().parents[3]
         expected_runner_sources = (
+            "src/qmc_bmgs/experiments/__init__.py",
             "src/qmc_bmgs/experiments/countdown_track_a_canary_manifest.py",
             "src/qmc_bmgs/experiments/countdown_track_a_canary_runner.py",
             "src/qmc_bmgs/experiments/countdown_track_a_canary_analysis.py",
@@ -1500,13 +1584,15 @@ class TrackACanaryRunnerTests(unittest.TestCase):
         self.assertEqual(runner._RUNNER_SOURCE_PATHS, expected_runner_sources)
         self.assertEqual(
             {
-                runner.manifest.__name__: expected_runner_sources[0],
-                runner.__name__: expected_runner_sources[1],
-                runner.analysis.__name__: expected_runner_sources[2],
+                "qmc_bmgs.experiments": expected_runner_sources[0],
+                runner.manifest.__name__: expected_runner_sources[1],
+                runner.__name__: expected_runner_sources[2],
+                runner.analysis.__name__: expected_runner_sources[3],
             },
             {
                 module: runner._PROTECTED_MODULE_PATHS[module]
                 for module in (
+                    "qmc_bmgs.experiments",
                     runner.manifest.__name__,
                     runner.__name__,
                     runner.analysis.__name__,
@@ -1544,6 +1630,13 @@ class TrackACanaryRunnerTests(unittest.TestCase):
             self.assertEqual(
                 set(attestation.payload["runner_source_files"]),
                 set(expected_runner_sources),
+            )
+            self.assertTrue(
+                {
+                    "src/qmc_bmgs/__init__.py",
+                    "src/qmc_bmgs/benchmarks/__init__.py",
+                    "src/qmc_bmgs/substrate/__init__.py",
+                }.issubset(attestation.payload["search_source_files"])
             )
             self.assertEqual(
                 attestation.current_head,
@@ -1585,6 +1678,74 @@ class TrackACanaryRunnerTests(unittest.TestCase):
                 "does not exact-match clean HEAD blob",
             ):
                 runner._protected_source_receipts(repository, head)
+
+    def test_initializer_byte_drift_stops_before_sealed_bundle_and_search(self) -> None:
+        repository = Path(runner.__file__).resolve().parents[3]
+        initializer = "src/qmc_bmgs/__init__.py"
+        original_git = runner._git
+        original_read = runner._read_regular_file_nofollow
+
+        def clean_tracked_git(root: Path, *arguments: str) -> str:
+            if arguments == ("status", "--porcelain=v1", "--untracked-files=all"):
+                return ""
+            if arguments[:1] == ("ls-files",):
+                return "\n".join(
+                    (*runner._SEARCH_SOURCE_PATHS, *runner._RUNNER_SOURCE_PATHS)
+                )
+            return original_git(root, *arguments)
+
+        def drift_initializer(path: Path, label: str) -> bytes:
+            if Path(path).resolve() == (repository / initializer).resolve():
+                return b"synthetic initializer drift\n"
+            return original_read(path, label)
+
+        def current_worktree_blob(root: Path, *arguments: str) -> bytes:
+            self.assertEqual(arguments[0], "show")
+            relative = arguments[1].split(":", 1)[1]
+            return original_read(root / relative, "synthetic HEAD blob")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                patch.object(runner, "_git", side_effect=clean_tracked_git),
+                patch.object(
+                    runner,
+                    "_read_regular_file_nofollow",
+                    side_effect=drift_initializer,
+                ),
+                patch.object(
+                    runner,
+                    "_git_bytes",
+                    side_effect=current_worktree_blob,
+                ),
+                patch.object(
+                    runner,
+                    "verify_track_a_canary_bundle",
+                    side_effect=AssertionError("sealed bundle must not be opened"),
+                ) as verify_bundle,
+                patch.object(
+                    runner,
+                    "_search_microfixture",
+                    side_effect=AssertionError("search fixture must not run"),
+                ) as search_fixture,
+                patch.object(
+                    runner,
+                    "run_countdown_track_a_search",
+                    side_effect=AssertionError("canary search must not run"),
+                ) as canary_search,
+            ):
+                with self.assertRaisesRegex(
+                    runner.CanaryRunnerError,
+                    "does not exact-match clean HEAD blob.*__init__",
+                ):
+                    runner._fresh_preflight(
+                        repository / "sealed-bundle",
+                        Path(temporary) / "artifact",
+                        repository,
+                        authorized_runner_revision=None,
+                    )
+            verify_bundle.assert_not_called()
+            search_fixture.assert_not_called()
+            canary_search.assert_not_called()
 
     def test_git_oid_validation_is_distinct_from_data_sha256(self) -> None:
         self.assertEqual(runner._require_git_oid("a" * 40, "revision"), "a" * 40)

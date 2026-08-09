@@ -1168,7 +1168,169 @@ class TrackACanaryAnalysisTests(unittest.TestCase):
                     ):
                         analysis._validate_build_attestation_structure(changed)
 
+    def test_initializer_receipt_omission_precedes_bundle_records_and_search(
+        self,
+    ) -> None:
+        cells = (_cell(_SHA_A, 0),)
+        with tempfile.TemporaryDirectory(prefix="synthetic-init-omission-") as root:
+            root_path = Path(root).resolve()
+            artifact = root_path / "artifact"
+            _write_synthetic_artifact(
+                artifact,
+                cells=cells,
+                observed_ids=[cells[0].cell_id],
+            )
+            manifest = analysis._stdlib_strict_json_object(
+                (artifact / "manifest.json").read_bytes(),
+                "synthetic manifest",
+            )
+            manifest["runner_build_attestation"]["search_source_files"].pop(
+                "src/qmc_bmgs/__init__.py"
+            )
+            manifest["deterministic_digest"] = sha256_json(
+                {
+                    key: value
+                    for key, value in manifest.items()
+                    if key != "deterministic_digest"
+                }
+            )
+            (artifact / "manifest.json").write_bytes(_canonical_bytes(manifest))
+            commit = analysis._stdlib_strict_json_object(
+                (artifact / "commit.json").read_bytes(),
+                "synthetic commit",
+            )
+            commit["run_manifest_digest"] = manifest["deterministic_digest"]
+            commit["deterministic_digest"] = sha256_json(
+                {
+                    key: value
+                    for key, value in commit.items()
+                    if key != "deterministic_digest"
+                }
+            )
+            (artifact / "commit.json").write_bytes(_canonical_bytes(commit))
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_current_replay_surface",
+                    side_effect=AssertionError("source replay gate must not run"),
+                ) as current_surface,
+                patch.object(
+                    analysis,
+                    "verify_track_a_canary_bundle",
+                    side_effect=AssertionError("sealed bundle must not be opened"),
+                ) as verify_bundle,
+                patch.object(
+                    analysis,
+                    "_read_artifact_snapshot",
+                    side_effect=AssertionError("records must not be opened"),
+                ) as read_records,
+                patch.object(
+                    analysis,
+                    "replay_countdown_track_a_search_bytes",
+                    side_effect=AssertionError("search replay must not run"),
+                ) as replay,
+            ):
+                with self.assertRaisesRegex(
+                    analysis.CanaryAnalysisError,
+                    "search protected path set drifted",
+                ):
+                    analysis._validate_artifact(
+                        artifact,
+                        root_path / "sealed-bundle",
+                        root_path / "authorization.json",
+                        _SHA_A,
+                        repository_root=root_path,
+                    )
+            current_surface.assert_not_called()
+            verify_bundle.assert_not_called()
+            read_records.assert_not_called()
+            replay.assert_not_called()
+
+    def test_initializer_byte_drift_precedes_bundle_records_and_search(self) -> None:
+        cells = (_cell(_SHA_A, 0),)
+        with tempfile.TemporaryDirectory(prefix="synthetic-init-drift-") as root:
+            root_path = Path(root).resolve()
+            artifact = root_path / "artifact"
+            _write_synthetic_artifact(
+                artifact,
+                cells=cells,
+                observed_ids=[cells[0].cell_id],
+            )
+            sources = _synthetic_source_bytes()
+            for relative in analysis._CURRENT_REPLAY_MODULE_PATHS.values():
+                source_path = root_path / relative
+                source_path.parent.mkdir(parents=True, exist_ok=True)
+                source_path.write_bytes(sources[relative])
+            initializer = "src/qmc_bmgs/__init__.py"
+            (root_path / initializer).write_bytes(b"synthetic initializer drift\n")
+            loaded_modules = {
+                module_name: SimpleNamespace(__file__=str(root_path / relative))
+                for module_name, relative in (
+                    analysis._CURRENT_REPLAY_MODULE_PATHS.items()
+                )
+            }
+
+            def fake_git(_root: Path, *arguments: str) -> SimpleNamespace:
+                if arguments == ("rev-parse", "--show-toplevel"):
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout=f"{root_path}\n".encode("utf-8"),
+                    )
+                if arguments[0] in {"cat-file", "merge-base"}:
+                    return SimpleNamespace(returncode=0, stdout=b"")
+                if arguments[0] == "show":
+                    relative = arguments[1].split(":", 1)[1]
+                    return SimpleNamespace(returncode=0, stdout=sources[relative])
+                raise AssertionError(arguments)
+
+            with (
+                patch.dict(analysis.sys.modules, loaded_modules),
+                patch.object(analysis, "_git_result", side_effect=fake_git),
+                patch.object(
+                    analysis,
+                    "verify_track_a_canary_bundle",
+                    side_effect=AssertionError("sealed bundle must not be opened"),
+                ) as verify_bundle,
+                patch.object(
+                    analysis,
+                    "_read_artifact_snapshot",
+                    side_effect=AssertionError("records must not be opened"),
+                ) as read_records,
+                patch.object(
+                    analysis,
+                    "replay_countdown_track_a_search_bytes",
+                    side_effect=AssertionError("search replay must not run"),
+                ) as replay,
+            ):
+                with self.assertRaisesRegex(
+                    analysis.CanaryAnalysisError,
+                    "current replay source.*__init__.py",
+                ):
+                    analysis._validate_artifact(
+                        artifact,
+                        root_path / "sealed-bundle",
+                        root_path / "authorization.json",
+                        _SHA_A,
+                        repository_root=root_path,
+                    )
+            verify_bundle.assert_not_called()
+            read_records.assert_not_called()
+            replay.assert_not_called()
+
     def test_current_replay_surface_binds_imports_files_receipts_and_git(self) -> None:
+        self.assertEqual(
+            {
+                module: relative
+                for module, relative in analysis._CURRENT_REPLAY_MODULE_PATHS.items()
+                if relative.endswith("/__init__.py")
+            },
+            {
+                "qmc_bmgs": "src/qmc_bmgs/__init__.py",
+                "qmc_bmgs.benchmarks": "src/qmc_bmgs/benchmarks/__init__.py",
+                "qmc_bmgs.experiments": "src/qmc_bmgs/experiments/__init__.py",
+                "qmc_bmgs.substrate": "src/qmc_bmgs/substrate/__init__.py",
+            },
+        )
         with tempfile.TemporaryDirectory(prefix="synthetic-analyzer-build-") as root:
             root_path = Path(root).resolve()
             sources = _synthetic_source_bytes()
@@ -1238,7 +1400,7 @@ class TrackACanaryAnalysisTests(unittest.TestCase):
                     execution_head_revision=_GIT_C,
                 )
 
-            tampered_relative = analysis._SEARCH_SOURCE_PATHS[0]
+            tampered_relative = "src/qmc_bmgs/__init__.py"
             (root_path / tampered_relative).write_bytes(b"tampered source\n")
             with (
                 patch.dict(analysis.sys.modules, loaded_modules),

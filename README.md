@@ -311,6 +311,8 @@ runnerと独立analyzerのself-testは非canary fixtureだけを使う。sealed 
 runner実装PRのmerge、clean checkoutからrepo内の将来tracked pathへの`--plan`、生成した
 authorizationだけを含む別PRのreview/merge、review済みdigestとそのPR merge revisionを
 明示した1回の`--run`、外部authorizationを再度渡すindependent analysis、の順を変えない。
+source closureは4つの実行済みpackage initializerを含む13ファイルをrunnerがattestし、
+独立analyzerはhistorical runner leafを除く現在の12 imported modulesを再検証する。
 `--plan`は実行ではなく、authorization candidateを作るだけである。完全なコマンド、
 `NOT_RUN`/`INVALID`境界、durable attempt reservationによるauthorization消費、
 copy後artifactの分析条件は

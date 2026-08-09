@@ -61,7 +61,10 @@ ANALYZER_RELATIVE_PATH = Path(
 )
 
 _SEARCH_SOURCE_PATHS = (
+    "src/qmc_bmgs/__init__.py",
+    "src/qmc_bmgs/benchmarks/__init__.py",
     "src/qmc_bmgs/benchmarks/countdown.py",
+    "src/qmc_bmgs/substrate/__init__.py",
     "src/qmc_bmgs/substrate/budget.py",
     "src/qmc_bmgs/substrate/countdown_search.py",
     "src/qmc_bmgs/substrate/perturbations.py",
@@ -69,19 +72,24 @@ _SEARCH_SOURCE_PATHS = (
     "src/qmc_bmgs/substrate/trace.py",
 )
 _RUNNER_SOURCE_PATHS = (
+    "src/qmc_bmgs/experiments/__init__.py",
     "src/qmc_bmgs/experiments/countdown_track_a_canary_manifest.py",
     "src/qmc_bmgs/experiments/countdown_track_a_canary_runner.py",
     ANALYZER_RELATIVE_PATH.as_posix(),
 )
 _CURRENT_REPLAY_MODULE_PATHS = {
-    "qmc_bmgs.benchmarks.countdown": _SEARCH_SOURCE_PATHS[0],
-    "qmc_bmgs.substrate.budget": _SEARCH_SOURCE_PATHS[1],
-    "qmc_bmgs.substrate.countdown_search": _SEARCH_SOURCE_PATHS[2],
-    "qmc_bmgs.substrate.perturbations": _SEARCH_SOURCE_PATHS[3],
-    "qmc_bmgs.substrate.proposals": _SEARCH_SOURCE_PATHS[4],
-    "qmc_bmgs.substrate.trace": _SEARCH_SOURCE_PATHS[5],
-    "qmc_bmgs.experiments.countdown_track_a_canary_manifest": (_RUNNER_SOURCE_PATHS[0]),
-    __name__: _RUNNER_SOURCE_PATHS[2],
+    "qmc_bmgs": _SEARCH_SOURCE_PATHS[0],
+    "qmc_bmgs.benchmarks": _SEARCH_SOURCE_PATHS[1],
+    "qmc_bmgs.benchmarks.countdown": _SEARCH_SOURCE_PATHS[2],
+    "qmc_bmgs.substrate": _SEARCH_SOURCE_PATHS[3],
+    "qmc_bmgs.substrate.budget": _SEARCH_SOURCE_PATHS[4],
+    "qmc_bmgs.substrate.countdown_search": _SEARCH_SOURCE_PATHS[5],
+    "qmc_bmgs.substrate.perturbations": _SEARCH_SOURCE_PATHS[6],
+    "qmc_bmgs.substrate.proposals": _SEARCH_SOURCE_PATHS[7],
+    "qmc_bmgs.substrate.trace": _SEARCH_SOURCE_PATHS[8],
+    "qmc_bmgs.experiments": _RUNNER_SOURCE_PATHS[0],
+    "qmc_bmgs.experiments.countdown_track_a_canary_manifest": (_RUNNER_SOURCE_PATHS[1]),
+    __name__: _RUNNER_SOURCE_PATHS[3],
 }
 
 _LOWER_HEX = frozenset("0123456789abcdef")
@@ -1979,8 +1987,9 @@ def _build_summary(validated: _ValidatedRun) -> dict[str, Any]:
         "claim_boundary": (
             "Development-only descriptive engineering canary; no confidence "
             "interval, p-value, winner, non-inferiority, or promotion authority. "
-            "Source-file bytes and import origins are attested; already-loaded "
-            "Python code objects are outside this v1 attestation claim."
+            "Source-file bytes and import origins, including package initializers, "
+            "are attested; already-loaded Python code objects are outside this v1 "
+            "attestation claim."
         ),
         "hard_gate_status": "PASS",
         "decision_status": decision_status,

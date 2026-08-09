@@ -157,10 +157,14 @@ stage-two byte-identical replay for every cell. The summary contains raw task
 vectors, descriptive contrasts, engineering gate states, and resource
 counters only.
 
-The current replay surface binds eight imported modules: six search modules,
-the canary manifest, and the analyzer. For each it checks the ordinary CPython
-import origin plus current regular-file bytes against the execution-head Git
-blob and attested source receipt. This is strong source provenance under
+The current replay surface binds twelve imported modules: nine search modules
+(the `qmc_bmgs`, `benchmarks`, and `substrate` package initializers plus six
+search leaves), the `experiments` package initializer, the canary manifest, and
+the analyzer. The historical runner leaf remains an attested thirteenth source
+but is not imported by the analyzer. For each current module the analyzer
+checks the ordinary CPython import origin plus current O_NOFOLLOW-read
+regular-file bytes against the execution-head Git blob and attested source
+receipt. This is strong source provenance under
 ordinary, unmodified CPython import semantics. It is not a cryptographic
 attestation of already-loaded code objects, interpreter memory, native code,
 or a hostile process that has monkeypatched runtime objects after import.

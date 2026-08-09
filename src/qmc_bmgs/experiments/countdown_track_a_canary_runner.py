@@ -72,7 +72,10 @@ REQUIRED_ANCESTRY = (
 )
 
 _SEARCH_SOURCE_PATHS = (
+    "src/qmc_bmgs/__init__.py",
+    "src/qmc_bmgs/benchmarks/__init__.py",
     "src/qmc_bmgs/benchmarks/countdown.py",
+    "src/qmc_bmgs/substrate/__init__.py",
     "src/qmc_bmgs/substrate/budget.py",
     "src/qmc_bmgs/substrate/countdown_search.py",
     "src/qmc_bmgs/substrate/perturbations.py",
@@ -80,20 +83,25 @@ _SEARCH_SOURCE_PATHS = (
     "src/qmc_bmgs/substrate/trace.py",
 )
 _RUNNER_SOURCE_PATHS = (
+    "src/qmc_bmgs/experiments/__init__.py",
     "src/qmc_bmgs/experiments/countdown_track_a_canary_manifest.py",
     "src/qmc_bmgs/experiments/countdown_track_a_canary_runner.py",
     "src/qmc_bmgs/experiments/countdown_track_a_canary_analysis.py",
 )
 _PROTECTED_MODULE_PATHS = {
-    "qmc_bmgs.benchmarks.countdown": _SEARCH_SOURCE_PATHS[0],
-    "qmc_bmgs.substrate.budget": _SEARCH_SOURCE_PATHS[1],
-    "qmc_bmgs.substrate.countdown_search": _SEARCH_SOURCE_PATHS[2],
-    "qmc_bmgs.substrate.perturbations": _SEARCH_SOURCE_PATHS[3],
-    "qmc_bmgs.substrate.proposals": _SEARCH_SOURCE_PATHS[4],
-    "qmc_bmgs.substrate.trace": _SEARCH_SOURCE_PATHS[5],
-    "qmc_bmgs.experiments.countdown_track_a_canary_manifest": (_RUNNER_SOURCE_PATHS[0]),
-    __name__: _RUNNER_SOURCE_PATHS[1],
-    analysis.__name__: _RUNNER_SOURCE_PATHS[2],
+    "qmc_bmgs": _SEARCH_SOURCE_PATHS[0],
+    "qmc_bmgs.benchmarks": _SEARCH_SOURCE_PATHS[1],
+    "qmc_bmgs.benchmarks.countdown": _SEARCH_SOURCE_PATHS[2],
+    "qmc_bmgs.substrate": _SEARCH_SOURCE_PATHS[3],
+    "qmc_bmgs.substrate.budget": _SEARCH_SOURCE_PATHS[4],
+    "qmc_bmgs.substrate.countdown_search": _SEARCH_SOURCE_PATHS[5],
+    "qmc_bmgs.substrate.perturbations": _SEARCH_SOURCE_PATHS[6],
+    "qmc_bmgs.substrate.proposals": _SEARCH_SOURCE_PATHS[7],
+    "qmc_bmgs.substrate.trace": _SEARCH_SOURCE_PATHS[8],
+    "qmc_bmgs.experiments": _RUNNER_SOURCE_PATHS[0],
+    "qmc_bmgs.experiments.countdown_track_a_canary_manifest": (_RUNNER_SOURCE_PATHS[1]),
+    __name__: _RUNNER_SOURCE_PATHS[2],
+    analysis.__name__: _RUNNER_SOURCE_PATHS[3],
 }
 _MICRO_TASK = CountdownTask((1, 2, 3, 4, 5, 6), target=720)
 _TELEMETRY_ROLE = "descriptive_only_excluded_from_search_core_identity_and_gates"
@@ -676,6 +684,106 @@ def _protected_source_receipts(root: Path, head: str) -> dict[str, dict[str, Any
     return receipts
 
 
+def _validate_authorized_source_receipts(
+    receipts: object,
+    *,
+    expected_paths: Sequence[str],
+    label: str,
+) -> dict[str, dict[str, Any]]:
+    if type(receipts) is not dict or set(receipts) != set(expected_paths):
+        raise CanaryRunnerError(f"authorized {label} protected path set drifted")
+    for relative in expected_paths:
+        receipt = receipts[relative]
+        if (
+            type(receipt) is not dict
+            or set(receipt) != {"byte_count", "sha256"}
+            or type(receipt["byte_count"]) is not int
+            or receipt["byte_count"] < 0
+        ):
+            raise CanaryRunnerError(
+                f"authorized {label} source receipt is invalid: {relative}"
+            )
+        _require_sha256(
+            receipt["sha256"],
+            f"authorized {label} source receipt digest",
+        )
+    return receipts
+
+
+def _validate_authorized_build_attestation_structure(
+    attestation: object,
+) -> dict[str, Any]:
+    """Reject a drifted authorization source closure before sealed preflight."""
+
+    expected_fields = {
+        "authorized_runner_revision",
+        "host_build",
+        "numeric_microfixture",
+        "required_ancestry",
+        "runner_build_digest",
+        "runner_source_files",
+        "schema_version",
+        "search_build_digest",
+        "search_microfixture",
+        "search_source_files",
+    }
+    if type(attestation) is not dict or set(attestation) != expected_fields:
+        raise CanaryRunnerError("authorized runner build attestation fields drifted")
+    if attestation["schema_version"] != BUILD_ATTESTATION_SCHEMA_VERSION:
+        raise CanaryRunnerError("authorized runner build attestation schema drifted")
+    _require_git_oid(
+        attestation["authorized_runner_revision"],
+        "authorized runner revision",
+    )
+    ancestry = attestation["required_ancestry"]
+    if (
+        type(ancestry) is not list
+        or not ancestry
+        or any(
+            type(revision) is not str
+            or len(revision) not in {40, 64}
+            or any(character not in "0123456789abcdef" for character in revision)
+            for revision in ancestry
+        )
+        or len(set(ancestry)) != len(ancestry)
+    ):
+        raise CanaryRunnerError("authorized runner required ancestry is invalid")
+    search_receipts = _validate_authorized_source_receipts(
+        attestation["search_source_files"],
+        expected_paths=_SEARCH_SOURCE_PATHS,
+        label="search",
+    )
+    runner_receipts = _validate_authorized_source_receipts(
+        attestation["runner_source_files"],
+        expected_paths=_RUNNER_SOURCE_PATHS,
+        label="runner",
+    )
+    search_build_digest = _require_sha256(
+        attestation["search_build_digest"],
+        "authorized search build digest",
+    )
+    runner_build_digest = _require_sha256(
+        attestation["runner_build_digest"],
+        "authorized runner build digest",
+    )
+    search_core = {
+        "host_build": attestation["host_build"],
+        "numeric_microfixture": attestation["numeric_microfixture"],
+        "search_microfixture": attestation["search_microfixture"],
+        "source_files": search_receipts,
+    }
+    runner_core = {
+        "runner_source_files": runner_receipts,
+        "search_build_digest": search_build_digest,
+    }
+    if (
+        sha256_json(search_core) != search_build_digest
+        or sha256_json(runner_core) != runner_build_digest
+    ):
+        raise CanaryRunnerError("authorized runner/search build digest mismatch")
+    return attestation
+
+
 def _recheck_source_closure(
     repository_root: Path,
     build: _BuildAttestation,
@@ -1089,9 +1197,9 @@ def _load_and_match_authorization(
     }
     if sha256_json(core) != observed_digest or observed_digest != supplied:
         raise CanaryRunnerError("authorization digest does not exact-match")
-    build = observed.get("runner_build_attestation")
-    if type(build) is not dict:
-        raise CanaryRunnerError("authorization lacks runner build attestation")
+    build = _validate_authorized_build_attestation_structure(
+        observed.get("runner_build_attestation")
+    )
     approved_revision = _require_git_oid(
         build.get("authorized_runner_revision"),
         "authorized runner revision",

@@ -13,10 +13,10 @@ engineering result for the current Thompson search:
 - under `verifier8`, candidate IID and candidate Sobol each solved `1/48`, on
   different tasks, while both frozen variants remained `0/48`;
 - the equal-source candidate is Pareto-dominated by both greedy and beam on
-  all 12 tasks under both budgets.
+  the 12-task score vector under both budgets.
 
-The analyzer therefore reports `CANARY_ENGINEERING_PASS` only in its frozen
-integrity/liveness sense: the aggregate adaptive signal has six successful
+The analyzer therefore reports `CANARY_ENGINEERING_PASS` under its frozen
+hard-gate plus aggregate-adaptive-signal rule: the signal has six successful
 cells because it includes PUCT.  It is not a pass for Thompson, QMC, the
 candidate calibration, or search value over greedy.
 
@@ -154,10 +154,11 @@ feedback.  Failed actions back up zero, equal to the unvisited mean; most nodes
 are not revisited enough for the posterior to overcome the initial
 extreme-value noise.
 
-About 89% of Thompson node-local streams received exactly one perturbation
-point, with a maximum of four visits in this slice.  Consequently the
-node-local Sobol sequence was usually not long enough for low-discrepancy
-coverage across visits to become an effective search mechanism.
+Across the four `score256` Thompson variants, about 89% of node-local streams
+received exactly one perturbation point, with a maximum of four visits in this
+slice.  Consequently the node-local Sobol sequence was usually not long enough
+for low-discrepancy coverage across visits to become an effective search
+mechanism.
 
 This supports, but does not prove, two concrete failure hypotheses:
 
@@ -176,6 +177,9 @@ selection scale and feedback density.
    design.  Do not reinterpret `CANARY_ENGINEERING_PASS` as candidate success.
 2. Do not add semantic clustering, routing, or Bayesian pruning yet.  The
    preregistered Pareto gate blocks that escalation under both budgets.
+   The frozen analyzer explicitly sets
+   `locked_evaluation_blocked_by_this_flag=false`; pausing locked-128 below is
+   a post-outcome engineering decision, not that formal Pareto gate.
 3. Do not claim QMC benefit or harm from this result.  Reward conversion was
    too sparse for the source contrast to answer that question.
 4. Before spending the substantially larger locked-128 budget, run a new

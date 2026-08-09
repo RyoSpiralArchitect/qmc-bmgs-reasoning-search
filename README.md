@@ -337,10 +337,12 @@ closure、provider call zero、独立二段階replayを通過した。一方、h
 variantは合計`0/192` runだった。`verifier8`でもcandidate IID/Sobolは各`1/48`に
 留まり、両budgetでsimple-baseline Pareto blockが成立した。
 
-したがってintegrity/livenessとしての`CANARY_ENGINEERING_PASS`をThompsonやQMCの
-性能passとは読まない。現candidateのlocked-128実行とsemantic routing/pruning追加は
-保留し、dynamic action dimension下のprior/noise scaleと疎なbinary feedbackを先に
-診断する。結果、exact digest、release archive、post-hocなproposal-rank診断は
+したがってhard gateとaggregate adaptive signal上の`CANARY_ENGINEERING_PASS`を
+ThompsonやQMCの性能passとは読まない。formal Pareto gateはsemantic routing/pruningを
+blockするが、locked evaluation自体はblockしない。現candidateのlocked-128実行は
+engineering判断として保留し、dynamic action dimension下のprior/noise scaleと疎な
+binary feedbackを先に診断する。結果、exact digest、release archive、post-hocな
+proposal-rank診断は
 [`docs/observations/countdown_track_a_canary_v2_20260810.md`](docs/observations/countdown_track_a_canary_v2_20260810.md)
 に保存した。
 

@@ -212,7 +212,11 @@ through publication. A symlink alias or absent historical path is refused before
 summary staging begins. Before publication, the analyzer also requires exact
 three-file closure and matching filename, byte-count, and SHA-256 receipts for
 the historical and validated relocated artifacts. Both artifacts remain
-protected and the summary path may not modify either one. The analyzer writes
+protected and the summary path may not modify either one. Artifact reads reject
+non-regular members before opening, require an exact bounded EOF, and freeze the
+v1 member caps at 1 MiB for `commit.json`, 8 MiB for `manifest.json`, and 256 MiB
+for `records.jsonl`; historical receipt comparison streams within the validated
+byte counts instead of retaining the raw artifact. The analyzer writes
 one canonical no-overwrite summary only after every gate passes. Success
 reports `PASS`; any CLI, integrity, analysis, or publication
 failure with durably proven absence reports canonical `INVALID` and emits no

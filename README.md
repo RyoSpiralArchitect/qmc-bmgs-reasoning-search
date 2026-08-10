@@ -400,7 +400,9 @@ runner自身は未同期のancestorを暗黙作成しない。
 summaryもstableなnon-symlink ancestry・inode・canonical bytes・parent fsyncをすべて確認する。
 relocated artifactの解析は、元の`authorized_output_path`が現存しdescriptorでpinできる場合だけ
 許可し、両artifactの厳密3-file byte receipt一致もpublication前に検証する。exact rollback不能な
-移動済みcopyは`INVALID`ではなくambiguityとして保持する。
+移動済みcopyは`INVALID`ではなくambiguityとして保持する。artifact memberはnon-regularを
+open前に拒否し、v1上限（commit 1 MiB / manifest 8 MiB / records 256 MiB）内でexact EOFまで
+bounded readする。historical byte receiptはvalidated sizeに従いstreaming hashで照合する。
 v2/v3/v4のどれもbase searchとしてgreedy/beamを上回れなければ、locked-128は
 開かず`STOP_REPAIR_NO_LOCKED_128_RUN`とする。
 

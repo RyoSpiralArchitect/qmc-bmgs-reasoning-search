@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import math
+import os
 import tempfile
+import time
 import unittest
 from copy import deepcopy
 from dataclasses import dataclass
@@ -762,6 +764,228 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 analysis._atomic_write_no_replace(
                     output, analysis._canonical_bytes(payload)
                 )
+
+    def test_artifact_snapshot_rejects_fifo_without_blocking(self) -> None:
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("FIFO creation is unavailable")
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "artifact"
+            _write_synthetic_artifact_members(artifact, b"fifo-fixture")
+            records = artifact / "records.jsonl"
+            records.unlink()
+            os.mkfifo(records)
+
+            pinned = analysis._pin_protected_roots((artifact,))
+            try:
+                started = time.monotonic()
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "member is not regular: records.jsonl",
+                ):
+                    analysis._read_artifact_snapshot_from_descriptor(
+                        pinned[0].descriptor,
+                        "synthetic artifact",
+                    )
+                elapsed = time.monotonic() - started
+            finally:
+                analysis._close_pinned_protected_roots(pinned)
+            self.assertLess(elapsed, 1.0)
+
+    def test_artifact_snapshot_rejects_regular_to_fifo_race_without_blocking(
+        self,
+    ) -> None:
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("FIFO creation is unavailable")
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "artifact"
+            _write_synthetic_artifact_members(artifact, b"fifo-race-fixture")
+            records = artifact / "records.jsonl"
+            original_stat = analysis.os.stat
+            swapped = False
+
+            pinned = analysis._pin_protected_roots((artifact,))
+
+            def swap_after_regular_stat(
+                path: object,
+                *args: object,
+                **kwargs: object,
+            ) -> os.stat_result:
+                nonlocal swapped
+                observed = original_stat(path, *args, **kwargs)
+                if (
+                    not swapped
+                    and path == records.name
+                    and kwargs.get("dir_fd") == pinned[0].descriptor
+                    and kwargs.get("follow_symlinks") is False
+                ):
+                    records.unlink()
+                    os.mkfifo(records)
+                    swapped = True
+                return observed
+
+            try:
+                started = time.monotonic()
+                with (
+                    patch.object(
+                        analysis.os,
+                        "stat",
+                        side_effect=swap_after_regular_stat,
+                    ),
+                    self.assertRaisesRegex(
+                        analysis.DiagnosticAnalysisError,
+                        "member raced to a non-regular file: records.jsonl",
+                    ),
+                ):
+                    analysis._read_artifact_snapshot_from_descriptor(
+                        pinned[0].descriptor,
+                        "synthetic artifact",
+                    )
+                elapsed = time.monotonic() - started
+            finally:
+                analysis._close_pinned_protected_roots(pinned)
+            self.assertTrue(swapped)
+            self.assertLess(elapsed, 1.0)
+
+    def test_artifact_closure_rejects_the_first_extra_entry(self) -> None:
+        if os.name != "posix":
+            self.skipTest("descriptor-bound directory scans require POSIX")
+
+        class Entry:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        class FourEntriesThenBomb:
+            def __init__(self) -> None:
+                self._names = iter((*analysis.RUN_ARTIFACT_FILENAMES, "unexpected"))
+                self.read_count = 0
+
+            def __enter__(self) -> FourEntriesThenBomb:
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def __iter__(self) -> FourEntriesThenBomb:
+                return self
+
+            def __next__(self) -> Entry:
+                self.read_count += 1
+                if self.read_count > 4:
+                    raise AssertionError(
+                        "closure scan read beyond the first extra entry"
+                    )
+                return Entry(next(self._names))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            entries = FourEntriesThenBomb()
+            try:
+                with (
+                    patch.object(analysis.os, "scandir", return_value=entries),
+                    self.assertRaisesRegex(
+                        analysis.DiagnosticAnalysisError,
+                        "directory closure drifted",
+                    ),
+                ):
+                    analysis._assert_artifact_directory_closure(
+                        directory_fd,
+                        "synthetic artifact",
+                    )
+            finally:
+                os.close(directory_fd)
+            self.assertEqual(entries.read_count, 4)
+
+    def test_artifact_snapshot_rejects_member_above_v1_byte_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "artifact"
+            _write_synthetic_artifact_members(artifact, b"oversized-fixture")
+            records = artifact / "records.jsonl"
+            records_cap = dict(analysis._RUN_ARTIFACT_MEMBER_BYTE_CAPS_V1)[records.name]
+            os.truncate(records, records_cap + 1)
+
+            pinned = analysis._pin_protected_roots((artifact,))
+            try:
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "exceeds the v1 byte cap",
+                ):
+                    analysis._read_artifact_snapshot_from_descriptor(
+                        pinned[0].descriptor,
+                        "synthetic artifact",
+                    )
+            finally:
+                analysis._close_pinned_protected_roots(pinned)
+
+    def test_artifact_snapshot_does_not_chase_a_growing_member(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "artifact"
+            _write_synthetic_artifact_members(artifact, b"growing-fixture")
+            records = artifact / "records.jsonl"
+            records_identity = (records.stat().st_dev, records.stat().st_ino)
+            original_read = analysis.os.read
+            grew = False
+
+            def grow_after_first_records_read(descriptor: int, size: int) -> bytes:
+                nonlocal grew
+                payload = original_read(descriptor, size)
+                opened = os.fstat(descriptor)
+                if (
+                    not grew
+                    and payload
+                    and (opened.st_dev, opened.st_ino) == records_identity
+                ):
+                    with records.open("ab") as handle:
+                        handle.write(b"growth")
+                    grew = True
+                return payload
+
+            pinned = analysis._pin_protected_roots((artifact,))
+            try:
+                with (
+                    patch.object(
+                        analysis.os,
+                        "read",
+                        side_effect=grow_after_first_records_read,
+                    ),
+                    self.assertRaisesRegex(
+                        analysis.DiagnosticAnalysisError,
+                        "grew beyond its declared byte size",
+                    ),
+                ):
+                    analysis._read_artifact_snapshot_from_descriptor(
+                        pinned[0].descriptor,
+                        "synthetic artifact",
+                    )
+            finally:
+                analysis._close_pinned_protected_roots(pinned)
+            self.assertTrue(grew)
+
+    def test_historical_receipt_rejects_expected_size_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "artifact"
+            receipt = list(
+                _write_synthetic_artifact_members(
+                    artifact,
+                    b"size-mismatch-fixture",
+                )
+            )
+            filename, byte_count, digest = receipt[-1]
+            receipt[-1] = (filename, byte_count + 1, digest)
+
+            pinned = analysis._pin_protected_roots((artifact,))
+            try:
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "byte size differs from the validated artifact",
+                ):
+                    analysis._read_artifact_receipt_from_descriptor(
+                        pinned[0].descriptor,
+                        "historical committed artifact",
+                        tuple(receipt),
+                    )
+            finally:
+                analysis._close_pinned_protected_roots(pinned)
 
     def test_summary_ancestor_symlink_pivot_cannot_reach_protected_root(
         self,

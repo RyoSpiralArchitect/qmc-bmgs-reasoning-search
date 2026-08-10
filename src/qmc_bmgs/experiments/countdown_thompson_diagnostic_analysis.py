@@ -67,6 +67,12 @@ ARTIFACT_COMMIT_SCHEMA_VERSION = (
 SUMMARY_FILENAME = "summary.json"
 RUN_ARTIFACT_FILENAMES = ("commit.json", "manifest.json", "records.jsonl")
 _ArtifactReceipt = tuple[tuple[str, int, str], ...]
+_RUN_ARTIFACT_MEMBER_BYTE_CAPS_V1 = (
+    ("commit.json", 1 * 1024 * 1024),
+    ("manifest.json", 8 * 1024 * 1024),
+    ("records.jsonl", 256 * 1024 * 1024),
+)
+_ARTIFACT_READ_CHUNK_BYTES = 1024 * 1024
 ANALYZER_RELATIVE_PATH = Path(
     "src/qmc_bmgs/experiments/countdown_thompson_diagnostic_analysis.py"
 )
@@ -438,6 +444,147 @@ def _read_regular_file_nofollow(path: Path, label: str) -> bytes:
         _close_descriptor_best_effort(descriptor)
 
 
+def _artifact_member_byte_cap(filename: str) -> int:
+    for expected_filename, byte_cap in _RUN_ARTIFACT_MEMBER_BYTE_CAPS_V1:
+        if filename == expected_filename:
+            return byte_cap
+    raise DiagnosticAnalysisError(f"unknown runner artifact member: {filename}")
+
+
+def _validate_artifact_member_size(
+    filename: str,
+    value: object,
+    label: str,
+) -> int:
+    if type(value) is not int or value < 0:
+        raise DiagnosticAnalysisError(
+            f"{label} member byte size is not a plain non-negative integer: {filename}"
+        )
+    byte_cap = _artifact_member_byte_cap(filename)
+    if value > byte_cap:
+        raise DiagnosticAnalysisError(
+            f"{label} member exceeds the v1 byte cap of {byte_cap}: {filename}"
+        )
+    return value
+
+
+def _read_bounded_artifact_member_from_descriptor(
+    directory_fd: int,
+    filename: str,
+    label: str,
+    *,
+    expected_size: int | None,
+    capture_bytes: bool,
+) -> tuple[bytes | None, tuple[str, int, str]]:
+    """Read one regular member without blocking or chasing a growing EOF."""
+
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):
+        raise DiagnosticAnalysisError(
+            f"{label} validation requires O_NOFOLLOW and O_NONBLOCK"
+        )
+    try:
+        observed = os.stat(
+            filename,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+    except OSError as error:
+        raise DiagnosticAnalysisError(
+            f"{label} member could not be observed: {filename}"
+        ) from error
+    if not stat.S_ISREG(observed.st_mode):
+        raise DiagnosticAnalysisError(f"{label} member is not regular: {filename}")
+    observed_size = _validate_artifact_member_size(
+        filename,
+        observed.st_size,
+        label,
+    )
+    if expected_size is not None:
+        expected_size = _validate_artifact_member_size(
+            filename,
+            expected_size,
+            label,
+        )
+        if observed_size != expected_size:
+            raise DiagnosticAnalysisError(
+                f"{label} member byte size differs from the validated artifact: "
+                f"{filename}"
+            )
+
+    file_fd = -1
+    try:
+        file_fd = os.open(
+            filename,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=directory_fd,
+        )
+        opened = os.fstat(file_fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise DiagnosticAnalysisError(
+                f"{label} member raced to a non-regular file: {filename}"
+            )
+        opened_size = _validate_artifact_member_size(
+            filename,
+            opened.st_size,
+            label,
+        )
+
+        def stable_state(value: os.stat_result) -> tuple[int, ...]:
+            return (
+                value.st_dev,
+                value.st_ino,
+                value.st_mode,
+                value.st_nlink,
+                value.st_size,
+                value.st_mtime_ns,
+                value.st_ctime_ns,
+            )
+
+        if (opened.st_dev, opened.st_ino) != (
+            observed.st_dev,
+            observed.st_ino,
+        ) or opened_size != observed_size:
+            raise DiagnosticAnalysisError(
+                f"{label} member changed before descriptor acquisition: {filename}"
+            )
+
+        remaining = opened_size
+        hasher = hashlib.sha256()
+        chunks: list[bytes] | None = [] if capture_bytes else None
+        while remaining:
+            chunk = os.read(
+                file_fd,
+                min(remaining, _ARTIFACT_READ_CHUNK_BYTES),
+            )
+            if not chunk:
+                raise DiagnosticAnalysisError(
+                    f"{label} member ended before its declared byte size: {filename}"
+                )
+            remaining -= len(chunk)
+            hasher.update(chunk)
+            if chunks is not None:
+                chunks.append(chunk)
+        if os.read(file_fd, 1):
+            raise DiagnosticAnalysisError(
+                f"{label} member grew beyond its declared byte size: {filename}"
+            )
+        after = os.fstat(file_fd)
+        if stable_state(after) != stable_state(opened):
+            raise DiagnosticAnalysisError(
+                f"{label} member changed during bounded read: {filename}"
+            )
+        payload = b"".join(chunks) if chunks is not None else None
+        return payload, (filename, opened_size, hasher.hexdigest())
+    except DiagnosticAnalysisError:
+        raise
+    except OSError as error:
+        raise DiagnosticAnalysisError(
+            f"{label} member is unavailable: {filename}"
+        ) from error
+    finally:
+        _close_descriptor_best_effort(file_fd)
+
+
 def _read_artifact_member_preflight(directory: Path, filename: str) -> bytes:
     """Read one authority member before outcome-bearing records are opened."""
 
@@ -458,66 +605,60 @@ def _read_artifact_member_preflight(directory: Path, filename: str) -> bytes:
             raise DiagnosticAnalysisError(
                 "runner artifact path must be a regular directory"
             )
-        try:
-            member_fd = os.open(
-                filename,
-                os.O_RDONLY | os.O_NOFOLLOW,
-                dir_fd=directory_fd,
-            )
-        except OSError as error:
-            raise DiagnosticAnalysisError(
-                f"runner artifact authority member is unavailable: {filename}"
-            ) from error
-        try:
-            if not stat.S_ISREG(os.fstat(member_fd).st_mode):
-                raise DiagnosticAnalysisError(
-                    f"runner artifact authority member is not regular: {filename}"
-                )
-            return _read_fd_bytes(member_fd)
-        finally:
-            _close_descriptor_best_effort(member_fd)
+        payload, _receipt = _read_bounded_artifact_member_from_descriptor(
+            directory_fd,
+            filename,
+            "runner artifact authority",
+            expected_size=None,
+            capture_bytes=True,
+        )
+        if payload is None:
+            raise AssertionError("captured authority member bytes are unavailable")
+        return payload
     finally:
         _close_descriptor_best_effort(directory_fd)
+
+
+def _assert_artifact_directory_closure(directory_fd: int, label: str) -> None:
+    expected = set(RUN_ARTIFACT_FILENAMES)
+    names: set[str] = set()
+    try:
+        if not stat.S_ISDIR(os.fstat(directory_fd).st_mode):
+            raise DiagnosticAnalysisError(f"{label} must be a regular directory")
+        with os.scandir(directory_fd) as entries:
+            for entry in entries:
+                name = entry.name
+                if name not in expected or name in names:
+                    raise DiagnosticAnalysisError(f"{label} directory closure drifted")
+                names.add(name)
+    except DiagnosticAnalysisError:
+        raise
+    except OSError as error:
+        raise DiagnosticAnalysisError(f"{label} could not be observed") from error
+    if names != expected:
+        raise DiagnosticAnalysisError(f"{label} directory closure drifted")
 
 
 def _read_artifact_snapshot_from_descriptor(
     directory_fd: int,
     label: str,
 ) -> dict[str, bytes]:
-    """Take one exact closed artifact snapshot through a pinned root fd."""
+    """Take one capped exact closed artifact snapshot through a pinned root fd."""
 
-    try:
-        if not stat.S_ISDIR(os.fstat(directory_fd).st_mode):
-            raise DiagnosticAnalysisError(f"{label} must be a regular directory")
-        names = os.listdir(directory_fd)
-    except DiagnosticAnalysisError:
-        raise
-    except OSError as error:
-        raise DiagnosticAnalysisError(f"{label} could not be observed") from error
-    if len(names) != len(set(names)) or set(names) != set(RUN_ARTIFACT_FILENAMES):
-        raise DiagnosticAnalysisError(f"{label} directory closure drifted")
+    _assert_artifact_directory_closure(directory_fd, label)
     snapshot: dict[str, bytes] = {}
     for filename in RUN_ARTIFACT_FILENAMES:
-        file_fd = -1
-        try:
-            file_fd = os.open(
-                filename,
-                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-                dir_fd=directory_fd,
-            )
-            if not stat.S_ISREG(os.fstat(file_fd).st_mode):
-                raise DiagnosticAnalysisError(
-                    f"{label} member is not regular: {filename}"
-                )
-            snapshot[filename] = _read_fd_bytes(file_fd)
-        except DiagnosticAnalysisError:
-            raise
-        except OSError as error:
-            raise DiagnosticAnalysisError(
-                f"{label} member is unavailable: {filename}"
-            ) from error
-        finally:
-            _close_descriptor_best_effort(file_fd)
+        payload, _receipt = _read_bounded_artifact_member_from_descriptor(
+            directory_fd,
+            filename,
+            label,
+            expected_size=None,
+            capture_bytes=True,
+        )
+        if payload is None:
+            raise AssertionError("captured artifact member bytes are unavailable")
+        snapshot[filename] = payload
+    _assert_artifact_directory_closure(directory_fd, label)
     return snapshot
 
 
@@ -552,11 +693,53 @@ def _read_artifact_snapshot(directory: Path) -> dict[str, bytes]:
     snapshot = {}
     for filename in RUN_ARTIFACT_FILENAMES:
         path = root / filename
-        if path.is_symlink() or not path.is_file():
+        try:
+            before = path.lstat()
+        except OSError as error:
+            raise DiagnosticAnalysisError(
+                f"runner artifact member is unavailable: {filename}"
+            ) from error
+        if not stat.S_ISREG(before.st_mode):
             raise DiagnosticAnalysisError(
                 f"runner artifact member is not regular: {filename}"
             )
-        snapshot[filename] = path.read_bytes()
+        byte_count = _validate_artifact_member_size(
+            filename,
+            before.st_size,
+            "runner artifact",
+        )
+        try:
+            with path.open("rb") as handle:
+                opened = os.fstat(handle.fileno())
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+                    or opened.st_size != byte_count
+                ):
+                    raise DiagnosticAnalysisError(
+                        f"runner artifact member changed before bounded read: {filename}"
+                    )
+                payload = handle.read(byte_count)
+                if len(payload) != byte_count or handle.read(1):
+                    raise DiagnosticAnalysisError(
+                        f"runner artifact member changed during bounded read: {filename}"
+                    )
+                after = os.fstat(handle.fileno())
+                if (
+                    after.st_size != opened.st_size
+                    or after.st_mtime_ns != opened.st_mtime_ns
+                    or after.st_ctime_ns != opened.st_ctime_ns
+                ):
+                    raise DiagnosticAnalysisError(
+                        f"runner artifact member changed during bounded read: {filename}"
+                    )
+        except DiagnosticAnalysisError:
+            raise
+        except OSError as error:
+            raise DiagnosticAnalysisError(
+                f"runner artifact member is unavailable: {filename}"
+            ) from error
+        snapshot[filename] = payload
     return snapshot
 
 
@@ -567,26 +750,87 @@ def _artifact_snapshot_receipt(
 
     if set(snapshot) != set(RUN_ARTIFACT_FILENAMES):
         raise DiagnosticAnalysisError("runner artifact receipt closure is invalid")
-    return tuple(
-        (filename, len(snapshot[filename]), _sha256_bytes(snapshot[filename]))
-        for filename in RUN_ARTIFACT_FILENAMES
-    )
+    receipt: list[tuple[str, int, str]] = []
+    for filename in RUN_ARTIFACT_FILENAMES:
+        payload = snapshot[filename]
+        if type(payload) is not bytes:
+            raise DiagnosticAnalysisError(
+                f"runner artifact receipt member is not bytes: {filename}"
+            )
+        byte_count = _validate_artifact_member_size(
+            filename,
+            len(payload),
+            "runner artifact receipt",
+        )
+        receipt.append((filename, byte_count, _sha256_bytes(payload)))
+    return tuple(receipt)
+
+
+def _validated_artifact_receipt(
+    value: object,
+    label: str,
+) -> _ArtifactReceipt:
+    if type(value) is not tuple or len(value) != len(RUN_ARTIFACT_FILENAMES):
+        raise DiagnosticAnalysisError(f"{label} byte receipt is unavailable")
+    receipt: list[tuple[str, int, str]] = []
+    for expected_filename, member in zip(
+        RUN_ARTIFACT_FILENAMES,
+        value,
+        strict=True,
+    ):
+        if type(member) is not tuple or len(member) != 3:
+            raise DiagnosticAnalysisError(f"{label} byte receipt is invalid")
+        filename, byte_count, digest = member
+        if filename != expected_filename or not _is_sha256(digest):
+            raise DiagnosticAnalysisError(f"{label} byte receipt is invalid")
+        receipt.append(
+            (
+                filename,
+                _validate_artifact_member_size(filename, byte_count, label),
+                digest,
+            )
+        )
+    return tuple(receipt)
 
 
 def _read_artifact_receipt_from_descriptor(
     directory_fd: int,
     label: str,
+    expected_receipt: _ArtifactReceipt,
 ) -> _ArtifactReceipt:
-    """Read a stable byte receipt through an already pinned artifact root."""
+    """Stream a stable byte receipt through an already pinned artifact root."""
 
     if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
         raise DiagnosticAnalysisError(
             f"{label} validation requires POSIX descriptor-bound reads"
         )
-    first = _read_artifact_snapshot_from_descriptor(directory_fd, label)
-    if _read_artifact_snapshot_from_descriptor(directory_fd, label) != first:
+    expected = _validated_artifact_receipt(expected_receipt, label)
+
+    def read_once() -> _ArtifactReceipt:
+        _assert_artifact_directory_closure(directory_fd, label)
+        observed: list[tuple[str, int, str]] = []
+        for filename, byte_count, _digest in expected:
+            payload, member_receipt = _read_bounded_artifact_member_from_descriptor(
+                directory_fd,
+                filename,
+                label,
+                expected_size=byte_count,
+                capture_bytes=False,
+            )
+            if payload is not None:
+                raise AssertionError("streamed artifact member retained full bytes")
+            observed.append(member_receipt)
+        _assert_artifact_directory_closure(directory_fd, label)
+        return tuple(observed)
+
+    first = read_once()
+    if first != expected:
+        raise DiagnosticAnalysisError(
+            f"{label} bytes differ from the validated runner artifact"
+        )
+    if read_once() != first:
         raise DiagnosticAnalysisError(f"{label} changed during descriptor snapshot")
-    return _artifact_snapshot_receipt(first)
+    return first
 
 
 def _strict_json_object(raw: bytes, label: str) -> dict[str, Any]:
@@ -3616,20 +3860,15 @@ def write_countdown_thompson_diagnostic_summary(
             )
         if destination.exists() or destination.is_symlink():
             raise FileExistsError(f"summary destination exists: {destination}")
-        historical_receipt = _read_artifact_receipt_from_descriptor(
+        validated_receipt = _validated_artifact_receipt(
+            getattr(validated, "artifact_receipt", ()),
+            "validated runner artifact",
+        )
+        _read_artifact_receipt_from_descriptor(
             historical_roots[0].descriptor,
             "historical committed artifact",
+            validated_receipt,
         )
-        validated_receipt = getattr(validated, "artifact_receipt", ())
-        if not validated_receipt:
-            raise DiagnosticAnalysisError(
-                "validated runner artifact byte receipt is unavailable"
-            )
-        if historical_receipt != validated_receipt:
-            raise DiagnosticAnalysisError(
-                "historical committed artifact bytes differ from the validated "
-                "runner artifact"
-            )
         _assert_pinned_protected_roots(protected_roots)
         _atomic_write_no_replace(
             destination,

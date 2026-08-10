@@ -947,12 +947,19 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 ),
                 patch.object(
                     analysis,
-                    "analyze_countdown_thompson_diagnostic_artifact",
+                    "_validate_artifact",
+                    return_value=SimpleNamespace(
+                        manifest={"authorized_output_path": str(protected.resolve())}
+                    ),
+                ) as validate,
+                patch.object(
+                    analysis,
+                    "_build_summary",
                     return_value={
                         "schema_version": "synthetic/v1",
                         "status": "PASS",
                     },
-                ) as analyze,
+                ),
             ):
                 with self.assertRaisesRegex(
                     analysis.DiagnosticAnalysisError,
@@ -967,13 +974,63 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                         repository_root=root,
                     )
             self.assertTrue(swapped)
-            analyze.assert_called_once()
+            validate.assert_called_once()
             self.assertEqual(
                 (safe.stat().st_dev, safe.stat().st_ino),
                 original_protected_identity,
             )
             self.assertFalse(output.exists())
             self.assertEqual(list((safe / "out").iterdir()), [])
+
+    def test_relocated_copy_cannot_publish_inside_historical_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            historical = root / "historical-artifact"
+            historical.mkdir()
+            for filename in ("commit.json", "manifest.json", "records.jsonl"):
+                (historical / filename).write_bytes(b"synthetic authority\n")
+            relocated = root / "relocated-artifact"
+            relocated.mkdir()
+            bundle = root / "bundle"
+            bundle.mkdir()
+            output = historical / "summary.json"
+            validated = SimpleNamespace(
+                manifest={"authorized_output_path": str(historical.resolve())}
+            )
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    return_value=validated,
+                ) as validate,
+                patch.object(
+                    analysis,
+                    "_build_summary",
+                    return_value={
+                        "schema_version": "synthetic/v1",
+                        "status": "PASS",
+                    },
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "historical authorized artifact",
+                ):
+                    analysis.write_countdown_thompson_diagnostic_summary(
+                        relocated,
+                        bundle,
+                        root / "authorization.json",
+                        "0" * 64,
+                        output,
+                        repository_root=root,
+                    )
+            validate.assert_called_once()
+            self.assertEqual(
+                {path.name for path in historical.iterdir()},
+                {"commit.json", "manifest.json", "records.jsonl"},
+            )
+            self.assertFalse(output.exists())
 
     def test_summary_path_only_protected_authority_is_rejected(self) -> None:
         payload = analysis._canonical_bytes(

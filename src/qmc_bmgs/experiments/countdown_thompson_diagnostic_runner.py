@@ -2491,9 +2491,10 @@ def _cleanup_private_attempt_scratch(
             pinned_identity,
             label="attempt scratch",
         )
-    except (FileNotFoundError, OSError, DiagnosticRunnerError):
+    except BaseException:
         # An unproven path is never removed.  A leftover private scratch is
-        # preferable to touching a raced or foreign directory entry.
+        # preferable to touching a raced or foreign directory entry. Cleanup
+        # cannot supersede the typed result selected by attempt publication.
         return
 
 
@@ -3154,8 +3155,8 @@ def _publish_run_artifact_locked(
         staging_identity = (staged_stat.st_dev, staged_stat.st_ino)
         try:
             _rename_noreplace_at(
-                parent_fd,
-                f"{attempt.directory_name}/staging",
+                attempt.directory_fd,
+                "staging",
                 parent_fd,
                 output.name,
             )
@@ -3170,6 +3171,10 @@ def _publish_run_artifact_locked(
                 commit_receipt=None,
             ):
                 raise
+        # Cross-directory rename durability requires barriers for both the
+        # source attempt directory and the destination output parent.  The
+        # destination barrier is closed after commit.json is durable below.
+        os.fsync(attempt.directory_fd)
         if not _published_artifact_matches(
             parent_fd,
             output.name,

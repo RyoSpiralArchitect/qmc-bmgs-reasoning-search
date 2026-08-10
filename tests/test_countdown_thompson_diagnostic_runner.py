@@ -1619,6 +1619,68 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         repository_root=Path(temporary),
                     )
 
+    def test_artifact_rename_syncs_both_source_and_destination_parents(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_rename = runner._rename_noreplace_at
+            original_fsync = runner.os.fsync
+            rename_complete = False
+            source_fd = -1
+            destination_fd = -1
+            synced_after_rename: list[int] = []
+
+            def record_artifact_rename(
+                source_directory_fd: int,
+                source_name: str,
+                destination_directory_fd: int,
+                destination_name: str,
+            ) -> None:
+                nonlocal destination_fd, rename_complete, source_fd
+                if destination_name == output.name:
+                    source_fd = source_directory_fd
+                    destination_fd = destination_directory_fd
+                    self.assertEqual(source_name, "staging")
+                original_rename(
+                    source_directory_fd,
+                    source_name,
+                    destination_directory_fd,
+                    destination_name,
+                )
+                if destination_name == output.name:
+                    rename_complete = True
+
+            def record_sync(descriptor: int) -> None:
+                if rename_complete:
+                    synced_after_rename.append(descriptor)
+                original_fsync(descriptor)
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_rename_noreplace_at",
+                    side_effect=record_artifact_rename,
+                ),
+                patch.object(runner.os, "fsync", side_effect=record_sync),
+            ):
+                runner._publish_run_artifact(
+                    preflight,
+                    authorization,
+                    reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                    repository_root=root,
+                )
+            self.assertGreaterEqual(source_fd, 0)
+            self.assertGreaterEqual(destination_fd, 0)
+            self.assertNotEqual(source_fd, destination_fd)
+            self.assertIn(source_fd, synced_after_rename)
+            self.assertIn(destination_fd, synced_after_rename)
+
     def test_started_failure_retains_invalid_marker_and_staging(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -2249,7 +2311,12 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         destination_name,
                     )
                     return
-                (root / source_name).rename(stolen)
+                runner.os.rename(
+                    source_name,
+                    stolen.name,
+                    src_dir_fd=source_directory_fd,
+                    dst_dir_fd=destination_directory_fd,
+                )
                 output.mkdir()
                 (output / "foreign.txt").write_text("foreign", encoding="utf-8")
                 raise OSError("synthetic final rename ambiguity")
@@ -3179,6 +3246,54 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             )
             self.assertTrue((attempt / "pre_outcome.json").is_file())
             self.assertFalse((root / ".artifact.publish-lock").exists())
+
+    def test_attempt_scratch_cleanup_interrupt_preserves_primary_ambiguity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            primary = runner.DiagnosticPublicationStateAmbiguousError(
+                "primary attempt reservation ambiguity"
+            )
+            original_stat = runner.os.stat
+
+            def interrupt_private_scratch(
+                path: object,
+                *args: object,
+                **kwargs: object,
+            ):
+                if isinstance(path, str) and ".attempt-tmp-" in path:
+                    raise KeyboardInterrupt("synthetic scratch cleanup interruption")
+                return original_stat(path, *args, **kwargs)
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_published_attempt_reservation_matches",
+                    side_effect=primary,
+                ),
+                patch.object(
+                    runner.os,
+                    "stat",
+                    side_effect=interrupt_private_scratch,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "primary attempt reservation ambiguity",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+            self.assertFalse(output.exists())
 
     def test_output_parent_creation_failure_is_canonical_not_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

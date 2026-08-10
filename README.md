@@ -396,7 +396,8 @@ plan、別PRでのauthorization review、1回限りのrun、独立analysisの順
 attempt予約のparent fsync失敗は、public nameからinode/bytes検証済みretained tombstoneへの
 atomic移動、parent fsync、public authority不在の再確認まで閉じた場合だけ`NOT_RUN`とする。
 summaryもstableなnon-symlink ancestry・inode・canonical bytes・parent fsyncをすべて確認し、
-exact rollback不能な移動済みcopyは`INVALID`ではなくambiguityとして保持する。
+relocated artifactを解析する場合も元の`authorized_output_path`を保護する。exact rollback不能な
+移動済みcopyは`INVALID`ではなくambiguityとして保持する。
 v2/v3/v4のどれもbase searchとしてgreedy/beamを上回れなければ、locked-128は
 開かず`STOP_REPAIR_NO_LOCKED_128_RUN`とする。
 

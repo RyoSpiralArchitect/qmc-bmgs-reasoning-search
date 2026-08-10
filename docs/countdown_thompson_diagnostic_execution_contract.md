@@ -174,6 +174,12 @@ budget closure, and carry two-stage replay evidence. Partial output, an extra or
 missing artifact entry, schema drift, replay drift, source drift, or publication
 failure is not a valid diagnostic result.
 
+The READY staging directory is renamed from the attempt directory into the
+authorized output parent. A completed publication requires durability barriers
+for both namespace parents: the source attempt directory after `staging` is
+removed and the destination output parent after the artifact and commit receipt
+are inserted.
+
 ## Stage 4: independent analysis
 
 Choose a new summary path that does not exist and cannot modify the run artifact
@@ -196,8 +202,12 @@ PYTHONPATH=src python -m \
 The analyzer verifies the bundle, reviewed authorization lineage, exact
 three-file artifact closure, all 240 records, provider-call zero, budget
 evidence, source attestations, and both replay stages before constructing a
-summary. It writes one canonical no-overwrite summary only after every gate
-passes. Success reports `PASS`; any CLI, integrity, analysis, or publication
+summary. A byte-identical committed artifact may be analyzed from a relocated
+copy, but both that copy and the historical `authorized_output_path` remain
+protected: the summary path may not modify either artifact, and an existing
+historical artifact is pinned by descriptor and inode through publication. It
+writes one canonical no-overwrite summary only after every gate passes. Success
+reports `PASS`; any CLI, integrity, analysis, or publication
 failure with durably proven absence reports canonical `INVALID` and emits no
 diagnostic result. If summary durability and exact rollback both cannot be
 proven, it reports `PUBLICATION_STATE_AMBIGUOUS`; any file at the requested

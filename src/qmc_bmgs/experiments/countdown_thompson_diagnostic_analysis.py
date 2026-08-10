@@ -376,6 +376,17 @@ def _require_plain_nonnegative_int(value: object, label: str) -> int:
     return value
 
 
+def _close_descriptor_best_effort(descriptor: int) -> None:
+    """Close cleanup without superseding a selected integrity result."""
+
+    if descriptor < 0:
+        return
+    try:
+        os.close(descriptor)
+    except BaseException:
+        pass
+
+
 def _read_fd_bytes(file_descriptor: int) -> bytes:
     chunks: list[bytes] = []
     while True:
@@ -423,7 +434,7 @@ def _read_regular_file_nofollow(path: Path, label: str) -> bytes:
             raise DiagnosticAnalysisError(f"{label} changed during descriptor read")
         return first
     finally:
-        os.close(descriptor)
+        _close_descriptor_best_effort(descriptor)
 
 
 def _read_artifact_member_preflight(directory: Path, filename: str) -> bytes:
@@ -463,9 +474,9 @@ def _read_artifact_member_preflight(directory: Path, filename: str) -> bytes:
                 )
             return _read_fd_bytes(member_fd)
         finally:
-            os.close(member_fd)
+            _close_descriptor_best_effort(member_fd)
     finally:
-        os.close(directory_fd)
+        _close_descriptor_best_effort(directory_fd)
 
 
 def _read_artifact_snapshot(directory: Path) -> dict[str, bytes]:
@@ -505,10 +516,10 @@ def _read_artifact_snapshot(directory: Path) -> dict[str, bytes]:
                         )
                     snapshot[filename] = _read_fd_bytes(file_fd)
                 finally:
-                    os.close(file_fd)
+                    _close_descriptor_best_effort(file_fd)
             return snapshot
         finally:
-            os.close(directory_fd)
+            _close_descriptor_best_effort(directory_fd)
 
     if root.is_symlink() or not root.is_dir():
         raise DiagnosticAnalysisError(
@@ -3488,26 +3499,65 @@ def write_countdown_thompson_diagnostic_summary(
     protected_roots = _pin_protected_roots(
         (Path(artifact_dir), Path(bundle_dir)),
     )
+    historical_authorized_path: Path | None = None
+    historical_path_was_absent = False
     try:
         _assert_pinned_protected_roots(protected_roots)
+        validated = _validate_artifact(
+            Path(artifact_dir),
+            Path(bundle_dir),
+            Path(authorization_path),
+            authorization_digest,
+            repository_root=repository_root,
+        )
+        summary = _build_summary(validated)
+        historical_value = validated.manifest.get("authorized_output_path")
+        if (
+            type(historical_value) is not str
+            or not Path(historical_value).is_absolute()
+        ):
+            raise DiagnosticAnalysisError(
+                "validated historical artifact path is invalid"
+            )
+        historical_authorized_path = Path(historical_value)
+        historical_canonical = historical_authorized_path.resolve()
         destination_resolved = destination.resolve()
+        if (
+            destination_resolved == historical_canonical
+            or destination_resolved.is_relative_to(historical_canonical)
+        ):
+            raise DiagnosticAnalysisError(
+                "summary destination cannot modify the historical authorized artifact"
+            )
+        if not any(root.path == historical_canonical for root in protected_roots):
+            if (
+                historical_authorized_path.exists()
+                or historical_authorized_path.is_symlink()
+            ):
+                protected_roots = (
+                    *protected_roots,
+                    *_pin_protected_roots((historical_authorized_path,)),
+                )
+            else:
+                historical_path_was_absent = True
+        _assert_pinned_protected_roots(protected_roots)
         if any(
             destination_resolved == root.path
             or destination_resolved.is_relative_to(root.path)
             for root in protected_roots
         ):
             raise DiagnosticAnalysisError(
-                "summary destination cannot modify the run artifact or sealed bundle"
+                "summary destination cannot modify a protected artifact or bundle"
             )
         if destination.exists() or destination.is_symlink():
             raise FileExistsError(f"summary destination exists: {destination}")
-        summary = analyze_countdown_thompson_diagnostic_artifact(
-            artifact_dir,
-            bundle_dir,
-            authorization_path,
-            authorization_digest,
-            repository_root=repository_root,
-        )
+        if historical_path_was_absent and (
+            historical_authorized_path.exists()
+            or historical_authorized_path.is_symlink()
+        ):
+            raise DiagnosticAnalysisError(
+                "historical authorized artifact path appeared during analysis"
+            )
         _atomic_write_no_replace(
             destination,
             _canonical_bytes(summary),

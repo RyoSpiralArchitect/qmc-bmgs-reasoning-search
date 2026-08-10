@@ -1681,6 +1681,87 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             self.assertIn(source_fd, synced_after_rename)
             self.assertIn(destination_fd, synced_after_rename)
 
+    def test_post_rename_source_barrier_failure_is_invalid_not_not_run(
+        self,
+    ) -> None:
+        """A failed source-directory barrier spends the durable STARTED attempt."""
+
+        for failure in (OSError, KeyboardInterrupt, SystemExit):
+            with (
+                self.subTest(failure=failure.__name__),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                output = root / "artifact"
+                preflight = _preflight(output)
+                authorization = runner._authorization_payload(preflight)
+                original_rename = runner._rename_noreplace_at
+                original_fsync = runner.os.fsync
+                rename_complete = False
+                source_fd = -1
+                injected = False
+
+                def record_artifact_rename(
+                    source_directory_fd: int,
+                    source_name: str,
+                    destination_directory_fd: int,
+                    destination_name: str,
+                ) -> None:
+                    nonlocal rename_complete, source_fd
+                    original_rename(
+                        source_directory_fd,
+                        source_name,
+                        destination_directory_fd,
+                        destination_name,
+                    )
+                    if destination_name == output.name:
+                        self.assertEqual(source_name, "staging")
+                        source_fd = source_directory_fd
+                        rename_complete = True
+
+                def fail_only_post_rename_source_barrier(descriptor: int) -> None:
+                    nonlocal injected
+                    if rename_complete and descriptor == source_fd and not injected:
+                        injected = True
+                        raise failure("synthetic post-rename source barrier failure")
+                    original_fsync(descriptor)
+
+                with (
+                    patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                    patch.object(runner, "_recheck_source_closure"),
+                    patch.object(
+                        runner,
+                        "_rename_noreplace_at",
+                        side_effect=record_artifact_rename,
+                    ),
+                    patch.object(
+                        runner.os,
+                        "fsync",
+                        side_effect=fail_only_post_rename_source_barrier,
+                    ),
+                ):
+                    with self.assertRaisesRegex(
+                        runner.DiagnosticInvalidRunError,
+                        "synthetic post-rename source barrier failure",
+                    ):
+                        runner._publish_run_artifact(
+                            preflight,
+                            authorization,
+                            reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                            repository_root=root,
+                        )
+
+                self.assertTrue(rename_complete)
+                self.assertGreaterEqual(source_fd, 0)
+                self.assertTrue(injected)
+                self.assertFalse((output / "commit.json").exists())
+                attempt = root / (
+                    f".artifact.attempt-{authorization['deterministic_digest']}"
+                )
+                self.assertTrue((attempt / "started.json").is_file())
+                self.assertTrue((attempt / "invalid.json").is_file())
+                self.assertFalse((attempt / "not_run.json").exists())
+
     def test_started_failure_retains_invalid_marker_and_staging(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

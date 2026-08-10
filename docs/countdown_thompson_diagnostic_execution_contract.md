@@ -203,10 +203,11 @@ The analyzer verifies the bundle, reviewed authorization lineage, exact
 three-file artifact closure, all 240 records, provider-call zero, budget
 evidence, source attestations, and both replay stages before constructing a
 summary. A byte-identical committed artifact may be analyzed from a relocated
-copy, but both that copy and the historical `authorized_output_path` remain
-protected: the summary path may not modify either artifact, and an existing
-historical artifact is pinned by descriptor and inode through publication. It
-writes one canonical no-overwrite summary only after every gate passes. Success
+copy only while the historical `authorized_output_path` still exists and can be
+pinned by descriptor and inode through publication. If that historical path is
+absent, analysis refuses before summary staging begins. Both artifacts remain
+protected and the summary path may not modify either one. The analyzer writes
+one canonical no-overwrite summary only after every gate passes. Success
 reports `PASS`; any CLI, integrity, analysis, or publication
 failure with durably proven absence reports canonical `INVALID` and emits no
 diagnostic result. If summary durability and exact rollback both cannot be

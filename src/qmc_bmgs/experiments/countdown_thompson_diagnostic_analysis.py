@@ -3220,6 +3220,20 @@ def _recover_summary_publication(
                 protected_roots,
                 publication_may_exist=True,
             )
+            if (
+                _summary_publication_state(
+                    destination,
+                    parent_fd,
+                    parent_identity,
+                    staged_identity,
+                    expected_payload,
+                )
+                != _SUMMARY_ENTRY_EXACT
+            ):
+                raise DiagnosticAnalysisPublicationAmbiguousError(
+                    "summary publication durability and rollback are ambiguous; "
+                    "the destination must not be used as diagnostic evidence"
+                ) from primary_error
             return True
         if state == _SUMMARY_ENTRY_ABSENT:
             staging_state = _summary_entry_state(
@@ -3320,7 +3334,6 @@ def _atomic_write_no_replace(
             raise DiagnosticAnalysisError(
                 "summary destination cannot modify the run artifact or sealed bundle"
             )
-
         parent_fd, parent_stat, _parent_ancestry = _open_stable_directory_with_ancestry(
             destination.parent,
             "summary parent",
@@ -3500,7 +3513,6 @@ def write_countdown_thompson_diagnostic_summary(
         (Path(artifact_dir), Path(bundle_dir)),
     )
     historical_authorized_path: Path | None = None
-    historical_path_was_absent = False
     try:
         _assert_pinned_protected_roots(protected_roots)
         validated = _validate_artifact(
@@ -3530,16 +3542,22 @@ def write_countdown_thompson_diagnostic_summary(
                 "summary destination cannot modify the historical authorized artifact"
             )
         if not any(root.path == historical_canonical for root in protected_roots):
-            if (
-                historical_authorized_path.exists()
-                or historical_authorized_path.is_symlink()
-            ):
+            try:
+                historical_authorized_path.lstat()
+            except FileNotFoundError:
+                raise DiagnosticAnalysisError(
+                    "historical authorized artifact path must exist for summary "
+                    "publication"
+                )
+            except OSError as error:
+                raise DiagnosticAnalysisError(
+                    "historical authorized artifact path could not be observed"
+                ) from error
+            else:
                 protected_roots = (
                     *protected_roots,
                     *_pin_protected_roots((historical_authorized_path,)),
                 )
-            else:
-                historical_path_was_absent = True
         _assert_pinned_protected_roots(protected_roots)
         if any(
             destination_resolved == root.path
@@ -3551,13 +3569,6 @@ def write_countdown_thompson_diagnostic_summary(
             )
         if destination.exists() or destination.is_symlink():
             raise FileExistsError(f"summary destination exists: {destination}")
-        if historical_path_was_absent and (
-            historical_authorized_path.exists()
-            or historical_authorized_path.is_symlink()
-        ):
-            raise DiagnosticAnalysisError(
-                "historical authorized artifact path appeared during analysis"
-            )
         _atomic_write_no_replace(
             destination,
             _canonical_bytes(summary),

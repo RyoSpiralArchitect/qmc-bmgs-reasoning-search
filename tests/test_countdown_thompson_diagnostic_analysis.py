@@ -1032,6 +1032,78 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             )
             self.assertFalse(output.exists())
 
+    def test_absent_historical_path_race_is_rejected_before_publication(self) -> None:
+        original_lstat = analysis.Path.lstat
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "relocated-artifact"
+            artifact.mkdir()
+            bundle = root / "bundle"
+            bundle.mkdir()
+            historical = root / "historical-artifact"
+            publication_parent = root / "publication-parent"
+            publication_parent.mkdir()
+            relocated_parent = historical / publication_parent.name
+            output = publication_parent / "summary.json"
+            raced = False
+
+            def report_absent_then_pivot(path: Path) -> object:
+                nonlocal raced
+                if path == historical and not raced:
+                    historical.mkdir()
+                    publication_parent.rename(relocated_parent)
+                    publication_parent.symlink_to(
+                        relocated_parent,
+                        target_is_directory=True,
+                    )
+                    raced = True
+                    raise FileNotFoundError
+                return original_lstat(path)
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    return_value=SimpleNamespace(
+                        manifest={"authorized_output_path": str(historical)}
+                    ),
+                ) as validate,
+                patch.object(
+                    analysis,
+                    "_build_summary",
+                    return_value={
+                        "schema_version": "synthetic/v1",
+                        "status": "PASS",
+                    },
+                ),
+                patch.object(
+                    analysis.Path,
+                    "lstat",
+                    autospec=True,
+                    side_effect=report_absent_then_pivot,
+                ),
+                patch.object(analysis, "_atomic_write_no_replace") as atomic_write,
+            ):
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "historical authorized artifact path must exist",
+                ):
+                    analysis.write_countdown_thompson_diagnostic_summary(
+                        artifact,
+                        bundle,
+                        root / "authorization.json",
+                        "0" * 64,
+                        output,
+                        repository_root=root,
+                    )
+            validate.assert_called_once()
+            atomic_write.assert_not_called()
+            self.assertTrue(raced)
+            self.assertTrue(publication_parent.is_symlink())
+            self.assertEqual(list(relocated_parent.iterdir()), [])
+            self.assertFalse(output.exists())
+
     def test_summary_path_only_protected_authority_is_rejected(self) -> None:
         payload = analysis._canonical_bytes(
             {"schema_version": "synthetic/v1", "status": "PASS"}
@@ -1136,6 +1208,62 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                     "must not be used",
                 ):
                     analysis._atomic_write_no_replace(output, payload)
+            self.assertTrue(swapped)
+            self.assertFalse(output.exists())
+            self.assertEqual(moved.read_bytes(), payload)
+
+    def test_summary_recovery_reobserves_exact_after_final_topology(self) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_rename = analysis._rename_noreplace_at
+        original_topology = analysis._assert_summary_publication_topology
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "summary.json"
+            moved = root / "moved-summary.json"
+            rename_completed = False
+            recovery_topology_checks = 0
+            swapped = False
+
+            def rename_then_raise(*args: object) -> None:
+                nonlocal rename_completed
+                original_rename(*args)
+                rename_completed = True
+                raise OSError("synthetic post-rename interruption")
+
+            def swap_during_recovery_final_topology(
+                *args: object,
+                **kwargs: object,
+            ) -> None:
+                nonlocal recovery_topology_checks, swapped
+                original_topology(*args, **kwargs)
+                if rename_completed:
+                    recovery_topology_checks += 1
+                if recovery_topology_checks == 3 and not swapped and output.exists():
+                    output.rename(moved)
+                    swapped = True
+
+            with (
+                patch.object(
+                    analysis,
+                    "_rename_noreplace_at",
+                    side_effect=rename_then_raise,
+                ),
+                patch.object(
+                    analysis,
+                    "_assert_summary_publication_topology",
+                    side_effect=swap_during_recovery_final_topology,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisPublicationAmbiguousError,
+                    "must not be used",
+                ):
+                    analysis._atomic_write_no_replace(output, payload)
+            self.assertTrue(rename_completed)
+            self.assertEqual(recovery_topology_checks, 3)
             self.assertTrue(swapped)
             self.assertFalse(output.exists())
             self.assertEqual(moved.read_bytes(), payload)

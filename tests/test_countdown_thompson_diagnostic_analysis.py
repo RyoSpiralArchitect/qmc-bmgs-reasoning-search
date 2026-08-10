@@ -1032,8 +1032,121 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             )
             self.assertFalse(output.exists())
 
+    def test_historical_symlink_alias_to_artifact_is_rejected_before_write(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "relocated-artifact"
+            artifact.mkdir()
+            historical = root / "historical-artifact"
+            historical.symlink_to(artifact, target_is_directory=True)
+            bundle = root / "bundle"
+            bundle.mkdir()
+            publication_parent = root / "publication-parent"
+            publication_parent.mkdir()
+            output = publication_parent / "summary.json"
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    return_value=SimpleNamespace(
+                        manifest={"authorized_output_path": str(historical)}
+                    ),
+                ) as validate,
+                patch.object(
+                    analysis,
+                    "_build_summary",
+                    return_value={
+                        "schema_version": "synthetic/v1",
+                        "status": "PASS",
+                    },
+                ),
+                patch.object(analysis, "_atomic_write_no_replace") as atomic_write,
+            ):
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "stable non-symlink directory",
+                ):
+                    analysis.write_countdown_thompson_diagnostic_summary(
+                        artifact,
+                        bundle,
+                        root / "authorization.json",
+                        "0" * 64,
+                        output,
+                        repository_root=root,
+                    )
+            validate.assert_called_once()
+            atomic_write.assert_not_called()
+            self.assertTrue(historical.is_symlink())
+            self.assertFalse(output.exists())
+
+    def test_historical_directory_equal_to_artifact_retains_raw_pin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "artifact"
+            artifact.mkdir()
+            bundle = root / "bundle"
+            bundle.mkdir()
+            publication_parent = root / "publication-parent"
+            publication_parent.mkdir()
+            output = publication_parent / "summary.json"
+            summary = {
+                "schema_version": "synthetic/v1",
+                "status": "PASS",
+            }
+
+            def assert_duplicate_pins(
+                _path: Path,
+                _payload: bytes,
+                *,
+                protected_roots: tuple[analysis._PinnedProtectedRoot, ...],
+            ) -> None:
+                self.assertEqual(len(protected_roots), 3)
+                artifact_pin, _bundle_pin, historical_pin = protected_roots
+                self.assertEqual(artifact_pin.identity, historical_pin.identity)
+                self.assertNotEqual(
+                    artifact_pin.descriptor,
+                    historical_pin.descriptor,
+                )
+                self.assertEqual(artifact_pin.authority_path, artifact)
+                self.assertEqual(historical_pin.authority_path, artifact)
+                analysis._assert_pinned_protected_roots(protected_roots)
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    return_value=SimpleNamespace(
+                        manifest={"authorized_output_path": str(artifact)}
+                    ),
+                ),
+                patch.object(
+                    analysis,
+                    "_build_summary",
+                    return_value=summary,
+                ),
+                patch.object(
+                    analysis,
+                    "_atomic_write_no_replace",
+                    side_effect=assert_duplicate_pins,
+                ) as atomic_write,
+            ):
+                observed = analysis.write_countdown_thompson_diagnostic_summary(
+                    artifact,
+                    bundle,
+                    root / "authorization.json",
+                    "0" * 64,
+                    output,
+                    repository_root=root,
+                )
+            self.assertEqual(observed, summary)
+            atomic_write.assert_called_once()
+            self.assertFalse(output.exists())
+
     def test_absent_historical_path_race_is_rejected_before_publication(self) -> None:
-        original_lstat = analysis.Path.lstat
+        original_open = analysis._open_protected_root_authority
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1048,7 +1161,10 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             output = publication_parent / "summary.json"
             raced = False
 
-            def report_absent_then_pivot(path: Path) -> object:
+            def report_absent_then_pivot(
+                path: Path,
+                label: str,
+            ):
                 nonlocal raced
                 if path == historical and not raced:
                     historical.mkdir()
@@ -1058,8 +1174,10 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                         target_is_directory=True,
                     )
                     raced = True
-                    raise FileNotFoundError
-                return original_lstat(path)
+                    raise analysis.DiagnosticAnalysisError(
+                        "synthetic historical authority open observed absence"
+                    )
+                return original_open(path, label)
 
             with (
                 patch.object(
@@ -1078,9 +1196,8 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                     },
                 ),
                 patch.object(
-                    analysis.Path,
-                    "lstat",
-                    autospec=True,
+                    analysis,
+                    "_open_protected_root_authority",
                     side_effect=report_absent_then_pivot,
                 ),
                 patch.object(analysis, "_atomic_write_no_replace") as atomic_write,

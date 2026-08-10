@@ -178,7 +178,10 @@ The READY staging directory is renamed from the attempt directory into the
 authorized output parent. A completed publication requires durability barriers
 for both namespace parents: the source attempt directory after `staging` is
 removed and the destination output parent after the artifact and commit receipt
-are inserted.
+are inserted. Both the authorization-candidate parent and run-artifact output
+parent must already exist as stable non-symlink directories; the runner does
+not recursively create publication ancestors whose entries lack an independent
+durability barrier.
 
 ## Stage 4: independent analysis
 
@@ -204,9 +207,10 @@ three-file artifact closure, all 240 records, provider-call zero, budget
 evidence, source attestations, and both replay stages before constructing a
 summary. A byte-identical committed artifact may be analyzed from a relocated
 copy only while the historical `authorized_output_path` still exists and can be
-pinned by descriptor and inode through publication. If that historical path is
-absent, analysis refuses before summary staging begins. Both artifacts remain
-protected and the summary path may not modify either one. The analyzer writes
+opened through its raw name with `O_NOFOLLOW` and pinned by descriptor and inode
+through publication. A symlink alias or absent historical path is refused before
+summary staging begins. Both artifacts remain protected and the summary path
+may not modify either one. The analyzer writes
 one canonical no-overwrite summary only after every gate passes. Success
 reports `PASS`; any CLI, integrity, analysis, or publication
 failure with durably proven absence reports canonical `INVALID` and emits no

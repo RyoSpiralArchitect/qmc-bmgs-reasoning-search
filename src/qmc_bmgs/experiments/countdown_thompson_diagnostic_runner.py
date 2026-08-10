@@ -1003,6 +1003,10 @@ def _write_canonical_file_noreplace(
 ) -> None:
     """Stage, fsync, and atomically publish one authority file.
 
+    The destination parent must already exist as a stable non-symlink
+    directory. This function never creates publication ancestors whose own
+    directory entries would require separate durability barriers.
+
     Once a no-replace rename may have succeeded, success requires a durable
     parent-directory barrier plus the exact staged inode and bytes. A failed
     barrier is retried; persistent failure must durably revoke the candidate or
@@ -1010,7 +1014,6 @@ def _write_canonical_file_noreplace(
     """
 
     parent = destination.parent
-    parent.mkdir(parents=True, exist_ok=True)
     parent_fd, parent_stat = _open_stable_directory(
         parent,
         "authorization parent",
@@ -2858,7 +2861,11 @@ def _publish_run_artifact(
     repository_root: Path,
     _terminal_result: bool = False,
 ) -> dict[str, Any]:
-    """Serialize attempts targeting one output while preserving auth markers."""
+    """Serialize attempts targeting one output while preserving auth markers.
+
+    The output parent must already exist as a stable non-symlink directory;
+    publication never creates an ancestor without durably syncing its entry.
+    """
 
     output = preflight.output_path
     parent = output.parent
@@ -2868,7 +2875,6 @@ def _publish_run_artifact(
     lock_identity: tuple[int, int] | None = None
     lock_name = f".{output.name}.publish-lock"
     try:
-        parent.mkdir(parents=True, exist_ok=True)
         parent_fd, parent_stat = _open_stable_directory(
             parent,
             "run output parent",

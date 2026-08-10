@@ -453,6 +453,44 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         repository_root=root,
                     )
 
+    def test_missing_authorization_parent_is_not_created_or_published(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            missing_ancestor = root / "missing"
+            authorization_path = missing_ancestor / "reviews" / "authorization.json"
+            preflight = _preflight(output)
+            with (
+                patch.object(runner, "_fresh_preflight", return_value=preflight),
+                patch.object(
+                    runner,
+                    "_write_canonical_file_noreplace_at",
+                    side_effect=AssertionError(
+                        "authorization candidate must not be staged"
+                    ),
+                ) as publish_candidate,
+                patch.object(
+                    runner,
+                    "run_countdown_track_a_search",
+                    side_effect=AssertionError("diagnostic search must not run"),
+                ) as search,
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticRunnerError,
+                    "authorization parent must be a stable directory",
+                ):
+                    runner.write_countdown_thompson_diagnostic_execution_plan(
+                        root / "bundle",
+                        output,
+                        authorization_path,
+                        repository_root=root,
+                    )
+            self.assertFalse(missing_ancestor.exists())
+            self.assertFalse(authorization_path.exists())
+            self.assertEqual(list(root.iterdir()), [])
+            publish_candidate.assert_not_called()
+            search.assert_not_called()
+
     def test_authorization_parent_sync_failure_returns_exact_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -3376,27 +3414,33 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     )
             self.assertFalse(output.exists())
 
-    def test_output_parent_creation_failure_is_canonical_not_run(self) -> None:
+    def test_missing_output_parent_is_not_created_or_started(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            output = root / "missing" / "artifact"
+            missing_ancestor = root / "missing"
+            output = missing_ancestor / "runs" / "artifact"
             preflight = _preflight(output)
             authorization = runner._authorization_payload(preflight)
             with (
                 patch.object(
-                    Path,
-                    "mkdir",
-                    side_effect=OSError("output parent creation failure"),
-                ),
+                    runner,
+                    "_publish_run_artifact_locked",
+                    side_effect=AssertionError("attempt must not start"),
+                ) as publish_locked,
                 patch.object(
                     runner,
-                    "_open_stable_directory",
-                    side_effect=AssertionError("parent must not be opened"),
-                ),
+                    "_execute_cell",
+                    side_effect=AssertionError("diagnostic task must not run"),
+                ) as execute_cell,
+                patch.object(
+                    runner,
+                    "run_countdown_track_a_search",
+                    side_effect=AssertionError("diagnostic search must not run"),
+                ) as search,
             ):
                 with self.assertRaisesRegex(
                     runner.DiagnosticNotRunError,
-                    "output parent creation failure",
+                    "run output parent must be a stable directory",
                 ):
                     runner._publish_run_artifact(
                         preflight,
@@ -3404,6 +3448,12 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         reviewed_authorization_revision=_AUTHORIZATION_REVISION,
                         repository_root=root,
                     )
+            self.assertFalse(missing_ancestor.exists())
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.iterdir()), [])
+            publish_locked.assert_not_called()
+            execute_cell.assert_not_called()
+            search.assert_not_called()
 
     def test_output_lock_creation_failure_is_canonical_not_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

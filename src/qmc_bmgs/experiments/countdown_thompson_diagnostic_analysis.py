@@ -2593,6 +2593,7 @@ def _open_stable_directory(path: Path, label: str) -> tuple[int, os.stat_result]
 
 @dataclass(frozen=True)
 class _PinnedProtectedRoot:
+    authority_path: Path
     path: Path
     descriptor: int
     identity: tuple[int, int]
@@ -2651,7 +2652,8 @@ def _pin_protected_roots(
             # Do not resolve first: this single open is the authority acquisition.
             # A separate resolve/open pair would admit an inode swap.  Ancestor
             # aliases such as macOS /var remain usable; O_NOFOLLOW closes the final
-            # component, and the pinned identity binds the later canonical path.
+            # component. Retain the raw name for revalidation and the canonical
+            # path for containment checks.
             root = Path(os.path.abspath(os.fspath(raw_root)))
             root_fd = -1
             try:
@@ -2679,6 +2681,7 @@ def _pin_protected_roots(
                             pass
                 pinned.append(
                     _PinnedProtectedRoot(
+                        authority_path=root,
                         path=canonical,
                         descriptor=root_fd,
                         identity=root_identity,
@@ -2714,7 +2717,7 @@ def _close_pinned_protected_roots(
 def _assert_pinned_protected_roots(
     protected_roots: Sequence[_PinnedProtectedRoot],
 ) -> None:
-    """Prove each protected path still names its pinned authority inode."""
+    """Prove each raw protected name still names its pinned authority inode."""
 
     for index, protected in enumerate(protected_roots):
         if type(protected) is not _PinnedProtectedRoot:
@@ -2730,7 +2733,7 @@ def _assert_pinned_protected_roots(
         current_fd = -1
         try:
             current_fd, current = _open_protected_root_authority(
-                protected.path,
+                protected.authority_path,
                 f"protected root {index} after pinning",
             )
             if (current.st_dev, current.st_ino) != protected.identity:
@@ -3512,7 +3515,6 @@ def write_countdown_thompson_diagnostic_summary(
     protected_roots = _pin_protected_roots(
         (Path(artifact_dir), Path(bundle_dir)),
     )
-    historical_authorized_path: Path | None = None
     try:
         _assert_pinned_protected_roots(protected_roots)
         validated = _validate_artifact(
@@ -3532,7 +3534,17 @@ def write_countdown_thompson_diagnostic_summary(
                 "validated historical artifact path is invalid"
             )
         historical_authorized_path = Path(historical_value)
-        historical_canonical = historical_authorized_path.resolve()
+        try:
+            historical_roots = _pin_protected_roots(
+                (historical_authorized_path,),
+            )
+        except DiagnosticAnalysisError as error:
+            raise DiagnosticAnalysisError(
+                "historical authorized artifact path must exist as a stable "
+                "non-symlink directory for summary publication"
+            ) from error
+        protected_roots = (*protected_roots, *historical_roots)
+        historical_canonical = historical_roots[0].path
         destination_resolved = destination.resolve()
         if (
             destination_resolved == historical_canonical
@@ -3541,23 +3553,6 @@ def write_countdown_thompson_diagnostic_summary(
             raise DiagnosticAnalysisError(
                 "summary destination cannot modify the historical authorized artifact"
             )
-        if not any(root.path == historical_canonical for root in protected_roots):
-            try:
-                historical_authorized_path.lstat()
-            except FileNotFoundError:
-                raise DiagnosticAnalysisError(
-                    "historical authorized artifact path must exist for summary "
-                    "publication"
-                )
-            except OSError as error:
-                raise DiagnosticAnalysisError(
-                    "historical authorized artifact path could not be observed"
-                ) from error
-            else:
-                protected_roots = (
-                    *protected_roots,
-                    *_pin_protected_roots((historical_authorized_path,)),
-                )
         _assert_pinned_protected_roots(protected_roots)
         if any(
             destination_resolved == root.path

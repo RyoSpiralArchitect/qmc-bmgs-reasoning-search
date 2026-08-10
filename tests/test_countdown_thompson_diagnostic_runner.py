@@ -615,6 +615,73 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     )
             self.assertFalse(authorization_path.exists())
 
+    def test_final_authorization_drift_needs_a_fresh_durability_proof(self) -> None:
+        for barrier_fails in (False, True):
+            with (
+                self.subTest(barrier_fails=barrier_fails),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                output = root / "artifact"
+                authorization_path = root / "authorization.json"
+                stolen = root / "stolen-authorization.json"
+                foreign = root / "foreign-authorization.json"
+                foreign.write_bytes(b"foreign\n")
+                preflight = _preflight(output)
+                original_assert = runner._assert_directory_path_identity
+                original_fsync = runner.os.fsync
+                root_identity = (root.stat().st_dev, root.stat().st_ino)
+                assertion_count = 0
+                swapped = False
+
+                def swap_after_durable_publication(*args: object) -> None:
+                    nonlocal assertion_count, swapped
+                    assertion_count += 1
+                    if assertion_count == 3:
+                        authorization_path.rename(stolen)
+                        foreign.rename(authorization_path)
+                        swapped = True
+                    original_assert(*args)
+
+                def maybe_fail_final_barrier(descriptor: int) -> None:
+                    observed = runner.os.fstat(descriptor)
+                    if (
+                        barrier_fails
+                        and swapped
+                        and (observed.st_dev, observed.st_ino) == root_identity
+                    ):
+                        raise OSError("final authorization barrier unavailable")
+                    original_fsync(descriptor)
+
+                expected_error = (
+                    runner.DiagnosticPublicationStateAmbiguousError
+                    if barrier_fails
+                    else runner.DiagnosticNotRunError
+                )
+                with (
+                    patch.object(runner, "_fresh_preflight", return_value=preflight),
+                    patch.object(
+                        runner,
+                        "_assert_directory_path_identity",
+                        side_effect=swap_after_durable_publication,
+                    ),
+                    patch.object(
+                        runner.os,
+                        "fsync",
+                        side_effect=maybe_fail_final_barrier,
+                    ),
+                ):
+                    with self.assertRaises(expected_error):
+                        runner.write_countdown_thompson_diagnostic_execution_plan(
+                            root / "bundle",
+                            output,
+                            authorization_path,
+                            repository_root=root,
+                        )
+                self.assertTrue(swapped)
+                self.assertEqual(authorization_path.read_bytes(), b"foreign\n")
+                self.assertTrue(stolen.is_file())
+
     def test_authorization_missing_initializer_receipt_stops_before_preflight(
         self,
     ) -> None:
@@ -1276,6 +1343,203 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 runner.os.close(attempt_fd)
                 runner.os.close(parent_fd)
 
+    def test_authorization_mismatch_requires_a_parent_durability_barrier(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            destination = root / "authorization.json"
+            destination.write_bytes(b"foreign\n")
+            root_identity = (root.stat().st_dev, root.stat().st_ino)
+            original_fsync = runner.os.fsync
+
+            def fail_parent_barrier(descriptor: int) -> None:
+                observed = runner.os.fstat(descriptor)
+                if (observed.st_dev, observed.st_ino) == root_identity:
+                    raise OSError("authorization absence barrier unavailable")
+                original_fsync(descriptor)
+
+            with patch.object(
+                runner.os,
+                "fsync",
+                side_effect=fail_parent_barrier,
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "durability and exact rollback",
+                ):
+                    runner._write_canonical_file_noreplace(
+                        destination,
+                        {"status": "candidate"},
+                    )
+            self.assertEqual(destination.read_bytes(), b"foreign\n")
+
+    def test_foreign_file_swap_is_restored_and_never_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            authority = root / "authority.json"
+            foreign = root / "foreign.json"
+            stolen = root / "stolen-authority.json"
+            expected = b"exact-authority\n"
+            authority.write_bytes(expected)
+            foreign.write_bytes(b"foreign-replacement\n")
+            authority_stat = authority.stat()
+            authority_identity = (authority_stat.st_dev, authority_stat.st_ino)
+            directory_fd = runner.os.open(root, runner.os.O_RDONLY)
+            original_rename = runner._rename_noreplace_at
+            swapped = False
+
+            def swap_before_quarantine(
+                source_directory_fd: int,
+                source_name: str,
+                destination_directory_fd: int,
+                destination_name: str,
+            ) -> None:
+                nonlocal swapped
+                if source_name == authority.name and not swapped:
+                    swapped = True
+                    authority.rename(stolen)
+                    foreign.rename(authority)
+                original_rename(
+                    source_directory_fd,
+                    source_name,
+                    destination_directory_fd,
+                    destination_name,
+                )
+
+            try:
+                with patch.object(
+                    runner,
+                    "_rename_noreplace_at",
+                    side_effect=swap_before_quarantine,
+                ):
+                    tombstone = runner._quarantine_exact_file_at(
+                        directory_fd,
+                        authority.name,
+                        expected,
+                        expected_identity=authority_identity,
+                        label="authorization",
+                    )
+            finally:
+                runner.os.close(directory_fd)
+            self.assertTrue(swapped)
+            self.assertIsNone(tombstone)
+            self.assertEqual(authority.read_bytes(), b"foreign-replacement\n")
+            self.assertEqual(stolen.read_bytes(), expected)
+            self.assertFalse(any(".revoked-" in path.name for path in root.iterdir()))
+
+    def test_foreign_directory_swap_is_restored_and_never_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            authority = root / "attempt"
+            foreign = root / "foreign-attempt"
+            stolen = root / "stolen-attempt"
+            authority.mkdir()
+            (authority / "exact.txt").write_text("exact", encoding="utf-8")
+            foreign.mkdir()
+            (foreign / "foreign.txt").write_text("foreign", encoding="utf-8")
+            parent_fd = runner.os.open(root, runner.os.O_RDONLY)
+            authority_fd = runner.os.open(authority, runner.os.O_RDONLY)
+            authority_stat = authority.stat()
+            authority_identity = (authority_stat.st_dev, authority_stat.st_ino)
+            original_rename = runner._rename_noreplace_at
+            swapped = False
+
+            def swap_before_quarantine(
+                source_directory_fd: int,
+                source_name: str,
+                destination_directory_fd: int,
+                destination_name: str,
+            ) -> None:
+                nonlocal swapped
+                if source_name == authority.name and not swapped:
+                    swapped = True
+                    authority.rename(stolen)
+                    foreign.rename(authority)
+                original_rename(
+                    source_directory_fd,
+                    source_name,
+                    destination_directory_fd,
+                    destination_name,
+                )
+
+            try:
+                with patch.object(
+                    runner,
+                    "_rename_noreplace_at",
+                    side_effect=swap_before_quarantine,
+                ):
+                    tombstone = runner._quarantine_exact_directory_at(
+                        parent_fd,
+                        authority.name,
+                        authority_fd,
+                        authority_identity,
+                        label="attempt reservation",
+                    )
+            finally:
+                runner.os.close(authority_fd)
+                runner.os.close(parent_fd)
+            self.assertTrue(swapped)
+            self.assertIsNone(tombstone)
+            self.assertEqual(
+                (authority / "foreign.txt").read_text(encoding="utf-8"),
+                "foreign",
+            )
+            self.assertEqual(
+                (stolen / "exact.txt").read_text(encoding="utf-8"),
+                "exact",
+            )
+
+    def test_foreign_staging_swap_is_not_deleted_by_finally_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            directory_fd = runner.os.open(root, runner.os.O_RDONLY)
+            original_rename = runner._rename_noreplace_at
+            staged_name = ""
+            stolen = root / "stolen-staging.json"
+            foreign = b"foreign-staging\n"
+
+            def replace_staging_then_fail(
+                source_directory_fd: int,
+                source_name: str,
+                destination_directory_fd: int,
+                destination_name: str,
+            ) -> None:
+                nonlocal staged_name
+                if destination_name == "receipt.json":
+                    staged_name = source_name
+                    (root / source_name).rename(stolen)
+                    (root / source_name).write_bytes(foreign)
+                    raise OSError("synthetic staging substitution")
+                original_rename(
+                    source_directory_fd,
+                    source_name,
+                    destination_directory_fd,
+                    destination_name,
+                )
+
+            try:
+                with patch.object(
+                    runner,
+                    "_rename_noreplace_at",
+                    side_effect=replace_staging_then_fail,
+                ):
+                    with self.assertRaises(runner._ExactPublicationRevokedError):
+                        runner._write_canonical_file_noreplace_at(
+                            directory_fd,
+                            "receipt.json",
+                            {"status": "PENDING"},
+                        )
+            finally:
+                runner.os.close(directory_fd)
+            self.assertTrue(staged_name)
+            self.assertEqual((root / staged_name).read_bytes(), foreign)
+            self.assertEqual(
+                stolen.read_bytes(),
+                runner._canonical_bytes({"status": "PENDING"}),
+            )
+            self.assertFalse((root / "receipt.json").exists())
+
     def test_atomic_artifact_publication_on_nondiagnostic_fixture(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "artifact"
@@ -1424,6 +1688,117 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         repository_root=root,
                     )
 
+    def test_post_started_close_baseexceptions_do_not_mask_typed_status(
+        self,
+    ) -> None:
+        for cleanup_error in (KeyboardInterrupt, SystemExit):
+            for terminal_receipt_fails in (False, True):
+                with (
+                    self.subTest(
+                        cleanup_error=cleanup_error.__name__,
+                        terminal_receipt_fails=terminal_receipt_fails,
+                    ),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    root = Path(temporary)
+                    output = root / "artifact"
+                    preflight = _preflight(output)
+                    authorization = runner._authorization_payload(preflight)
+                    original_close = runner.os.close
+                    original_open = runner.os.open
+                    original_write = runner._write_attempt_receipt
+                    close_armed = False
+                    attempt_fd = -1
+                    staging_fd = -1
+                    failed_closes: list[int] = []
+
+                    def capture_staging_open(
+                        path: object,
+                        *args: object,
+                        **kwargs: object,
+                    ) -> int:
+                        nonlocal staging_fd
+                        descriptor = original_open(path, *args, **kwargs)
+                        if path == "staging":
+                            staging_fd = descriptor
+                        return descriptor
+
+                    def terminate_started_attempt(
+                        *args: object,
+                        **kwargs: object,
+                    ):
+                        nonlocal attempt_fd, close_armed
+                        attempt = args[0]
+                        filename = args[1]
+                        assert isinstance(attempt, runner._Attempt)
+                        assert isinstance(filename, str)
+                        if filename == "invalid.json":
+                            attempt_fd = attempt.directory_fd
+                            if terminal_receipt_fails:
+                                close_armed = True
+                                raise OSError("primary INVALID receipt failure")
+                        payload = original_write(*args, **kwargs)
+                        if filename == "invalid.json":
+                            close_armed = True
+                        return payload
+
+                    def fail_close_after_success(descriptor: int) -> None:
+                        original_close(descriptor)
+                        if close_armed:
+                            failed_closes.append(descriptor)
+                            raise cleanup_error("synthetic cleanup close failure")
+
+                    expected_error = (
+                        runner.DiagnosticPublicationStateAmbiguousError
+                        if terminal_receipt_fails
+                        else runner.DiagnosticInvalidRunError
+                    )
+                    expected_message = (
+                        "INVALID receipt durability is unproven"
+                        if terminal_receipt_fails
+                        else "primary post-STARTED failure"
+                    )
+                    with (
+                        patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                        patch.object(runner, "_recheck_source_closure"),
+                        patch.object(
+                            runner.os,
+                            "open",
+                            side_effect=capture_staging_open,
+                        ),
+                        patch.object(
+                            runner,
+                            "_execute_cell",
+                            side_effect=runner.DiagnosticRunnerError(
+                                "primary post-STARTED failure"
+                            ),
+                        ),
+                        patch.object(
+                            runner,
+                            "_write_attempt_receipt",
+                            side_effect=terminate_started_attempt,
+                        ),
+                        patch.object(
+                            runner.os,
+                            "close",
+                            side_effect=fail_close_after_success,
+                        ),
+                    ):
+                        with self.assertRaisesRegex(expected_error, expected_message):
+                            runner._publish_run_artifact(
+                                preflight,
+                                authorization,
+                                reviewed_authorization_revision=(
+                                    _AUTHORIZATION_REVISION
+                                ),
+                                repository_root=root,
+                            )
+                    self.assertGreaterEqual(staging_fd, 0)
+                    self.assertGreaterEqual(attempt_fd, 0)
+                    self.assertIn(staging_fd, failed_closes)
+                    self.assertIn(attempt_fd, failed_closes)
+                    self.assertGreaterEqual(len(failed_closes), 4)
+
     def test_post_rename_fsync_failure_cannot_relabel_artifact_invalid(
         self,
     ) -> None:
@@ -1463,6 +1838,62 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             self.assertTrue((attempt / "ready_to_commit.json").is_file())
             self.assertFalse((attempt / "invalid.json").exists())
             self.assertFalse((root / ".artifact.publish-lock").exists())
+
+    def test_commit_recovery_close_baseexceptions_do_not_relabel_started(self) -> None:
+        for cleanup_error in (KeyboardInterrupt, SystemExit):
+            with (
+                self.subTest(cleanup_error=cleanup_error.__name__),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                output = root / "artifact"
+                preflight = _preflight(output)
+                authorization = runner._authorization_payload(preflight)
+                original_write = runner._write_canonical_file_noreplace_at
+                original_close = runner.os.close
+                close_armed = False
+                failed_closes: list[int] = []
+
+                def commit_then_interrupt(
+                    directory_fd: int,
+                    filename: str,
+                    payload: dict[str, object],
+                ) -> None:
+                    nonlocal close_armed
+                    original_write(directory_fd, filename, payload)
+                    if filename == "commit.json":
+                        close_armed = True
+                        raise OSError("post-commit publication interruption")
+
+                def fail_close_after_success(descriptor: int) -> None:
+                    original_close(descriptor)
+                    if close_armed:
+                        failed_closes.append(descriptor)
+                        raise cleanup_error("synthetic recovery close failure")
+
+                with (
+                    patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                    patch.object(runner, "_recheck_source_closure"),
+                    patch.object(
+                        runner,
+                        "_write_canonical_file_noreplace_at",
+                        side_effect=commit_then_interrupt,
+                    ),
+                    patch.object(
+                        runner.os,
+                        "close",
+                        side_effect=fail_close_after_success,
+                    ),
+                ):
+                    manifest = runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+                self.assertEqual(manifest["attempt_phase"], "READY_TO_COMMIT")
+                self.assertTrue((output / "commit.json").is_file())
+                self.assertGreaterEqual(len(failed_closes), 1)
 
     def test_persistent_artifact_parent_sync_failure_revokes_commit_as_invalid(
         self,
@@ -1521,9 +1952,16 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         reviewed_authorization_revision=_AUTHORIZATION_REVISION,
                         repository_root=root,
                     )
+            self.assertFalse((output / "commit.json").exists())
+            revoked_commits = [
+                path
+                for path in output.iterdir()
+                if path.name.startswith(".commit.json.revoked-")
+            ]
+            self.assertEqual(len(revoked_commits), 1)
             self.assertEqual(
-                {path.name for path in output.iterdir()},
-                {"manifest.json", "records.jsonl"},
+                json.loads(revoked_commits[0].read_bytes())["status"],
+                "COMMITTED",
             )
             attempt = root / (
                 f".artifact.attempt-{authorization['deterministic_digest']}"
@@ -1594,15 +2032,154 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         reviewed_authorization_revision=_AUTHORIZATION_REVISION,
                         repository_root=root,
                     )
+            self.assertFalse((output / "commit.json").exists())
             self.assertEqual(
-                {path.name for path in output.iterdir()},
-                {"manifest.json", "records.jsonl"},
+                len(
+                    [
+                        path
+                        for path in output.iterdir()
+                        if path.name.startswith(".commit.json.revoked-")
+                    ]
+                ),
+                1,
             )
             attempt = root / (
                 f".artifact.attempt-{authorization['deterministic_digest']}"
             )
             self.assertFalse((attempt / "invalid.json").exists())
             self.assertFalse((root / ".artifact.publish-lock").exists())
+
+    def test_exact_commit_with_extra_file_is_revoked_before_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_write = runner._write_canonical_file_noreplace_at
+
+            def add_extra_after_commit(
+                directory_fd: int,
+                filename: str,
+                payload: dict[str, object],
+            ) -> tuple[int, int]:
+                identity = original_write(directory_fd, filename, payload)
+                if filename == "commit.json":
+                    (output / "extra.bin").write_bytes(b"closure drift")
+                    raise OSError("synthetic post-commit closure drift")
+                return identity
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_write_canonical_file_noreplace_at",
+                    side_effect=add_extra_after_commit,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticInvalidRunError,
+                    "synthetic post-commit closure drift",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+            self.assertFalse((output / "commit.json").exists())
+            self.assertTrue((output / "extra.bin").is_file())
+            revoked = [
+                path
+                for path in output.iterdir()
+                if path.name.startswith(".commit.json.revoked-")
+            ]
+            self.assertEqual(len(revoked), 1)
+            self.assertEqual(json.loads(revoked[0].read_bytes())["status"], "COMMITTED")
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue((attempt / "invalid.json").is_file())
+
+    def test_moved_committed_artifact_is_revoked_through_pinned_fd(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            stolen = root / "stolen-committed-artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_write = runner._write_canonical_file_noreplace_at
+            original_fsync = runner.os.fsync
+            root_identity = (root.stat().st_dev, root.stat().st_ino)
+            commit_written = False
+            swapped = False
+
+            def arm_after_commit(
+                directory_fd: int,
+                filename: str,
+                payload: dict[str, object],
+            ) -> tuple[int, int]:
+                nonlocal commit_written
+                identity = original_write(directory_fd, filename, payload)
+                if filename == "commit.json":
+                    commit_written = True
+                return identity
+
+            def swap_after_commit_parent_barrier(descriptor: int) -> None:
+                nonlocal swapped
+                observed = runner.os.fstat(descriptor)
+                identity = (observed.st_dev, observed.st_ino)
+                original_fsync(descriptor)
+                if commit_written and not swapped and identity == root_identity:
+                    output.rename(stolen)
+                    output.mkdir()
+                    (output / "foreign.txt").write_text(
+                        "foreign",
+                        encoding="utf-8",
+                    )
+                    swapped = True
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_write_canonical_file_noreplace_at",
+                    side_effect=arm_after_commit,
+                ),
+                patch.object(
+                    runner.os,
+                    "fsync",
+                    side_effect=swap_after_commit_parent_barrier,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticInvalidRunError,
+                    "published artifact changed before commit return",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+            self.assertTrue(swapped)
+            self.assertEqual(
+                (output / "foreign.txt").read_text(encoding="utf-8"),
+                "foreign",
+            )
+            self.assertFalse((stolen / "commit.json").exists())
+            revoked = [
+                path
+                for path in stolen.iterdir()
+                if path.name.startswith(".commit.json.revoked-")
+            ]
+            self.assertEqual(len(revoked), 1)
+            self.assertEqual(json.loads(revoked[0].read_bytes())["status"], "COMMITTED")
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue((attempt / "invalid.json").is_file())
 
     def test_exception_after_successful_rename_keeps_committed_authority(
         self,
@@ -1844,6 +2421,103 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             self.assertFalse((attempt / "invalid.json").exists())
             self.assertFalse((attempt / "not_run.json").exists())
 
+    def test_terminal_receipts_require_directory_fsync_durability(self) -> None:
+        for target in ("started.json", "not_run.json", "invalid.json"):
+            with (
+                self.subTest(target=target),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                output = root / "artifact"
+                preflight = _preflight(output)
+                authorization = runner._authorization_payload(preflight)
+                original_rename = runner._rename_noreplace_at
+                original_fsync = runner.os.fsync
+                armed_identity: tuple[int, int] | None = None
+
+                def arm_target_receipt(
+                    source_directory_fd: int,
+                    source_name: str,
+                    destination_directory_fd: int,
+                    destination_name: str,
+                ) -> None:
+                    nonlocal armed_identity
+                    original_rename(
+                        source_directory_fd,
+                        source_name,
+                        destination_directory_fd,
+                        destination_name,
+                    )
+                    if destination_name == target:
+                        observed = runner.os.fstat(destination_directory_fd)
+                        armed_identity = (observed.st_dev, observed.st_ino)
+
+                def fail_target_directory_barrier(descriptor: int) -> None:
+                    observed = runner.os.fstat(descriptor)
+                    if armed_identity == (observed.st_dev, observed.st_ino):
+                        raise OSError(f"persistent {target} directory sync failure")
+                    original_fsync(descriptor)
+
+                recheck = (
+                    runner.DiagnosticRunnerError("source raced")
+                    if target == "not_run.json"
+                    else None
+                )
+                execute = (
+                    runner.DiagnosticRunnerError("fixture failure")
+                    if target == "invalid.json"
+                    else None
+                )
+                with (
+                    patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                    patch.object(
+                        runner,
+                        "_recheck_source_closure",
+                        side_effect=recheck,
+                    ),
+                    patch.object(
+                        runner,
+                        "_execute_cell",
+                        side_effect=execute,
+                    ),
+                    patch.object(
+                        runner,
+                        "_rename_noreplace_at",
+                        side_effect=arm_target_receipt,
+                    ),
+                    patch.object(
+                        runner.os,
+                        "fsync",
+                        side_effect=fail_target_directory_barrier,
+                    ),
+                ):
+                    with self.assertRaises(
+                        runner.DiagnosticPublicationStateAmbiguousError
+                    ):
+                        runner._publish_run_artifact(
+                            preflight,
+                            authorization,
+                            reviewed_authorization_revision=(_AUTHORIZATION_REVISION),
+                            repository_root=root,
+                        )
+                attempt = root / (
+                    f".artifact.attempt-{authorization['deterministic_digest']}"
+                )
+                self.assertFalse((attempt / target).exists())
+                self.assertTrue(
+                    any(
+                        path.name.startswith(f".{target}.revoked-")
+                        for path in attempt.iterdir()
+                    )
+                )
+                if target == "started.json":
+                    self.assertFalse((attempt / "not_run.json").exists())
+                    self.assertFalse((attempt / "invalid.json").exists())
+                elif target == "not_run.json":
+                    self.assertFalse((attempt / "invalid.json").exists())
+                else:
+                    self.assertTrue((attempt / "started.json").is_file())
+
     def test_pre_outcome_closure_failure_is_not_run_and_never_resolves_task(
         self,
     ) -> None:
@@ -1888,6 +2562,198 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             self.assertEqual(receipt["status"], "NOT_RUN")
             self.assertFalse(output.exists())
             self.assertFalse((root / ".artifact.publish-lock").exists())
+
+    def test_pre_outcome_close_failures_do_not_mask_terminal_status(self) -> None:
+        for terminal_receipt_fails in (False, True):
+            with (
+                self.subTest(terminal_receipt_fails=terminal_receipt_fails),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                output = root / "artifact"
+                preflight = _preflight(output)
+                authorization = runner._authorization_payload(preflight)
+                original_close = runner.os.close
+                original_fsync = runner.os.fsync
+                original_open = runner.os.open
+                original_write = runner._write_attempt_receipt
+                close_armed = False
+                pre_outcome_failed = False
+                attempt_fd = -1
+                staging_fd = -1
+                failed_closes: list[int] = []
+
+                def capture_staging_open(
+                    path: object,
+                    *args: object,
+                    **kwargs: object,
+                ) -> int:
+                    nonlocal staging_fd
+                    descriptor = original_open(path, *args, **kwargs)
+                    if path == "staging":
+                        staging_fd = descriptor
+                    return descriptor
+
+                def fail_after_staging_open(descriptor: int) -> None:
+                    nonlocal pre_outcome_failed
+                    if not pre_outcome_failed:
+                        try:
+                            entries = set(runner.os.listdir(descriptor))
+                        except OSError:
+                            entries = set()
+                        if "staging" in entries:
+                            pre_outcome_failed = True
+                            raise runner.DiagnosticRunnerError(
+                                "primary PRE_OUTCOME failure"
+                            )
+                    original_fsync(descriptor)
+
+                def terminate_attempt(*args: object, **kwargs: object):
+                    nonlocal attempt_fd, close_armed
+                    attempt = args[0]
+                    filename = args[1]
+                    assert isinstance(attempt, runner._Attempt)
+                    assert isinstance(filename, str)
+                    attempt_fd = attempt.directory_fd
+                    if filename == "not_run.json" and terminal_receipt_fails:
+                        close_armed = True
+                        raise OSError("primary terminal receipt failure")
+                    payload = original_write(*args, **kwargs)
+                    if filename == "not_run.json":
+                        close_armed = True
+                    return payload
+
+                def fail_close_after_success(descriptor: int) -> None:
+                    original_close(descriptor)
+                    if close_armed:
+                        failed_closes.append(descriptor)
+                        raise OSError("synthetic cleanup close failure")
+
+                expected_error = (
+                    runner.DiagnosticPublicationStateAmbiguousError
+                    if terminal_receipt_fails
+                    else runner.DiagnosticNotRunError
+                )
+                expected_message = (
+                    "NOT_RUN receipt durability is unproven"
+                    if terminal_receipt_fails
+                    else "primary PRE_OUTCOME failure"
+                )
+                with (
+                    patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                    patch.object(runner, "_recheck_source_closure"),
+                    patch.object(
+                        runner.os,
+                        "open",
+                        side_effect=capture_staging_open,
+                    ),
+                    patch.object(
+                        runner.os,
+                        "fsync",
+                        side_effect=fail_after_staging_open,
+                    ),
+                    patch.object(
+                        runner,
+                        "_write_attempt_receipt",
+                        side_effect=terminate_attempt,
+                    ),
+                    patch.object(
+                        runner.os,
+                        "close",
+                        side_effect=fail_close_after_success,
+                    ),
+                ):
+                    with self.assertRaisesRegex(expected_error, expected_message):
+                        runner._publish_run_artifact(
+                            preflight,
+                            authorization,
+                            reviewed_authorization_revision=(_AUTHORIZATION_REVISION),
+                            repository_root=root,
+                        )
+                self.assertGreaterEqual(staging_fd, 0)
+                self.assertGreaterEqual(attempt_fd, 0)
+                self.assertIn(staging_fd, failed_closes)
+                self.assertIn(attempt_fd, failed_closes)
+
+    def test_started_transition_close_failures_do_not_mask_typed_status(
+        self,
+    ) -> None:
+        for expected_error in (
+            runner.DiagnosticPublicationStateAmbiguousError,
+            runner.DiagnosticInvalidRunError,
+            runner.DiagnosticNotRunError,
+        ):
+            with (
+                self.subTest(expected_error=expected_error.__name__),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                output = root / "artifact"
+                preflight = _preflight(output)
+                authorization = runner._authorization_payload(preflight)
+                original_close = runner.os.close
+                original_open = runner.os.open
+                close_armed = False
+                attempt_fd = -1
+                staging_fd = -1
+                failed_closes: list[int] = []
+
+                def capture_staging_open(
+                    path: object,
+                    *args: object,
+                    **kwargs: object,
+                ) -> int:
+                    nonlocal staging_fd
+                    descriptor = original_open(path, *args, **kwargs)
+                    if path == "staging":
+                        staging_fd = descriptor
+                    return descriptor
+
+                def fail_transition(attempt: runner._Attempt) -> dict[str, object]:
+                    nonlocal attempt_fd, close_armed
+                    attempt_fd = attempt.directory_fd
+                    close_armed = True
+                    raise expected_error("primary STARTED transition status")
+
+                def fail_close_after_success(descriptor: int) -> None:
+                    original_close(descriptor)
+                    if close_armed:
+                        failed_closes.append(descriptor)
+                        raise OSError("synthetic cleanup close failure")
+
+                with (
+                    patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                    patch.object(runner, "_recheck_source_closure"),
+                    patch.object(
+                        runner.os,
+                        "open",
+                        side_effect=capture_staging_open,
+                    ),
+                    patch.object(
+                        runner,
+                        "_transition_attempt_to_started",
+                        side_effect=fail_transition,
+                    ),
+                    patch.object(
+                        runner.os,
+                        "close",
+                        side_effect=fail_close_after_success,
+                    ),
+                ):
+                    with self.assertRaisesRegex(
+                        expected_error,
+                        "primary STARTED transition status",
+                    ):
+                        runner._publish_run_artifact(
+                            preflight,
+                            authorization,
+                            reviewed_authorization_revision=(_AUTHORIZATION_REVISION),
+                            repository_root=root,
+                        )
+                self.assertGreaterEqual(staging_fd, 0)
+                self.assertGreaterEqual(attempt_fd, 0)
+                self.assertIn(staging_fd, failed_closes)
+                self.assertIn(attempt_fd, failed_closes)
 
     def test_attempt_rename_then_raise_continues_terminal_lifecycle(self) -> None:
         for error_type in (OSError, FileExistsError):
@@ -2001,6 +2867,60 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             )
             self.assertFalse(output.exists())
 
+    def test_foreign_attempt_marker_needs_parent_durability_before_not_run(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            attempt_name = f".artifact.attempt-{authorization['deterministic_digest']}"
+            foreign_attempt = root / attempt_name
+            foreign_attempt.mkdir()
+            (foreign_attempt / "foreign.txt").write_text(
+                "foreign",
+                encoding="utf-8",
+            )
+            root_identity = (root.stat().st_dev, root.stat().st_ino)
+            original_fsync = runner.os.fsync
+
+            def fail_parent_barrier(descriptor: int) -> None:
+                observed = runner.os.fstat(descriptor)
+                if (observed.st_dev, observed.st_ino) == root_identity:
+                    raise OSError("attempt absence barrier unavailable")
+                original_fsync(descriptor)
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner.os,
+                    "fsync",
+                    side_effect=fail_parent_barrier,
+                ),
+                patch.object(
+                    runner,
+                    "_resolve_components",
+                    side_effect=AssertionError("search must not start"),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "absence durability",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+            self.assertEqual(
+                (foreign_attempt / "foreign.txt").read_text(encoding="utf-8"),
+                "foreign",
+            )
+            self.assertFalse(output.exists())
+
     def test_attempt_parent_sync_transient_failure_retries_and_commits(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -2038,6 +2958,67 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             self.assertEqual(manifest["attempt_phase"], "READY_TO_COMMIT")
             self.assertTrue((output / "commit.json").is_file())
             self.assertFalse((root / ".artifact.publish-lock").exists())
+
+    def test_post_barrier_attempt_swap_is_durably_not_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            attempt_name = f".artifact.attempt-{authorization['deterministic_digest']}"
+            attempt = root / attempt_name
+            stolen = root / "stolen-exact-attempt"
+            foreign = root / "foreign-attempt"
+            foreign.mkdir()
+            (foreign / "foreign.txt").write_text("foreign", encoding="utf-8")
+            root_identity = (root.stat().st_dev, root.stat().st_ino)
+            original_fsync = runner.os.fsync
+            swapped = False
+
+            def swap_at_parent_barrier(descriptor: int) -> None:
+                nonlocal swapped
+                observed = runner.os.fstat(descriptor)
+                if (
+                    not swapped
+                    and (observed.st_dev, observed.st_ino) == root_identity
+                    and attempt.is_dir()
+                ):
+                    swapped = True
+                    attempt.rename(stolen)
+                    foreign.rename(attempt)
+                original_fsync(descriptor)
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner.os,
+                    "fsync",
+                    side_effect=swap_at_parent_barrier,
+                ),
+                patch.object(
+                    runner,
+                    "_resolve_components",
+                    side_effect=AssertionError("search must not start"),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticNotRunError,
+                    "durably absent",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+            self.assertTrue(swapped)
+            self.assertEqual(
+                (attempt / "foreign.txt").read_text(encoding="utf-8"),
+                "foreign",
+            )
+            self.assertTrue((stolen / "pre_outcome.json").is_file())
+            self.assertFalse(output.exists())
 
     def test_persistent_attempt_parent_sync_failure_durably_revokes_reservation(
         self,
@@ -2131,8 +3112,14 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             attempt = root / (
                 f".artifact.attempt-{authorization['deterministic_digest']}"
             )
-            self.assertTrue(attempt.is_dir())
-            self.assertEqual(list(attempt.iterdir()), [])
+            self.assertFalse(attempt.exists())
+            revoked_attempts = [
+                path
+                for path in root.iterdir()
+                if path.name.startswith(f".{attempt.name}.revoked-")
+            ]
+            self.assertEqual(len(revoked_attempts), 1)
+            self.assertTrue((revoked_attempts[0] / "pre_outcome.json").is_file())
             self.assertFalse((root / ".artifact.publish-lock").exists())
 
     def test_attempt_reservation_rollback_observation_failure_is_ambiguous(
@@ -2312,6 +3299,77 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         preflight,
                         authorization,
                         reviewed_authorization_revision=(_AUTHORIZATION_REVISION),
+                        repository_root=root,
+                    )
+
+    def test_lock_cleanup_restores_a_foreign_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            lock = root / ".artifact.publish-lock"
+            stolen_lock = root / "stolen-lock"
+            foreign_lock = root / "foreign-lock"
+            foreign_lock.mkdir()
+            (foreign_lock / "foreign.txt").write_text("foreign", encoding="utf-8")
+
+            def substitute_lock(*args: object, **kwargs: object):
+                lock.rename(stolen_lock)
+                foreign_lock.rename(lock)
+                return (
+                    {"artifact_id": "artifact", "status": "fixture"},
+                    {"deterministic_digest": "0" * 64},
+                )
+
+            with patch.object(
+                runner,
+                "_publish_run_artifact_locked",
+                side_effect=substitute_lock,
+            ):
+                observed = runner._publish_run_artifact(
+                    preflight,
+                    authorization,
+                    reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                    repository_root=root,
+                )
+            self.assertEqual(observed["status"], "fixture")
+            self.assertEqual(
+                (lock / "foreign.txt").read_text(encoding="utf-8"),
+                "foreign",
+            )
+            self.assertTrue(stolen_lock.is_dir())
+
+    def test_lock_cleanup_failure_does_not_mask_primary_ambiguity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            with (
+                patch.object(
+                    runner,
+                    "_publish_run_artifact_locked",
+                    side_effect=(
+                        runner.DiagnosticPublicationStateAmbiguousError(
+                            "primary publication ambiguity"
+                        )
+                    ),
+                ),
+                patch.object(
+                    runner,
+                    "_quarantine_exact_directory_at",
+                    side_effect=OSError("secondary lock cleanup failure"),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "primary publication ambiguity",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
                         repository_root=root,
                     )
 

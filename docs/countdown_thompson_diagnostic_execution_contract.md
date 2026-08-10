@@ -153,10 +153,14 @@ retry.
 
 An attempt reservation is durable only after its parent directory is synced.
 If that barrier persistently fails, `NOT_RUN` is permitted only after the exact
-pre-outcome receipt and reservation directory are removed, both child and
-parent directory barriers complete, and absence is re-observed. An I/O error
-that prevents either durability or rollback from being proven is
-`PUBLICATION_STATE_AMBIGUOUS`, never inferred absence.
+reservation is atomically moved out of its public name into a retained,
+inode-and-byte-verified tombstone, the parent directory barrier completes, and
+the public name is re-observed as non-authoritative. `STARTED`, `NOT_RUN`, and
+`INVALID` receipts likewise require their containing-directory barrier and an
+exact re-observation. An I/O error that prevents either durability or rollback
+from being proven is `PUBLICATION_STATE_AMBIGUOUS`, never inferred absence.
+Retained tombstones are non-authoritative incident evidence; preserve them and
+never treat them as a completed artifact.
 
 A valid completed artifact is one directory containing exactly:
 
@@ -198,7 +202,11 @@ failure with durably proven absence reports canonical `INVALID` and emits no
 diagnostic result. If summary durability and exact rollback both cannot be
 proven, it reports `PUBLICATION_STATE_AMBIGUOUS`; any file at the requested
 destination remains unauthoritative and must not be used as diagnostic
-evidence.
+evidence. Summary publication follows the same rule: an exact summary is
+accepted only after inode, canonical bytes, stable non-symlink ancestry, and
+the parent barrier all close. Rollback atomically moves an exact summary into a
+retained quarantine; a moved exact summary that cannot be revoked is ambiguous,
+not `INVALID`.
 
 The summary decision is exactly one of:
 

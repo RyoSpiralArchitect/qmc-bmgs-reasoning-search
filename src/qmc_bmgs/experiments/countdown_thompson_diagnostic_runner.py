@@ -145,6 +145,21 @@ class DiagnosticPublicationStateAmbiguousError(DiagnosticRunnerError):
     """Publication durability and exact rollback could not be established."""
 
 
+class _ExactPublicationRevokedError(DiagnosticRunnerError):
+    """An exact staged publication was durably shown absent after failure."""
+
+
+def _close_descriptor_best_effort(descriptor: int) -> None:
+    """Close one descriptor without replacing an already-decided outcome."""
+
+    if descriptor < 0:
+        return
+    try:
+        os.close(descriptor)
+    except BaseException:
+        pass
+
+
 def _sha256_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
@@ -206,7 +221,7 @@ def _strict_canonical_object(path: Path) -> tuple[dict[str, Any], bytes]:
             with os.fdopen(descriptor, "rb", closefd=False) as handle:
                 raw = handle.read()
         finally:
-            os.close(descriptor)
+            _close_descriptor_best_effort(descriptor)
     try:
         parsed = strict_json_loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, TraceValidationError) as error:
@@ -236,7 +251,7 @@ def _read_regular_file_nofollow(path: Path, label: str) -> bytes:
         with os.fdopen(descriptor, "rb", closefd=False) as handle:
             return handle.read()
     finally:
-        os.close(descriptor)
+        _close_descriptor_best_effort(descriptor)
 
 
 def _open_stable_directory(path: Path, label: str) -> tuple[int, os.stat_result]:
@@ -258,7 +273,7 @@ def _open_stable_directory(path: Path, label: str) -> tuple[int, os.stat_result]
     except OSError as error:
         raise DiagnosticRunnerError(f"{label} must be a stable directory") from error
     if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
-        os.close(descriptor)
+        _close_descriptor_best_effort(descriptor)
         raise DiagnosticRunnerError(f"{label} changed while it was opened")
     return descriptor, opened
 
@@ -356,17 +371,232 @@ def _rename_noreplace_at(
     raise OSError(error_number, os.strerror(error_number), destination_name)
 
 
+def _exact_regular_file_identity_at(
+    directory_fd: int,
+    filename: str,
+    expected: bytes,
+    *,
+    expected_identity: tuple[int, int] | None = None,
+    label: str,
+) -> tuple[int, int] | None:
+    """Return the pinned identity of one exact file, absent/different, or raise."""
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(filename, flags, dir_fd=directory_fd)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"{label} observation failed: {filename}"
+        ) from error
+    try:
+        observed = os.fstat(descriptor)
+        identity = (observed.st_dev, observed.st_ino)
+        if not stat.S_ISREG(observed.st_mode) or (
+            expected_identity is not None and identity != expected_identity
+        ):
+            return None
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            if handle.read() != expected:
+                return None
+        return identity
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"{label} observation failed: {filename}"
+        ) from error
+    finally:
+        _close_descriptor_best_effort(descriptor)
+
+
+def _durably_prove_file_not_exact_at(
+    directory_fd: int,
+    filename: str,
+    expected: bytes,
+    *,
+    expected_identity: tuple[int, int] | None = None,
+    label: str,
+) -> bool:
+    """Barrier the namespace and confirm an exact authority file is not named."""
+
+    try:
+        os.fsync(directory_fd)
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"{label} absence durability failed: {filename}"
+        ) from error
+    return (
+        _exact_regular_file_identity_at(
+            directory_fd,
+            filename,
+            expected,
+            expected_identity=expected_identity,
+            label=label,
+        )
+        is None
+    )
+
+
+def _restore_quarantined_entry_at(
+    directory_fd: int,
+    tombstone_name: str,
+    filename: str,
+    *,
+    captured_identity: tuple[int, int],
+) -> bool:
+    """Restore one raced foreign entry without ever deleting it."""
+
+    try:
+        _rename_noreplace_at(
+            directory_fd,
+            tombstone_name,
+            directory_fd,
+            filename,
+        )
+    except BaseException:
+        pass
+    try:
+        restored = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+        os.stat(tombstone_name, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        try:
+            restored = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+        except OSError:
+            return False
+        if (restored.st_dev, restored.st_ino) != captured_identity:
+            return False
+        try:
+            os.fsync(directory_fd)
+        except OSError:
+            return False
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def _quarantine_exact_file_at(
+    directory_fd: int,
+    filename: str,
+    expected: bytes,
+    *,
+    expected_identity: tuple[int, int] | None,
+    label: str,
+) -> str | None:
+    """Revoke an exact file by atomically renaming it to a retained tombstone."""
+
+    tombstone_name = ""
+    rename_error: BaseException | None = None
+    for _attempt in range(128):
+        candidate = f".{filename}.revoked-{secrets.token_hex(16)}"
+        try:
+            _rename_noreplace_at(
+                directory_fd,
+                filename,
+                directory_fd,
+                candidate,
+            )
+        except FileExistsError:
+            continue
+        except BaseException as error:
+            tombstone_name = candidate
+            rename_error = error
+            break
+        tombstone_name = candidate
+        break
+    if not tombstone_name:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"could not allocate {label} tombstone"
+        )
+
+    captured = _exact_regular_file_identity_at(
+        directory_fd,
+        tombstone_name,
+        expected,
+        expected_identity=expected_identity,
+        label=f"quarantined {label}",
+    )
+    if captured is None:
+        try:
+            foreign = os.stat(
+                tombstone_name,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            foreign = None
+        except OSError as error:
+            raise DiagnosticPublicationStateAmbiguousError(
+                f"quarantined {label} observation failed"
+            ) from error
+        if foreign is not None:
+            foreign_identity = (foreign.st_dev, foreign.st_ino)
+            if not _restore_quarantined_entry_at(
+                directory_fd,
+                tombstone_name,
+                filename,
+                captured_identity=foreign_identity,
+            ):
+                raise DiagnosticPublicationStateAmbiguousError(
+                    f"foreign {label} was quarantined and could not be restored"
+                ) from rename_error
+        if not _durably_prove_file_not_exact_at(
+            directory_fd,
+            filename,
+            expected,
+            expected_identity=expected_identity,
+            label=label,
+        ):
+            raise DiagnosticPublicationStateAmbiguousError(
+                f"exact {label} remained after quarantine failure"
+            ) from rename_error
+        return None
+
+    try:
+        os.fsync(directory_fd)
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"{label} tombstone durability failed"
+        ) from error
+    if (
+        _exact_regular_file_identity_at(
+            directory_fd,
+            tombstone_name,
+            expected,
+            expected_identity=expected_identity,
+            label=f"quarantined {label}",
+        )
+        is None
+    ):
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"exact {label} tombstone changed after the durability barrier"
+        )
+    if not _durably_prove_file_not_exact_at(
+        directory_fd,
+        filename,
+        expected,
+        expected_identity=expected_identity,
+        label=label,
+    ):
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"exact {label} remained named after tombstoning"
+        )
+    return tombstone_name
+
+
 def _write_canonical_file_noreplace_at(
     directory_fd: int,
     filename: str,
     payload: Mapping[str, Any],
-) -> None:
-    """Publish one canonical file relative to a pinned directory descriptor."""
+) -> tuple[int, int]:
+    """Publish one canonical file with an exact directory-durability proof."""
 
     if Path(filename).name != filename or not filename:
         raise DiagnosticRunnerError("descriptor-relative filename is invalid")
     temporary_name = ""
     file_descriptor = -1
+    raw = _canonical_bytes(payload)
+    staging_identity: tuple[int, int] | None = None
     try:
         for _attempt in range(128):
             candidate = f".{filename}.tmp-{secrets.token_hex(16)}"
@@ -385,26 +615,93 @@ def _write_canonical_file_noreplace_at(
             raise DiagnosticRunnerError("could not allocate receipt staging file")
         with os.fdopen(file_descriptor, "wb") as handle:
             file_descriptor = -1
-            handle.write(_canonical_bytes(payload))
+            handle.write(raw)
             handle.flush()
             os.fsync(handle.fileno())
-        os.link(
-            temporary_name,
+            staged = os.fstat(handle.fileno())
+        staging_identity = (staged.st_dev, staged.st_ino)
+        publication_error: BaseException | None = None
+        try:
+            _rename_noreplace_at(
+                directory_fd,
+                temporary_name,
+                directory_fd,
+                filename,
+            )
+        except BaseException as error:
+            publication_error = error
+        else:
+            temporary_name = ""
+
+        exact_is_named = _published_file_matches(
+            directory_fd,
             filename,
-            src_dir_fd=directory_fd,
-            dst_dir_fd=directory_fd,
-            follow_symlinks=False,
+            staging_identity,
+            raw,
         )
-        os.unlink(temporary_name, dir_fd=directory_fd)
-        temporary_name = ""
-        os.fsync(directory_fd)
+        if exact_is_named:
+            temporary_name = ""
+            try:
+                os.fsync(directory_fd)
+                if _published_file_matches(
+                    directory_fd,
+                    filename,
+                    staging_identity,
+                    raw,
+                ):
+                    return staging_identity
+            except BaseException as error:
+                publication_error = publication_error or error
+            try:
+                os.fsync(directory_fd)
+                if _published_file_matches(
+                    directory_fd,
+                    filename,
+                    staging_identity,
+                    raw,
+                ):
+                    return staging_identity
+            except BaseException as error:
+                publication_error = publication_error or error
+            _quarantine_exact_file_at(
+                directory_fd,
+                filename,
+                raw,
+                expected_identity=staging_identity,
+                label=filename,
+            )
+            raise _ExactPublicationRevokedError(
+                f"{filename} publication was durably tombstoned"
+            ) from publication_error
+
+        if not _durably_prove_file_not_exact_at(
+            directory_fd,
+            filename,
+            raw,
+            expected_identity=staging_identity,
+            label=filename,
+        ):
+            raise DiagnosticPublicationStateAmbiguousError(
+                f"{filename} publication state changed during absence proof"
+            ) from publication_error
+        raise _ExactPublicationRevokedError(
+            f"{filename} publication did not become durable"
+        ) from publication_error
     finally:
         if file_descriptor >= 0:
-            os.close(file_descriptor)
-        if temporary_name:
+            _close_descriptor_best_effort(file_descriptor)
+        if temporary_name and staging_identity is not None:
             try:
-                os.unlink(temporary_name, dir_fd=directory_fd)
-            except FileNotFoundError:
+                _quarantine_exact_file_at(
+                    directory_fd,
+                    temporary_name,
+                    raw,
+                    expected_identity=staging_identity,
+                    label="receipt staging file",
+                )
+            except BaseException:
+                # Never let best-effort scratch cleanup replace the primary
+                # publication result, and never unlink a raced foreign entry.
                 pass
 
 
@@ -417,7 +714,7 @@ def _read_regular_file_at(directory_fd: int, filename: str) -> bytes:
         with os.fdopen(descriptor, "rb", closefd=False) as handle:
             return handle.read()
     finally:
-        os.close(descriptor)
+        _close_descriptor_best_effort(descriptor)
 
 
 def _published_file_matches(
@@ -455,10 +752,7 @@ def _published_file_matches(
             f"published file observation failed: {filename}"
         ) from error
     finally:
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
+        _close_descriptor_best_effort(descriptor)
 
 
 def _revoke_published_file_at(
@@ -467,41 +761,25 @@ def _revoke_published_file_at(
     staging_identity: tuple[int, int],
     expected: bytes,
 ) -> bool:
-    """Remove one exact published file and durably prove its absence."""
+    """Tombstone one exact published file and durably prove name revocation."""
 
-    if not _published_file_matches(
+    identity = _exact_regular_file_identity_at(
         directory_fd,
         filename,
-        staging_identity,
         expected,
-    ):
+        expected_identity=staging_identity,
+        label="published file",
+    )
+    if identity is None:
         return False
-    try:
-        os.unlink(filename, dir_fd=directory_fd)
-        os.fsync(directory_fd)
-        os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        return True
-    except OSError:
-        return False
-    return False
-
-
-def _unlink_exact_file_at(
-    directory_fd: int,
-    filename: str,
-    expected: bytes,
-) -> bool:
-    try:
-        if _read_regular_file_at(directory_fd, filename) != expected:
-            return False
-        os.unlink(filename, dir_fd=directory_fd)
-        os.fsync(directory_fd)
-        return True
-    except DiagnosticPublicationStateAmbiguousError:
-        raise
-    except (FileNotFoundError, OSError, DiagnosticRunnerError):
-        return False
+    _quarantine_exact_file_at(
+        directory_fd,
+        filename,
+        expected,
+        expected_identity=identity,
+        label="published file",
+    )
+    return True
 
 
 def _published_artifact_matches(
@@ -557,10 +835,7 @@ def _published_artifact_matches(
             f"published artifact observation failed: {output_name}"
         ) from error
     finally:
-        try:
-            os.close(output_fd)
-        except OSError:
-            pass
+        _close_descriptor_best_effort(output_fd)
 
 
 def _retry_committed_artifact_durability(
@@ -603,10 +878,7 @@ def _retry_committed_artifact_durability(
         return False
     finally:
         if output_fd >= 0:
-            try:
-                os.close(output_fd)
-            except OSError:
-                pass
+            _close_descriptor_best_effort(output_fd)
     return _published_artifact_matches(
         parent_fd,
         output_name,
@@ -618,42 +890,111 @@ def _retry_committed_artifact_durability(
     )
 
 
+def _published_exact_artifact_commit_identity(
+    parent_fd: int,
+    output_name: str,
+    staging_identity: tuple[int, int],
+    commit_receipt: Mapping[str, Any],
+) -> tuple[int, int] | None:
+    """Observe exact commit authority independently of full artifact closure."""
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        output_fd = os.open(output_name, flags, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "artifact commit parent observation failed"
+        ) from error
+    try:
+        observed = os.fstat(output_fd)
+        if (observed.st_dev, observed.st_ino) != staging_identity:
+            return None
+        return _exact_regular_file_identity_at(
+            output_fd,
+            "commit.json",
+            _canonical_bytes(commit_receipt),
+            label="artifact commit",
+        )
+    finally:
+        _close_descriptor_best_effort(output_fd)
+
+
+def _pinned_exact_artifact_commit_identity(
+    output_fd: int,
+    staging_identity: tuple[int, int],
+    commit_receipt: Mapping[str, Any],
+) -> tuple[int, int] | None:
+    """Observe exact commit authority through the retained artifact descriptor."""
+
+    try:
+        observed = os.fstat(output_fd)
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "pinned artifact observation failed"
+        ) from error
+    if (observed.st_dev, observed.st_ino) != staging_identity:
+        return None
+    return _exact_regular_file_identity_at(
+        output_fd,
+        "commit.json",
+        _canonical_bytes(commit_receipt),
+        label="pinned artifact commit",
+    )
+
+
+def _revoke_exact_artifact_commit_at(
+    output_fd: int,
+    staging_identity: tuple[int, int],
+    commit_receipt: Mapping[str, Any],
+) -> bool:
+    """Tombstone exact commit authority through a pinned artifact descriptor."""
+
+    commit_identity = _pinned_exact_artifact_commit_identity(
+        output_fd,
+        staging_identity,
+        commit_receipt,
+    )
+    if commit_identity is None:
+        return False
+    _quarantine_exact_file_at(
+        output_fd,
+        "commit.json",
+        _canonical_bytes(commit_receipt),
+        expected_identity=commit_identity,
+        label="artifact commit",
+    )
+    return True
+
+
 def _revoke_exact_artifact_commit(
     parent_fd: int,
     output_name: str,
     staging_identity: tuple[int, int],
     commit_receipt: Mapping[str, Any],
 ) -> bool:
-    """Durably remove commit.json from the exact published artifact inode."""
+    """Durably tombstone commit.json inside the exact artifact inode."""
 
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
         output_fd = os.open(output_name, flags, dir_fd=parent_fd)
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "artifact commit rollback parent observation failed"
+        ) from error
     try:
-        observed = os.fstat(output_fd)
-        if (observed.st_dev, observed.st_ino) != staging_identity:
-            return False
-        if not _unlink_exact_file_at(
+        return _revoke_exact_artifact_commit_at(
             output_fd,
-            "commit.json",
-            _canonical_bytes(commit_receipt),
-        ):
-            return False
-        try:
-            os.stat("commit.json", dir_fd=output_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            return True
-        except OSError:
-            return False
-        return False
+            staging_identity,
+            commit_receipt,
+        )
     finally:
-        try:
-            os.close(output_fd)
-        except OSError:
-            pass
+        _close_descriptor_best_effort(output_fd)
 
 
 def _write_canonical_file_noreplace(
@@ -675,14 +1016,9 @@ def _write_canonical_file_noreplace(
         "authorization parent",
     )
     if destination.name != Path(destination.name).name or not destination.name:
-        try:
-            os.close(parent_fd)
-        except OSError:
-            pass
+        _close_descriptor_best_effort(parent_fd)
         raise DiagnosticRunnerError("authorization filename is invalid")
     raw = _canonical_bytes(payload)
-    temporary_name = ""
-    descriptor = -1
     try:
         _assert_directory_path_identity(
             parent,
@@ -690,28 +1026,6 @@ def _write_canonical_file_noreplace(
             parent_stat,
             "authorization parent",
         )
-        for _attempt in range(128):
-            candidate = f".{destination.name}.tmp-{secrets.token_hex(16)}"
-            try:
-                descriptor = os.open(
-                    candidate,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-                    0o600,
-                    dir_fd=parent_fd,
-                )
-            except FileExistsError:
-                continue
-            temporary_name = candidate
-            break
-        if descriptor < 0:
-            raise DiagnosticRunnerError("could not allocate authorization staging file")
-        with os.fdopen(descriptor, "wb") as handle:
-            descriptor = -1
-            handle.write(raw)
-            handle.flush()
-            os.fsync(handle.fileno())
-            staged = os.fstat(handle.fileno())
-        staging_identity = (staged.st_dev, staged.st_ino)
         _assert_directory_path_identity(
             parent,
             parent_fd,
@@ -719,27 +1033,21 @@ def _write_canonical_file_noreplace(
             "authorization parent",
         )
         try:
-            _rename_noreplace_at(
-                parent_fd,
-                temporary_name,
+            staging_identity = _write_canonical_file_noreplace_at(
                 parent_fd,
                 destination.name,
+                payload,
             )
-        except BaseException:
-            if not _published_file_matches(
-                parent_fd,
-                destination.name,
-                staging_identity,
-                raw,
-            ):
-                raise
+        except _ExactPublicationRevokedError as error:
+            raise DiagnosticNotRunError(
+                "authorization candidate publication was durably revoked"
+            ) from error
+        except DiagnosticPublicationStateAmbiguousError as error:
+            raise DiagnosticPublicationStateAmbiguousError(
+                "authorization candidate durability and exact rollback are "
+                "both unproven"
+            ) from error
         try:
-            os.unlink(temporary_name, dir_fd=parent_fd)
-        except FileNotFoundError:
-            pass
-        temporary_name = ""
-        try:
-            os.fsync(parent_fd)
             _assert_directory_path_identity(
                 parent,
                 parent_fd,
@@ -747,31 +1055,6 @@ def _write_canonical_file_noreplace(
                 "authorization parent",
             )
         except BaseException as publication_error:
-            exact_candidate = _published_file_matches(
-                parent_fd,
-                destination.name,
-                staging_identity,
-                raw,
-            )
-            if not exact_candidate:
-                raise
-            try:
-                os.fsync(parent_fd)
-                _assert_directory_path_identity(
-                    parent,
-                    parent_fd,
-                    parent_stat,
-                    "authorization parent",
-                )
-                if _published_file_matches(
-                    parent_fd,
-                    destination.name,
-                    staging_identity,
-                    raw,
-                ):
-                    return
-            except BaseException:
-                pass
             if _revoke_published_file_at(
                 parent_fd,
                 destination.name,
@@ -780,7 +1063,7 @@ def _write_canonical_file_noreplace(
             ):
                 raise DiagnosticNotRunError(
                     "authorization candidate publication was durably revoked "
-                    "after a durability failure"
+                    "after parent identity drift"
                 ) from publication_error
             raise DiagnosticPublicationStateAmbiguousError(
                 "authorization candidate durability and exact rollback are "
@@ -792,22 +1075,36 @@ def _write_canonical_file_noreplace(
             staging_identity,
             raw,
         ):
-            raise DiagnosticRunnerError(
-                "published authorization identity or bytes drifted"
+            if not _durably_prove_file_not_exact_at(
+                parent_fd,
+                destination.name,
+                raw,
+                expected_identity=staging_identity,
+                label="authorization candidate",
+            ):
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "authorization candidate reappeared during final proof"
+                )
+            try:
+                _assert_directory_path_identity(
+                    parent,
+                    parent_fd,
+                    parent_stat,
+                    "authorization parent",
+                )
+            except BaseException as error:
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "authorization candidate final absence was proved only in "
+                    "a displaced parent"
+                ) from error
+            raise DiagnosticNotRunError(
+                "authorization candidate was durably absent or different at "
+                "final publication proof"
             )
     finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        if temporary_name:
-            try:
-                os.unlink(temporary_name, dir_fd=parent_fd)
-            except FileNotFoundError:
-                pass
-        try:
-            os.close(parent_fd)
-        except OSError:
-            # Closing a pinned descriptor cannot revoke an exact candidate.
-            pass
+        # Closing a pinned descriptor cannot revoke an exact candidate or
+        # supersede the already selected typed publication outcome.
+        _close_descriptor_best_effort(parent_fd)
 
 
 def _git(repository_root: Path, *arguments: str) -> str:
@@ -1858,7 +2155,11 @@ def _published_attempt_entry_is_pinned(
     """Prove the destination entry is the renamed private directory inode."""
 
     try:
-        os.stat(temporary_name, dir_fd=parent_fd, follow_symlinks=False)
+        source = os.stat(
+            temporary_name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
     except FileNotFoundError:
         pass
     except OSError as error:
@@ -1866,7 +2167,8 @@ def _published_attempt_entry_is_pinned(
             "attempt reservation source observation failed"
         ) from error
     else:
-        return False
+        if (source.st_dev, source.st_ino) == pinned_identity:
+            return False
     try:
         destination = os.stat(
             attempt_name,
@@ -1933,6 +2235,130 @@ def _published_attempt_reservation_matches(
         ) from error
 
 
+def _directory_entry_identity_at(
+    parent_fd: int,
+    name: str,
+    *,
+    label: str,
+) -> tuple[int, int] | None:
+    try:
+        observed = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"{label} observation failed"
+        ) from error
+    if not stat.S_ISDIR(observed.st_mode):
+        return None
+    return observed.st_dev, observed.st_ino
+
+
+def _quarantine_exact_directory_at(
+    parent_fd: int,
+    public_name: str,
+    pinned_fd: int,
+    pinned_identity: tuple[int, int],
+    *,
+    label: str,
+) -> str | None:
+    """Revoke a directory name by retaining the exact inode as a tombstone."""
+
+    tombstone_name = ""
+    rename_error: BaseException | None = None
+    for _attempt in range(128):
+        candidate = f".{public_name}.revoked-{secrets.token_hex(16)}"
+        try:
+            _rename_noreplace_at(
+                parent_fd,
+                public_name,
+                parent_fd,
+                candidate,
+            )
+        except FileExistsError:
+            continue
+        except BaseException as error:
+            tombstone_name = candidate
+            rename_error = error
+            break
+        tombstone_name = candidate
+        break
+    if not tombstone_name:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"could not allocate {label} tombstone"
+        )
+
+    tombstone_identity = _directory_entry_identity_at(
+        parent_fd,
+        tombstone_name,
+        label=f"quarantined {label}",
+    )
+    try:
+        pinned = os.fstat(pinned_fd)
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"pinned {label} observation failed"
+        ) from error
+    pinned_now = (pinned.st_dev, pinned.st_ino)
+    if tombstone_identity != pinned_identity or pinned_now != pinned_identity:
+        if tombstone_identity is not None:
+            if not _restore_quarantined_entry_at(
+                parent_fd,
+                tombstone_name,
+                public_name,
+                captured_identity=tombstone_identity,
+            ):
+                raise DiagnosticPublicationStateAmbiguousError(
+                    f"foreign {label} was quarantined and could not be restored"
+                ) from rename_error
+        try:
+            os.fsync(parent_fd)
+        except OSError as error:
+            raise DiagnosticPublicationStateAmbiguousError(
+                f"{label} absence durability failed"
+            ) from error
+        public_identity = _directory_entry_identity_at(
+            parent_fd,
+            public_name,
+            label=label,
+        )
+        if public_identity == pinned_identity:
+            raise DiagnosticPublicationStateAmbiguousError(
+                f"exact {label} remained after quarantine failure"
+            ) from rename_error
+        return None
+
+    try:
+        os.fsync(parent_fd)
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"{label} tombstone durability failed"
+        ) from error
+    if (
+        _directory_entry_identity_at(
+            parent_fd,
+            tombstone_name,
+            label=f"quarantined {label}",
+        )
+        != pinned_identity
+    ):
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"exact {label} tombstone changed after the durability barrier"
+        )
+    if (
+        _directory_entry_identity_at(
+            parent_fd,
+            public_name,
+            label=label,
+        )
+        == pinned_identity
+    ):
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"exact {label} remained named after tombstoning"
+        )
+    return tombstone_name
+
+
 def _revoke_exact_attempt_reservation(
     parent_fd: int,
     attempt_name: str,
@@ -1941,7 +2367,7 @@ def _revoke_exact_attempt_reservation(
     pinned_identity: tuple[int, int],
     pre_outcome_receipt: Mapping[str, Any],
 ) -> bool:
-    """Durably remove one exact pre-outcome reservation and prove absence."""
+    """Durably tombstone one exact pre-outcome reservation."""
 
     if not _published_attempt_reservation_matches(
         parent_fd,
@@ -1953,44 +2379,80 @@ def _revoke_exact_attempt_reservation(
     ):
         return False
     try:
+        tombstone_name = _quarantine_exact_directory_at(
+            parent_fd,
+            attempt_name,
+            pinned_fd,
+            pinned_identity,
+            label="attempt reservation",
+        )
+        if tombstone_name is None:
+            return False
+        if set(os.listdir(pinned_fd)) != {"pre_outcome.json"}:
+            return False
         if _read_regular_file_at(
             pinned_fd,
             "pre_outcome.json",
         ) != _canonical_bytes(pre_outcome_receipt):
             return False
-        os.unlink("pre_outcome.json", dir_fd=pinned_fd)
-        os.fsync(pinned_fd)
-        if os.listdir(pinned_fd):
-            return False
-        if not _published_attempt_entry_is_pinned(
-            parent_fd,
-            attempt_name,
-            temporary_name,
-            pinned_fd,
-            pinned_identity,
+        if (
+            _directory_entry_identity_at(
+                parent_fd,
+                tombstone_name,
+                label="quarantined attempt reservation",
+            )
+            != pinned_identity
         ):
             return False
-        os.rmdir(attempt_name, dir_fd=parent_fd)
-        os.fsync(parent_fd)
-        for name in (attempt_name, temporary_name):
-            try:
-                os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                continue
-            except OSError as error:
-                raise DiagnosticPublicationStateAmbiguousError(
-                    "attempt reservation rollback observation failed"
-                ) from error
-            return False
         return True
-    except DiagnosticPublicationStateAmbiguousError:
-        raise
+    except DiagnosticPublicationStateAmbiguousError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "attempt reservation exact rollback failed"
+        ) from error
     except (FileNotFoundError, DiagnosticRunnerError):
         return False
     except OSError as error:
         raise DiagnosticPublicationStateAmbiguousError(
             "attempt reservation exact rollback failed"
         ) from error
+
+
+def _durably_prove_attempt_not_published(
+    parent_fd: int,
+    attempt_name: str,
+    temporary_name: str,
+    pinned_fd: int,
+    pinned_identity: tuple[int, int],
+    pre_outcome_receipt: Mapping[str, Any],
+) -> bool:
+    """Barrier the parent and prove the pinned reservation is not authoritative."""
+
+    try:
+        os.fsync(parent_fd)
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "attempt reservation absence durability failed"
+        ) from error
+    if _published_attempt_reservation_matches(
+        parent_fd,
+        attempt_name,
+        temporary_name,
+        pinned_fd,
+        pinned_identity,
+        pre_outcome_receipt,
+    ):
+        return False
+    if _published_attempt_entry_is_pinned(
+        parent_fd,
+        attempt_name,
+        temporary_name,
+        pinned_fd,
+        pinned_identity,
+    ):
+        raise DiagnosticPublicationStateAmbiguousError(
+            "attempt reservation is pinned but its exact content is unproven"
+        )
+    return True
 
 
 def _cleanup_private_attempt_scratch(
@@ -2000,7 +2462,7 @@ def _cleanup_private_attempt_scratch(
     pinned_identity: tuple[int, int],
     pre_outcome_receipt: Mapping[str, Any],
 ) -> None:
-    """Best-effort cleanup only when the source entry is still our exact inode."""
+    """Best-effort tombstoning bound to the exact private scratch inode."""
 
     try:
         observed = os.stat(
@@ -2015,29 +2477,20 @@ def _cleanup_private_attempt_scratch(
             or (pinned.st_dev, pinned.st_ino) != pinned_identity
         ):
             return
-        names = set(os.listdir(temporary_fd))
-        if names == {"pre_outcome.json"}:
-            if not _unlink_exact_file_at(
-                temporary_fd,
-                "pre_outcome.json",
-                _canonical_bytes(pre_outcome_receipt),
-            ):
-                return
-        elif names:
+        if set(os.listdir(temporary_fd)) != {"pre_outcome.json"}:
             return
-        observed = os.stat(
+        if _read_regular_file_at(
+            temporary_fd,
+            "pre_outcome.json",
+        ) != _canonical_bytes(pre_outcome_receipt):
+            return
+        _quarantine_exact_directory_at(
+            parent_fd,
             temporary_name,
-            dir_fd=parent_fd,
-            follow_symlinks=False,
+            temporary_fd,
+            pinned_identity,
+            label="attempt scratch",
         )
-        pinned = os.fstat(temporary_fd)
-        if (observed.st_dev, observed.st_ino) != pinned_identity or (
-            pinned.st_dev,
-            pinned.st_ino,
-        ) != pinned_identity:
-            return
-        os.rmdir(temporary_name, dir_fd=parent_fd)
-        os.fsync(parent_fd)
     except (FileNotFoundError, OSError, DiagnosticRunnerError):
         # An unproven path is never removed.  A leftover private scratch is
         # preferable to touching a raced or foreign directory entry.
@@ -2045,7 +2498,7 @@ def _cleanup_private_attempt_scratch(
 
 
 def _transition_attempt_to_started(attempt: _Attempt) -> dict[str, Any]:
-    """Publish STARTED and classify an ambiguous publication by exact bytes."""
+    """Publish STARTED only with exact bytes and directory durability."""
 
     expected = _attempt_receipt(
         attempt,
@@ -2060,7 +2513,52 @@ def _transition_attempt_to_started(attempt: _Attempt) -> dict[str, Any]:
             status="PENDING",
         )
     except BaseException as error:
-        if _attempt_receipt_matches(attempt, "started.json", expected):
+        try:
+            os.fsync(attempt.directory_fd)
+        except BaseException:
+            try:
+                expected_bytes = _canonical_bytes(expected)
+                identity = _exact_regular_file_identity_at(
+                    attempt.directory_fd,
+                    "started.json",
+                    expected_bytes,
+                    label="STARTED receipt",
+                )
+                if identity is not None:
+                    _quarantine_exact_file_at(
+                        attempt.directory_fd,
+                        "started.json",
+                        expected_bytes,
+                        expected_identity=identity,
+                        label="STARTED receipt",
+                    )
+                elif not _durably_prove_file_not_exact_at(
+                    attempt.directory_fd,
+                    "started.json",
+                    expected_bytes,
+                    label="STARTED receipt",
+                ):
+                    raise DiagnosticPublicationStateAmbiguousError(
+                        "STARTED receipt appeared during rollback proof"
+                    )
+                started_is_durable = False
+            except BaseException as rollback_error:
+                if isinstance(
+                    rollback_error,
+                    DiagnosticPublicationStateAmbiguousError,
+                ):
+                    raise
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "STARTED receipt durability and exact rollback are unproven"
+                ) from rollback_error
+        else:
+            started_is_durable = _attempt_receipt_matches(
+                attempt,
+                "started.json",
+                expected,
+            )
+
+        if started_is_durable:
             try:
                 _write_attempt_receipt(
                     attempt,
@@ -2069,8 +2567,10 @@ def _transition_attempt_to_started(attempt: _Attempt) -> dict[str, Any]:
                     status="INVALID",
                     reason=str(error),
                 )
-            except BaseException:
-                pass
+            except BaseException as terminal_error:
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "INVALID receipt durability is unproven after STARTED"
+                ) from terminal_error
             raise DiagnosticInvalidRunError(str(error)) from error
         try:
             _write_attempt_receipt(
@@ -2080,8 +2580,10 @@ def _transition_attempt_to_started(attempt: _Attempt) -> dict[str, Any]:
                 status="NOT_RUN",
                 reason=str(error),
             )
-        except BaseException:
-            pass
+        except BaseException as terminal_error:
+            raise DiagnosticPublicationStateAmbiguousError(
+                "NOT_RUN receipt durability is unproven before STARTED"
+            ) from terminal_error
         raise DiagnosticNotRunError(str(error)) from error
     return expected
 
@@ -2190,11 +2692,22 @@ def _reserve_attempt(
                         "published attempt reservation is pinned but its exact "
                         "content cannot be authorized"
                     ) from error
+                if not _durably_prove_attempt_not_published(
+                    parent_fd,
+                    attempt_name,
+                    temporary_name,
+                    temporary_fd,
+                    temporary_identity,
+                    pre_outcome_receipt,
+                ):
+                    raise DiagnosticPublicationStateAmbiguousError(
+                        "attempt reservation appeared during absence proof"
+                    ) from error
                 if isinstance(error, FileExistsError):
                     raise DiagnosticNotRunError(
                         "authorization already has a durable attempt marker"
                     ) from error
-                raise
+                raise DiagnosticNotRunError(str(error)) from error
         if not _published_attempt_reservation_matches(
             parent_fd,
             attempt_name,
@@ -2213,6 +2726,17 @@ def _reserve_attempt(
                 raise DiagnosticPublicationStateAmbiguousError(
                     "published attempt reservation is pinned but its exact "
                     "content cannot be authorized"
+                )
+            if not _durably_prove_attempt_not_published(
+                parent_fd,
+                attempt_name,
+                temporary_name,
+                temporary_fd,
+                temporary_identity,
+                pre_outcome_receipt,
+            ):
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "attempt reservation appeared during absence proof"
                 )
             raise DiagnosticNotRunError(
                 "attempt reservation publication identity or bytes drifted"
@@ -2235,7 +2759,15 @@ def _reserve_attempt(
             except BaseException:
                 retry_proved_exact = False
             if not retry_proved_exact:
-                if _revoke_exact_attempt_reservation(
+                exact_is_still_published = _published_attempt_reservation_matches(
+                    parent_fd,
+                    attempt_name,
+                    temporary_name,
+                    temporary_fd,
+                    temporary_identity,
+                    pre_outcome_receipt,
+                )
+                if exact_is_still_published and _revoke_exact_attempt_reservation(
                     parent_fd,
                     attempt_name,
                     temporary_name,
@@ -2247,10 +2779,56 @@ def _reserve_attempt(
                         "attempt reservation was durably revoked after a "
                         "parent-directory sync failure"
                     ) from error
+                if not exact_is_still_published and (
+                    _durably_prove_attempt_not_published(
+                        parent_fd,
+                        attempt_name,
+                        temporary_name,
+                        temporary_fd,
+                        temporary_identity,
+                        pre_outcome_receipt,
+                    )
+                ):
+                    raise DiagnosticNotRunError(
+                        "attempt reservation was durably absent after a "
+                        "parent-directory sync failure"
+                    ) from error
                 raise DiagnosticPublicationStateAmbiguousError(
                     "attempt reservation durability and exact rollback are both "
                     "unproven"
                 ) from error
+        if not _published_attempt_reservation_matches(
+            parent_fd,
+            attempt_name,
+            temporary_name,
+            temporary_fd,
+            temporary_identity,
+            pre_outcome_receipt,
+        ):
+            if _published_attempt_entry_is_pinned(
+                parent_fd,
+                attempt_name,
+                temporary_name,
+                temporary_fd,
+                temporary_identity,
+            ):
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "attempt reservation changed after its durability barrier"
+                )
+            if _durably_prove_attempt_not_published(
+                parent_fd,
+                attempt_name,
+                temporary_name,
+                temporary_fd,
+                temporary_identity,
+                pre_outcome_receipt,
+            ):
+                raise DiagnosticNotRunError(
+                    "attempt reservation was durably absent after publication"
+                )
+            raise DiagnosticPublicationStateAmbiguousError(
+                "attempt reservation appeared during post-barrier proof"
+            )
         completed = True
     finally:
         if not completed:
@@ -2261,10 +2839,7 @@ def _reserve_attempt(
                 temporary_identity,
                 pre_outcome_receipt,
             )
-            try:
-                os.close(temporary_fd)
-            except OSError:
-                pass
+            _close_descriptor_best_effort(temporary_fd)
     return _Attempt(
         directory=attempt_directory,
         directory_fd=temporary_fd,
@@ -2288,6 +2863,8 @@ def _publish_run_artifact(
     parent = output.parent
     parent_fd = -1
     lock_created = False
+    lock_fd = -1
+    lock_identity: tuple[int, int] | None = None
     lock_name = f".{output.name}.publish-lock"
     try:
         parent.mkdir(parents=True, exist_ok=True)
@@ -2302,6 +2879,11 @@ def _publish_run_artifact(
                 f"run artifact publication is locked: {parent / lock_name}"
             ) from error
         lock_created = True
+        lock_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        lock_flags |= getattr(os, "O_NOFOLLOW", 0)
+        lock_fd = os.open(lock_name, lock_flags, dir_fd=parent_fd)
+        lock_stat = os.fstat(lock_fd)
+        lock_identity = (lock_stat.st_dev, lock_stat.st_ino)
         _assert_directory_path_identity(
             parent,
             parent_fd,
@@ -2334,19 +2916,27 @@ def _publish_run_artifact(
     except BaseException as error:
         raise DiagnosticNotRunError(str(error)) from error
     finally:
-        if lock_created and parent_fd >= 0:
+        if (
+            lock_created
+            and parent_fd >= 0
+            and lock_fd >= 0
+            and lock_identity is not None
+        ):
             try:
-                os.rmdir(lock_name, dir_fd=parent_fd)
-            except OSError:
+                _quarantine_exact_directory_at(
+                    parent_fd,
+                    lock_name,
+                    lock_fd,
+                    lock_identity,
+                    label="publication lock",
+                )
+            except BaseException:
                 # The durable attempt directory, not this transient mutex, is
                 # the execution authority.  Never rewrite outcome state because
-                # lock cleanup failed after an otherwise final transition.
+                # lock retirement failed after an otherwise final transition.
                 pass
-        if parent_fd >= 0:
-            try:
-                os.close(parent_fd)
-            except OSError:
-                pass
+        _close_descriptor_best_effort(lock_fd)
+        _close_descriptor_best_effort(parent_fd)
 
 
 def _publish_run_artifact_locked(
@@ -2381,6 +2971,7 @@ def _publish_run_artifact_locked(
         parent_fd=parent_fd,
     )
     staging_fd = -1
+    output_fd = -1
     try:
         # This is the final PRE_OUTCOME closure.  No sealed task or proposal has
         # been reconstructed yet, and the immutable reservation already makes
@@ -2410,18 +3001,21 @@ def _publish_run_artifact_locked(
                 status="NOT_RUN",
                 reason=str(error),
             )
-        except BaseException:
-            pass
-        if staging_fd >= 0:
-            os.close(staging_fd)
-        os.close(attempt.directory_fd)
+        except BaseException as terminal_error:
+            _close_descriptor_best_effort(staging_fd)
+            _close_descriptor_best_effort(attempt.directory_fd)
+            raise DiagnosticPublicationStateAmbiguousError(
+                "NOT_RUN receipt durability is unproven"
+            ) from terminal_error
+        _close_descriptor_best_effort(staging_fd)
+        _close_descriptor_best_effort(attempt.directory_fd)
         raise DiagnosticNotRunError(str(error)) from error
 
     try:
         started_receipt = _transition_attempt_to_started(attempt)
     except BaseException:
-        os.close(staging_fd)
-        os.close(attempt.directory_fd)
+        _close_descriptor_best_effort(staging_fd)
+        _close_descriptor_best_effort(attempt.directory_fd)
         raise
 
     try:
@@ -2607,15 +3201,17 @@ def _publish_run_artifact_locked(
         output_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         output_flags |= getattr(os, "O_NOFOLLOW", 0)
         output_fd = os.open(output.name, output_flags, dir_fd=parent_fd)
-        try:
-            _write_canonical_file_noreplace_at(
-                output_fd,
-                "commit.json",
-                commit_receipt,
+        opened_output = os.fstat(output_fd)
+        if (opened_output.st_dev, opened_output.st_ino) != staging_identity:
+            raise DiagnosticRunnerError(
+                "published artifact changed before commit publication"
             )
-            os.fsync(output_fd)
-        finally:
-            os.close(output_fd)
+        _write_canonical_file_noreplace_at(
+            output_fd,
+            "commit.json",
+            commit_receipt,
+        )
+        os.fsync(output_fd)
         os.fsync(parent_fd)
         _assert_directory_path_identity(
             output.parent,
@@ -2637,21 +3233,26 @@ def _publish_run_artifact_locked(
             )
         return run_manifest, commit_receipt
     except BaseException as error:
-        exact_commit_is_visible = (
-            "run_manifest" in locals()
-            and "staging_identity" in locals()
-            and "commit_receipt" in locals()
-            and _published_artifact_matches(
-                parent_fd,
-                output.name,
-                staging_identity,
-                run_manifest,
-                records_byte_count=records_byte_count,
-                records_sha256=records_hasher.hexdigest(),
-                commit_receipt=commit_receipt,
-            )
-        )
-        if exact_commit_is_visible:
+        pinned_commit_identity = None
+        public_commit_identity = None
+        if "staging_identity" in locals() and "commit_receipt" in locals():
+            if output_fd >= 0:
+                pinned_commit_identity = _pinned_exact_artifact_commit_identity(
+                    output_fd,
+                    staging_identity,
+                    commit_receipt,
+                )
+            try:
+                public_commit_identity = _published_exact_artifact_commit_identity(
+                    parent_fd,
+                    output.name,
+                    staging_identity,
+                    commit_receipt,
+                )
+            except DiagnosticPublicationStateAmbiguousError:
+                if pinned_commit_identity is None:
+                    raise
+        if pinned_commit_identity is not None or public_commit_identity is not None:
             if _retry_committed_artifact_durability(
                 parent=output.parent,
                 parent_fd=parent_fd,
@@ -2664,12 +3265,25 @@ def _publish_run_artifact_locked(
                 commit_receipt=commit_receipt,
             ):
                 return run_manifest, commit_receipt
-            if not _revoke_exact_artifact_commit(
-                parent_fd,
-                output.name,
-                staging_identity,
-                commit_receipt,
-            ):
+            try:
+                if pinned_commit_identity is not None:
+                    commit_was_revoked = _revoke_exact_artifact_commit_at(
+                        output_fd,
+                        staging_identity,
+                        commit_receipt,
+                    )
+                else:
+                    commit_was_revoked = _revoke_exact_artifact_commit(
+                        parent_fd,
+                        output.name,
+                        staging_identity,
+                        commit_receipt,
+                    )
+            except DiagnosticPublicationStateAmbiguousError as rollback_error:
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "artifact commit durability and exact rollback are both unproven"
+                ) from rollback_error
+            if not commit_was_revoked:
                 raise DiagnosticPublicationStateAmbiguousError(
                     "artifact commit durability and exact rollback are both unproven"
                 ) from error
@@ -2681,19 +3295,15 @@ def _publish_run_artifact_locked(
                 status="INVALID",
                 reason=str(error),
             )
-        except BaseException:
-            pass
+        except BaseException as terminal_error:
+            raise DiagnosticPublicationStateAmbiguousError(
+                "INVALID receipt durability is unproven"
+            ) from terminal_error
         raise DiagnosticInvalidRunError(str(error)) from error
     finally:
-        if staging_fd >= 0:
-            try:
-                os.close(staging_fd)
-            except OSError:
-                pass
-        try:
-            os.close(attempt.directory_fd)
-        except OSError:
-            pass
+        _close_descriptor_best_effort(output_fd)
+        _close_descriptor_best_effort(staging_fd)
+        _close_descriptor_best_effort(attempt.directory_fd)
 
 
 def run_countdown_thompson_diagnostic(

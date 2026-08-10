@@ -14,6 +14,8 @@ evaluation authority.
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import hashlib
 import json
 import math
@@ -2504,62 +2506,441 @@ def analyze_countdown_thompson_diagnostic_artifact(
     return _build_summary(validated)
 
 
-def _open_stable_directory(path: Path, label: str) -> tuple[int, os.stat_result]:
+def _open_stable_directory_with_ancestry(
+    path: Path,
+    label: str,
+) -> tuple[int, os.stat_result, frozenset[tuple[int, int]]]:
+    """Open every absolute path component with O_NOFOLLOW from the root fd."""
+
+    if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
+        raise DiagnosticAnalysisError(
+            f"{label} requires POSIX descriptor-bound path traversal"
+        )
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
+    directory_fd = -1
     try:
-        before = os.stat(path, follow_symlinks=False)
-        if not stat.S_ISDIR(before.st_mode):
-            raise DiagnosticAnalysisError(f"{label} must be a regular directory")
-        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        directory_fd = os.open(path, flags)
+        directory_fd = os.open(absolute.anchor, flags)
         opened = os.fstat(directory_fd)
+        if not stat.S_ISDIR(opened.st_mode):
+            raise DiagnosticAnalysisError(f"{label} must be a regular directory")
+        ancestry = {(opened.st_dev, opened.st_ino)}
+        for component in absolute.parts[1:]:
+            next_fd = -1
+            try:
+                next_fd = os.open(component, flags, dir_fd=directory_fd)
+                next_opened = os.fstat(next_fd)
+                if not stat.S_ISDIR(next_opened.st_mode):
+                    raise DiagnosticAnalysisError(
+                        f"{label} must be a regular directory"
+                    )
+            except BaseException:
+                if next_fd >= 0:
+                    try:
+                        os.close(next_fd)
+                    except BaseException:
+                        pass
+                raise
+            try:
+                os.close(directory_fd)
+            except BaseException:
+                pass
+            directory_fd = next_fd
+            opened = next_opened
+            ancestry.add((opened.st_dev, opened.st_ino))
+        return directory_fd, opened, frozenset(ancestry)
+    except DiagnosticAnalysisError:
+        if directory_fd >= 0:
+            try:
+                os.close(directory_fd)
+            except BaseException:
+                pass
+        raise
     except OSError as error:
+        if directory_fd >= 0:
+            try:
+                os.close(directory_fd)
+            except BaseException:
+                pass
         raise DiagnosticAnalysisError(f"{label} must be a stable directory") from error
-    if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
-        os.close(directory_fd)
-        raise DiagnosticAnalysisError(f"{label} changed while it was opened")
+    except BaseException:
+        if directory_fd >= 0:
+            try:
+                os.close(directory_fd)
+            except BaseException:
+                pass
+        raise
+
+
+def _open_stable_directory(path: Path, label: str) -> tuple[int, os.stat_result]:
+    directory_fd, opened, _ancestry = _open_stable_directory_with_ancestry(
+        Path(path).resolve(),
+        label,
+    )
     return directory_fd, opened
 
 
-def _unlink_if_identity(
+@dataclass(frozen=True)
+class _PinnedProtectedRoot:
+    path: Path
+    descriptor: int
+    identity: tuple[int, int]
+
+
+def _open_protected_root_authority(
+    path: Path,
+    label: str,
+) -> tuple[int, os.stat_result]:
+    """Atomically acquire one directory inode from an unresolved absolute path."""
+
+    if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
+        raise DiagnosticAnalysisError(
+            f"{label} requires POSIX descriptor-bound path traversal"
+        )
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
+    descriptor = -1
+    try:
+        descriptor = os.open(absolute, flags)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISDIR(opened.st_mode):
+            raise DiagnosticAnalysisError(f"{label} must be a regular directory")
+        return descriptor, opened
+    except DiagnosticAnalysisError:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except BaseException:
+                pass
+        raise
+    except OSError as error:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except BaseException:
+                pass
+        raise DiagnosticAnalysisError(f"{label} must be a stable directory") from error
+    except BaseException:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except BaseException:
+                pass
+        raise
+
+
+def _pin_protected_roots(
+    protected_roots: Sequence[Path],
+) -> tuple[_PinnedProtectedRoot, ...]:
+    """Acquire protected-root authority before validation or destination lookup."""
+
+    pinned: list[_PinnedProtectedRoot] = []
+    try:
+        for index, raw_root in enumerate(protected_roots):
+            # Do not resolve first: this single open is the authority acquisition.
+            # A separate resolve/open pair would admit an inode swap.  Ancestor
+            # aliases such as macOS /var remain usable; O_NOFOLLOW closes the final
+            # component, and the pinned identity binds the later canonical path.
+            root = Path(os.path.abspath(os.fspath(raw_root)))
+            root_fd = -1
+            try:
+                root_fd, root_stat = _open_protected_root_authority(
+                    root,
+                    f"protected root {index} authority",
+                )
+                root_identity = (root_stat.st_dev, root_stat.st_ino)
+                canonical = root.resolve()
+                canonical_fd = -1
+                try:
+                    canonical_fd, canonical_stat = _open_protected_root_authority(
+                        canonical,
+                        f"protected root {index} authority resolution",
+                    )
+                    if (canonical_stat.st_dev, canonical_stat.st_ino) != root_identity:
+                        raise DiagnosticAnalysisError(
+                            f"protected root {index} changed during authority acquisition"
+                        )
+                finally:
+                    if canonical_fd >= 0:
+                        try:
+                            os.close(canonical_fd)
+                        except BaseException:
+                            pass
+                pinned.append(
+                    _PinnedProtectedRoot(
+                        path=canonical,
+                        descriptor=root_fd,
+                        identity=root_identity,
+                    )
+                )
+                root_fd = -1
+            finally:
+                if root_fd >= 0:
+                    try:
+                        os.close(root_fd)
+                    except BaseException:
+                        pass
+        return tuple(pinned)
+    except BaseException:
+        for protected in pinned:
+            try:
+                os.close(protected.descriptor)
+            except BaseException:
+                pass
+        raise
+
+
+def _close_pinned_protected_roots(
+    protected_roots: Sequence[_PinnedProtectedRoot],
+) -> None:
+    for protected in protected_roots:
+        try:
+            os.close(protected.descriptor)
+        except BaseException:
+            pass
+
+
+def _assert_pinned_protected_roots(
+    protected_roots: Sequence[_PinnedProtectedRoot],
+) -> None:
+    """Prove each protected path still names its pinned authority inode."""
+
+    for index, protected in enumerate(protected_roots):
+        if type(protected) is not _PinnedProtectedRoot:
+            raise DiagnosticAnalysisError(
+                "summary publication requires pinned protected-root authority"
+            )
+        pinned = os.fstat(protected.descriptor)
+        pinned_identity = (pinned.st_dev, pinned.st_ino)
+        if not stat.S_ISDIR(pinned.st_mode) or pinned_identity != protected.identity:
+            raise DiagnosticAnalysisError(
+                f"protected root {index} pinned identity changed"
+            )
+        current_fd = -1
+        try:
+            current_fd, current = _open_protected_root_authority(
+                protected.path,
+                f"protected root {index} after pinning",
+            )
+            if (current.st_dev, current.st_ino) != protected.identity:
+                raise DiagnosticAnalysisError(
+                    f"protected root {index} path identity changed"
+                )
+        finally:
+            if current_fd >= 0:
+                try:
+                    os.close(current_fd)
+                except BaseException:
+                    pass
+
+
+def _directory_ancestry_from_fd(
+    directory_fd: int,
+    label: str,
+) -> frozenset[tuple[int, int]]:
+    """Walk the directory's current real parents through descriptor-relative .. ."""
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
+    current_fd = -1
+    try:
+        current_fd = os.dup(directory_fd)
+        ancestry: set[tuple[int, int]] = set()
+        for _depth in range(4096):
+            current = os.fstat(current_fd)
+            if not stat.S_ISDIR(current.st_mode):
+                raise DiagnosticAnalysisError(f"{label} is not a directory")
+            current_identity = (current.st_dev, current.st_ino)
+            if current_identity in ancestry:
+                raise DiagnosticAnalysisError(f"{label} ancestry contains a cycle")
+            ancestry.add(current_identity)
+            parent_fd = os.open("..", flags, dir_fd=current_fd)
+            try:
+                parent = os.fstat(parent_fd)
+                if not stat.S_ISDIR(parent.st_mode):
+                    raise DiagnosticAnalysisError(f"{label} parent is not a directory")
+                parent_identity = (parent.st_dev, parent.st_ino)
+                if parent_identity == current_identity:
+                    try:
+                        os.close(parent_fd)
+                    except BaseException:
+                        pass
+                    return frozenset(ancestry)
+            except BaseException:
+                try:
+                    os.close(parent_fd)
+                except BaseException:
+                    pass
+                raise
+            try:
+                os.close(current_fd)
+            except BaseException:
+                pass
+            current_fd = parent_fd
+        raise DiagnosticAnalysisError(f"{label} ancestry exceeds the safety bound")
+    except DiagnosticAnalysisError:
+        raise
+    except OSError as error:
+        raise DiagnosticAnalysisError(f"{label} ancestry is unavailable") from error
+    finally:
+        if current_fd >= 0:
+            try:
+                os.close(current_fd)
+            except BaseException:
+                pass
+
+
+def _assert_summary_publication_topology(
+    parent_fd: int,
+    protected_roots: Sequence[_PinnedProtectedRoot],
+    *,
+    publication_may_exist: bool,
+) -> None:
+    """Bind the parent's current real ancestry to still-pinned protected roots."""
+
+    if not protected_roots:
+        return
+    try:
+        protected_identities = {protected.identity for protected in protected_roots}
+        ancestry_before = _directory_ancestry_from_fd(parent_fd, "summary parent")
+        if protected_identities.intersection(ancestry_before):
+            raise DiagnosticAnalysisError(
+                "summary parent real ancestry intersects a protected root"
+            )
+        _assert_pinned_protected_roots(protected_roots)
+        ancestry_after = _directory_ancestry_from_fd(parent_fd, "summary parent")
+        if ancestry_after != ancestry_before:
+            raise DiagnosticAnalysisError(
+                "summary parent real ancestry changed during topology proof"
+            )
+        if protected_identities.intersection(ancestry_after):
+            raise DiagnosticAnalysisError(
+                "summary parent real ancestry intersects a protected root"
+            )
+    except DiagnosticAnalysisPublicationAmbiguousError:
+        raise
+    except BaseException as error:
+        if publication_may_exist:
+            raise DiagnosticAnalysisPublicationAmbiguousError(
+                "summary publication topology is ambiguous; the destination "
+                "must not be used as diagnostic evidence"
+            ) from error
+        if isinstance(error, DiagnosticAnalysisError):
+            raise
+        raise DiagnosticAnalysisError(
+            "summary publication topology could not be proven"
+        ) from error
+
+
+_SUMMARY_ENTRY_ABSENT = "ABSENT"
+_SUMMARY_ENTRY_EXACT = "EXACT"
+_SUMMARY_ENTRY_OTHER = "OTHER"
+
+
+def _summary_entry_state(
     directory_fd: int,
     filename: str,
-    identity: tuple[int, int],
-) -> bool:
+    staged_identity: tuple[int, int],
+    expected_payload: bytes,
+) -> str:
+    """Observe one entry by descriptor, including its exact expected bytes."""
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        observed = os.stat(
-            filename,
-            dir_fd=directory_fd,
-            follow_symlinks=False,
-        )
+        descriptor = os.open(filename, flags, dir_fd=directory_fd)
     except FileNotFoundError:
-        return False
-    if (observed.st_dev, observed.st_ino) != identity:
-        return False
-    os.unlink(filename, dir_fd=directory_fd)
-    return True
+        return _SUMMARY_ENTRY_ABSENT
+    except OSError as error:
+        raise DiagnosticAnalysisPublicationAmbiguousError(
+            f"summary entry could not be observed: {filename}"
+        ) from error
+    try:
+        observed = os.fstat(descriptor)
+        observed_identity = (observed.st_dev, observed.st_ino)
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or observed_identity != staged_identity
+            or observed.st_size != len(expected_payload)
+        ):
+            return _SUMMARY_ENTRY_OTHER
+        observed_payload = _read_fd_bytes(descriptor)
+        after = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(after.st_mode)
+            or (after.st_dev, after.st_ino) != staged_identity
+            or after.st_size != len(expected_payload)
+            or observed_payload != expected_payload
+        ):
+            return _SUMMARY_ENTRY_OTHER
+        return _SUMMARY_ENTRY_EXACT
+    except OSError as error:
+        raise DiagnosticAnalysisPublicationAmbiguousError(
+            f"summary entry could not be read: {filename}"
+        ) from error
+    finally:
+        try:
+            os.close(descriptor)
+        except BaseException:
+            pass
 
 
-def _summary_publication_is_exact(
+def _pinned_summary_inode_state(
+    descriptor: int,
+    staged_identity: tuple[int, int],
+    expected_payload: bytes,
+) -> tuple[str, int]:
+    """Observe whether the staged inode still has an exact named link."""
+
+    try:
+        before = os.fstat(descriptor)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        first = _read_fd_bytes(descriptor)
+        middle = os.fstat(descriptor)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        second = _read_fd_bytes(descriptor)
+        after = os.fstat(descriptor)
+    except BaseException as error:
+        raise DiagnosticAnalysisPublicationAmbiguousError(
+            "pinned summary inode could not be observed"
+        ) from error
+
+    def snapshot(value: os.stat_result) -> tuple[int, int, int, int, int]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or (before.st_dev, before.st_ino) != staged_identity
+        or snapshot(before) != snapshot(middle)
+        or snapshot(middle) != snapshot(after)
+        or first != expected_payload
+        or second != expected_payload
+    ):
+        return _SUMMARY_ENTRY_OTHER, after.st_nlink
+    if after.st_nlink == 0:
+        return _SUMMARY_ENTRY_ABSENT, 0
+    return _SUMMARY_ENTRY_EXACT, after.st_nlink
+
+
+def _summary_publication_state(
     destination: Path,
     parent_fd: int,
     parent_identity: tuple[int, int],
     staged_identity: tuple[int, int],
-) -> bool:
-    try:
-        published = os.stat(
-            destination.name,
-            dir_fd=parent_fd,
-            follow_symlinks=False,
-        )
-    except FileNotFoundError:
-        return False
-    except OSError as error:
-        raise DiagnosticAnalysisPublicationAmbiguousError(
-            "summary destination could not be observed"
-        ) from error
-    if (published.st_dev, published.st_ino) != staged_identity:
-        return False
+    expected_payload: bytes,
+) -> str:
+    """Observe the requested path twice through the pinned and current parent."""
+
+    pinned_state = _summary_entry_state(
+        parent_fd,
+        destination.name,
+        staged_identity,
+        expected_payload,
+    )
     current_parent_fd = -1
     try:
         current_parent_fd, current_parent_stat = _open_stable_directory(
@@ -2570,78 +2951,375 @@ def _summary_publication_is_exact(
             current_parent_stat.st_dev,
             current_parent_stat.st_ino,
         ) != parent_identity:
-            return False
-        current_published = os.stat(
+            return _SUMMARY_ENTRY_OTHER
+        current_state = _summary_entry_state(
+            current_parent_fd,
             destination.name,
-            dir_fd=current_parent_fd,
-            follow_symlinks=False,
+            staged_identity,
+            expected_payload,
         )
-        return (current_published.st_dev, current_published.st_ino) == staged_identity
+        if current_state != pinned_state:
+            return _SUMMARY_ENTRY_OTHER
+        return current_state
+    except DiagnosticAnalysisPublicationAmbiguousError:
+        raise
     except DiagnosticAnalysisError as error:
         if isinstance(error.__cause__, OSError):
             raise DiagnosticAnalysisPublicationAmbiguousError(
                 "summary parent could not be observed"
             ) from error
-        return False
-    except FileNotFoundError:
-        return False
-    except OSError as error:
-        raise DiagnosticAnalysisPublicationAmbiguousError(
-            "summary destination could not be re-observed"
-        ) from error
+        return _SUMMARY_ENTRY_OTHER
     finally:
         if current_parent_fd >= 0:
             try:
                 os.close(current_parent_fd)
-            except OSError:
+            except BaseException:
                 pass
+
+
+def _summary_publication_is_exact(
+    destination: Path,
+    parent_fd: int,
+    parent_identity: tuple[int, int],
+    staged_identity: tuple[int, int],
+    expected_payload: bytes,
+) -> bool:
+    return (
+        _summary_publication_state(
+            destination,
+            parent_fd,
+            parent_identity,
+            staged_identity,
+            expected_payload,
+        )
+        == _SUMMARY_ENTRY_EXACT
+    )
+
+
+def _rename_noreplace_at(
+    directory_fd: int,
+    source_name: str,
+    destination_name: str,
+) -> None:
+    """Atomically rename within one pinned directory without replacement."""
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    source = os.fsencode(source_name)
+    destination = os.fsencode(destination_name)
+    if sys.platform == "darwin":
+        rename = libc.renameatx_np
+        rename.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        rename.restype = ctypes.c_int
+        result = rename(
+            directory_fd,
+            source,
+            directory_fd,
+            destination,
+            0x00000004,
+        )
+    elif sys.platform.startswith("linux"):
+        try:
+            rename = libc.renameat2
+        except AttributeError as error:
+            raise OSError(
+                errno.ENOSYS,
+                "descriptor-bound atomic no-replace rename is unsupported",
+                destination_name,
+            ) from error
+        rename.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        rename.restype = ctypes.c_int
+        result = rename(
+            directory_fd,
+            source,
+            directory_fd,
+            destination,
+            0x00000001,
+        )
+    else:
+        raise OSError(
+            errno.ENOSYS,
+            "descriptor-bound atomic no-replace rename is unsupported",
+            destination_name,
+        )
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise FileExistsError(
+            error_number,
+            "destination exists",
+            destination_name,
+        )
+    raise OSError(error_number, os.strerror(error_number), destination_name)
+
+
+def _durably_revoke_exact_summary(
+    destination: Path,
+    parent_fd: int,
+    parent_identity: tuple[int, int],
+    protected_roots: Sequence[_PinnedProtectedRoot],
+    staged_fd: int,
+    staged_identity: tuple[int, int],
+    expected_payload: bytes,
+) -> bool:
+    """Move an exact summary to a retained quarantine and prove rollback."""
+
+    _assert_summary_publication_topology(
+        parent_fd,
+        protected_roots,
+        publication_may_exist=True,
+    )
+    state = _summary_publication_state(
+        destination,
+        parent_fd,
+        parent_identity,
+        staged_identity,
+        expected_payload,
+    )
+    if state == _SUMMARY_ENTRY_ABSENT:
+        os.fsync(parent_fd)
+        _assert_summary_publication_topology(
+            parent_fd,
+            protected_roots,
+            publication_may_exist=True,
+        )
+        return False
+    if state != _SUMMARY_ENTRY_EXACT:
+        return False
+
+    for _attempt in range(128):
+        quarantine_name = f".{destination.name}.rollback-{secrets.token_hex(16)}"
+        try:
+            _rename_noreplace_at(
+                parent_fd,
+                destination.name,
+                quarantine_name,
+            )
+        except FileExistsError:
+            continue
+        except FileNotFoundError:
+            os.fsync(parent_fd)
+            _assert_summary_publication_topology(
+                parent_fd,
+                protected_roots,
+                publication_may_exist=True,
+            )
+            return False
+        os.fsync(parent_fd)
+        _assert_summary_publication_topology(
+            parent_fd,
+            protected_roots,
+            publication_may_exist=True,
+        )
+        destination_absent = (
+            _summary_publication_state(
+                destination,
+                parent_fd,
+                parent_identity,
+                staged_identity,
+                expected_payload,
+            )
+            == _SUMMARY_ENTRY_ABSENT
+        )
+        quarantine_exact = (
+            _summary_publication_state(
+                destination.with_name(quarantine_name),
+                parent_fd,
+                parent_identity,
+                staged_identity,
+                expected_payload,
+            )
+            == _SUMMARY_ENTRY_EXACT
+        )
+        pinned_state, pinned_link_count = _pinned_summary_inode_state(
+            staged_fd,
+            staged_identity,
+            expected_payload,
+        )
+        _assert_summary_publication_topology(
+            parent_fd,
+            protected_roots,
+            publication_may_exist=True,
+        )
+        return (
+            destination_absent
+            and quarantine_exact
+            and pinned_state == _SUMMARY_ENTRY_EXACT
+            and pinned_link_count == 1
+        )
+    return False
+
+
+def _recover_summary_publication(
+    destination: Path,
+    parent_fd: int,
+    parent_identity: tuple[int, int],
+    protected_roots: Sequence[_PinnedProtectedRoot],
+    staging_name: str,
+    staged_fd: int,
+    staged_identity: tuple[int, int],
+    expected_payload: bytes,
+    publication_observed_exact: bool,
+    parent_barrier_completed: bool,
+    primary_error: BaseException,
+) -> bool:
+    """Return True for a durable exact commit and False for durable rollback."""
+
+    _assert_summary_publication_topology(
+        parent_fd,
+        protected_roots,
+        publication_may_exist=True,
+    )
+    if isinstance(primary_error, DiagnosticAnalysisPublicationAmbiguousError):
+        raise primary_error
+    try:
+        os.fsync(parent_fd)
+        _assert_summary_publication_topology(
+            parent_fd,
+            protected_roots,
+            publication_may_exist=True,
+        )
+        state = _summary_publication_state(
+            destination,
+            parent_fd,
+            parent_identity,
+            staged_identity,
+            expected_payload,
+        )
+    except DiagnosticAnalysisPublicationAmbiguousError:
+        raise
+    except BaseException:
+        state = _SUMMARY_ENTRY_OTHER
+    else:
+        if state == _SUMMARY_ENTRY_EXACT:
+            _assert_summary_publication_topology(
+                parent_fd,
+                protected_roots,
+                publication_may_exist=True,
+            )
+            return True
+        if state == _SUMMARY_ENTRY_ABSENT:
+            staging_state = _summary_entry_state(
+                parent_fd,
+                staging_name,
+                staged_identity,
+                expected_payload,
+            )
+            pinned_state, pinned_link_count = _pinned_summary_inode_state(
+                staged_fd,
+                staged_identity,
+                expected_payload,
+            )
+            if (
+                publication_observed_exact or parent_barrier_completed
+            ) and pinned_link_count > 0:
+                raise DiagnosticAnalysisPublicationAmbiguousError(
+                    "summary publication durability and rollback are ambiguous; "
+                    "the destination must not be used as diagnostic evidence"
+                ) from primary_error
+            if (
+                staging_state == _SUMMARY_ENTRY_EXACT
+                and pinned_state == _SUMMARY_ENTRY_EXACT
+                and pinned_link_count == 1
+            ):
+                return False
+            if (
+                staging_state != _SUMMARY_ENTRY_EXACT
+                and pinned_state != _SUMMARY_ENTRY_EXACT
+            ):
+                return False
+            raise DiagnosticAnalysisPublicationAmbiguousError(
+                "summary publication durability and rollback are ambiguous; "
+                "the destination must not be used as diagnostic evidence"
+            ) from primary_error
+
+    try:
+        if _durably_revoke_exact_summary(
+            destination,
+            parent_fd,
+            parent_identity,
+            protected_roots,
+            staged_fd,
+            staged_identity,
+            expected_payload,
+        ):
+            return False
+    except DiagnosticAnalysisPublicationAmbiguousError:
+        raise
+    except BaseException:
+        raise DiagnosticAnalysisPublicationAmbiguousError(
+            "summary publication durability and rollback are ambiguous; "
+            "the destination must not be used as diagnostic evidence"
+        ) from primary_error
+    raise DiagnosticAnalysisPublicationAmbiguousError(
+        "summary publication durability and rollback are ambiguous; "
+        "the destination must not be used as diagnostic evidence"
+    ) from primary_error
 
 
 def _atomic_write_no_replace(
     path: Path,
     payload: bytes,
     *,
-    protected_roots: Sequence[Path] = (),
+    protected_roots: Sequence[_PinnedProtectedRoot] = (),
 ) -> None:
     if os.name != "posix":
         raise DiagnosticAnalysisError(
             "descriptor-bound no-overwrite publication requires POSIX"
         )
-    destination = Path(path)
-    if not destination.name:
+    requested_destination = Path(path)
+    if not requested_destination.name:
         raise DiagnosticAnalysisError("summary destination filename is empty")
-    destination_resolved = destination.resolve()
-    resolved_roots = tuple(Path(root).resolve() for root in protected_roots)
-    if any(
-        destination_resolved == root or destination_resolved.is_relative_to(root)
-        for root in resolved_roots
-    ):
-        raise DiagnosticAnalysisError(
-            "summary destination cannot modify the run artifact or sealed bundle"
-        )
-
-    protected_descriptors: list[int] = []
-    protected_identities: set[tuple[int, int]] = set()
+    _strict_json_object(payload, "summary publication payload")
+    destination = requested_destination
+    pinned_protected_roots = tuple(protected_roots)
     parent_fd = -1
-    temporary_name = ""
+    parent_identity: tuple[int, int] | None = None
+    file_descriptor = -1
+    staging_name = ""
     staged_identity: tuple[int, int] | None = None
-    linked = False
+    rename_attempted = False
+    publication_observed_exact = False
+    parent_barrier_completed = False
     try:
-        for index, root in enumerate(resolved_roots):
-            root_fd, root_stat = _open_stable_directory(
-                root,
-                f"protected root {index}",
+        # These descriptors were acquired before validation.  Revalidate their
+        # names before touching any attacker-pivotable destination path.
+        _assert_pinned_protected_roots(pinned_protected_roots)
+        destination_resolved = requested_destination.resolve()
+        destination = (
+            requested_destination.parent.resolve() / requested_destination.name
+        )
+        if any(
+            destination_resolved == protected.path
+            or destination_resolved.is_relative_to(protected.path)
+            for protected in pinned_protected_roots
+        ):
+            raise DiagnosticAnalysisError(
+                "summary destination cannot modify the run artifact or sealed bundle"
             )
-            protected_descriptors.append(root_fd)
-            protected_identities.add((root_stat.st_dev, root_stat.st_ino))
-        parent_fd, parent_stat = _open_stable_directory(
+
+        parent_fd, parent_stat, _parent_ancestry = _open_stable_directory_with_ancestry(
             destination.parent,
             "summary parent",
         )
-        if (parent_stat.st_dev, parent_stat.st_ino) in protected_identities:
-            raise DiagnosticAnalysisError(
-                "summary parent aliases the run artifact or sealed bundle"
-            )
+        parent_identity = (parent_stat.st_dev, parent_stat.st_ino)
+        _assert_summary_publication_topology(
+            parent_fd,
+            pinned_protected_roots,
+            publication_may_exist=False,
+        )
         try:
             os.stat(
                 destination.name,
@@ -2650,157 +3328,148 @@ def _atomic_write_no_replace(
             )
         except FileNotFoundError:
             pass
+        except OSError as error:
+            raise DiagnosticAnalysisPublicationAmbiguousError(
+                "summary destination initial state could not be observed"
+            ) from error
         else:
             raise FileExistsError(f"summary destination exists: {destination}")
 
-        file_descriptor = -1
+        _assert_summary_publication_topology(
+            parent_fd,
+            pinned_protected_roots,
+            publication_may_exist=False,
+        )
         for _attempt in range(128):
-            candidate = f".{destination.name}.{secrets.token_hex(16)}.tmp"
+            candidate = f".{destination.name}.staging-{secrets.token_hex(16)}.retained"
             try:
                 file_descriptor = os.open(
                     candidate,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                    os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
                     0o600,
                     dir_fd=parent_fd,
                 )
             except FileExistsError:
                 continue
-            temporary_name = candidate
+            staging_name = candidate
             break
         if file_descriptor < 0:
             raise DiagnosticAnalysisError(
                 "could not allocate exclusive summary staging"
             )
-        with os.fdopen(file_descriptor, "wb") as handle:
+        with os.fdopen(file_descriptor, "wb", closefd=False) as handle:
             staged = os.fstat(handle.fileno())
             staged_identity = (staged.st_dev, staged.st_ino)
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
+        _assert_summary_publication_topology(
+            parent_fd,
+            pinned_protected_roots,
+            publication_may_exist=False,
+        )
+        # A successful no-replace rename consumes the staging name. If the
+        # rename does not happen, leave staging untouched rather than deleting
+        # a possibly replaced name.
+        _assert_summary_publication_topology(
+            parent_fd,
+            pinned_protected_roots,
+            publication_may_exist=False,
+        )
+        rename_attempted = True
         try:
-            os.link(
-                temporary_name,
+            _rename_noreplace_at(
+                parent_fd,
+                staging_name,
                 destination.name,
-                src_dir_fd=parent_fd,
-                dst_dir_fd=parent_fd,
-                follow_symlinks=False,
             )
-            linked = True
         except FileExistsError:
             raise
         except OSError as error:
             raise DiagnosticAnalysisError(
                 "atomic no-overwrite summary publication is unavailable"
             ) from error
-        published = os.stat(
-            destination.name,
-            dir_fd=parent_fd,
-            follow_symlinks=False,
-        )
-        if (published.st_dev, published.st_ino) != staged_identity:
+        if not _summary_publication_is_exact(
+            destination,
+            parent_fd,
+            parent_identity,
+            staged_identity,
+            payload,
+        ):
             raise DiagnosticAnalysisError(
-                "published summary inode changed before fsync"
+                "published summary inode or payload changed before fsync"
             )
-        os.fsync(parent_fd)
-        current_parent_fd, current_parent_stat = _open_stable_directory(
-            destination.parent,
-            "summary parent after publication",
+        publication_observed_exact = True
+        _assert_summary_publication_topology(
+            parent_fd,
+            pinned_protected_roots,
+            publication_may_exist=True,
         )
-        try:
-            if (
-                current_parent_stat.st_dev,
-                current_parent_stat.st_ino,
-            ) != (parent_stat.st_dev, parent_stat.st_ino):
-                raise DiagnosticAnalysisError(
-                    "summary parent path changed during publication"
-                )
-            current_published = os.stat(
-                destination.name,
-                dir_fd=current_parent_fd,
-                follow_symlinks=False,
+        os.fsync(parent_fd)
+        parent_barrier_completed = True
+        _assert_summary_publication_topology(
+            parent_fd,
+            pinned_protected_roots,
+            publication_may_exist=True,
+        )
+        if not _summary_publication_is_exact(
+            destination,
+            parent_fd,
+            parent_identity,
+            staged_identity,
+            payload,
+        ):
+            raise DiagnosticAnalysisError(
+                "summary destination path or payload changed during publication"
             )
-            if (current_published.st_dev, current_published.st_ino) != (
-                staged_identity
-            ):
-                raise DiagnosticAnalysisError(
-                    "summary destination path changed during publication"
-                )
-        finally:
-            os.close(current_parent_fd)
+        _assert_summary_publication_topology(
+            parent_fd,
+            pinned_protected_roots,
+            publication_may_exist=True,
+        )
+        if not _summary_publication_is_exact(
+            destination,
+            parent_fd,
+            parent_identity,
+            staged_identity,
+            payload,
+        ):
+            raise DiagnosticAnalysisError(
+                "summary destination changed during final topology proof"
+            )
     except BaseException as error:
-        if linked and staged_identity is not None and parent_fd >= 0:
-            try:
-                os.fsync(parent_fd)
-                if _summary_publication_is_exact(
-                    destination,
-                    parent_fd,
-                    (parent_stat.st_dev, parent_stat.st_ino),
-                    staged_identity,
-                ):
-                    return
-            except (DiagnosticAnalysisError, OSError):
-                pass
-
-            rollback_durable = False
-            try:
-                removed = _unlink_if_identity(
-                    parent_fd,
-                    destination.name,
-                    staged_identity,
-                )
-                if removed:
-                    linked = False
-                    os.fsync(parent_fd)
-                    rollback_durable = not _summary_publication_is_exact(
-                        destination,
-                        parent_fd,
-                        (parent_stat.st_dev, parent_stat.st_ino),
-                        staged_identity,
-                    )
-                else:
-                    exact_summary_remains = _summary_publication_is_exact(
-                        destination,
-                        parent_fd,
-                        (parent_stat.st_dev, parent_stat.st_ino),
-                        staged_identity,
-                    )
-                    if not exact_summary_remains:
-                        os.fsync(parent_fd)
-                        rollback_durable = not _summary_publication_is_exact(
-                            destination,
-                            parent_fd,
-                            (parent_stat.st_dev, parent_stat.st_ino),
-                            staged_identity,
-                        )
-            except DiagnosticAnalysisPublicationAmbiguousError:
-                raise
-            except OSError:
-                rollback_durable = False
-            if not rollback_durable:
-                raise DiagnosticAnalysisPublicationAmbiguousError(
-                    "summary publication durability and rollback are ambiguous; "
-                    "the destination must not be used as diagnostic evidence"
-                ) from error
+        if (
+            rename_attempted
+            and staged_identity is not None
+            and parent_fd >= 0
+            and parent_identity is not None
+        ):
+            committed = _recover_summary_publication(
+                destination,
+                parent_fd,
+                parent_identity,
+                pinned_protected_roots,
+                staging_name,
+                file_descriptor,
+                staged_identity,
+                payload,
+                publication_observed_exact,
+                parent_barrier_completed,
+                error,
+            )
+            if committed:
+                return
         raise
     finally:
-        if temporary_name and staged_identity is not None and parent_fd >= 0:
+        if file_descriptor >= 0:
             try:
-                _unlink_if_identity(
-                    parent_fd,
-                    temporary_name,
-                    staged_identity,
-                )
-            except OSError:
+                os.close(file_descriptor)
+            except BaseException:
                 pass
         if parent_fd >= 0:
             try:
                 os.close(parent_fd)
-            except OSError:
-                pass
-        for descriptor in protected_descriptors:
-            try:
-                os.close(descriptor)
-            except OSError:
+            except BaseException:
                 pass
 
 
@@ -2816,30 +3485,37 @@ def write_countdown_thompson_diagnostic_summary(
     """Analyze fully, then atomically publish one canonical no-overwrite summary."""
 
     destination = Path(output_path)
-    destination_resolved = destination.resolve()
-    protected_roots = (Path(artifact_dir).resolve(), Path(bundle_dir).resolve())
-    if any(
-        destination_resolved == root or destination_resolved.is_relative_to(root)
-        for root in protected_roots
-    ):
-        raise DiagnosticAnalysisError(
-            "summary destination cannot modify the run artifact or sealed bundle"
+    protected_roots = _pin_protected_roots(
+        (Path(artifact_dir), Path(bundle_dir)),
+    )
+    try:
+        _assert_pinned_protected_roots(protected_roots)
+        destination_resolved = destination.resolve()
+        if any(
+            destination_resolved == root.path
+            or destination_resolved.is_relative_to(root.path)
+            for root in protected_roots
+        ):
+            raise DiagnosticAnalysisError(
+                "summary destination cannot modify the run artifact or sealed bundle"
+            )
+        if destination.exists() or destination.is_symlink():
+            raise FileExistsError(f"summary destination exists: {destination}")
+        summary = analyze_countdown_thompson_diagnostic_artifact(
+            artifact_dir,
+            bundle_dir,
+            authorization_path,
+            authorization_digest,
+            repository_root=repository_root,
         )
-    if destination.exists() or destination.is_symlink():
-        raise FileExistsError(f"summary destination exists: {destination}")
-    summary = analyze_countdown_thompson_diagnostic_artifact(
-        artifact_dir,
-        bundle_dir,
-        authorization_path,
-        authorization_digest,
-        repository_root=repository_root,
-    )
-    _atomic_write_no_replace(
-        destination,
-        _canonical_bytes(summary),
-        protected_roots=protected_roots,
-    )
-    return summary
+        _atomic_write_no_replace(
+            destination,
+            _canonical_bytes(summary),
+            protected_roots=protected_roots,
+        )
+        return summary
+    finally:
+        _close_pinned_protected_roots(protected_roots)
 
 
 def _self_test() -> dict[str, Any]:

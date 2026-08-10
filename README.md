@@ -393,8 +393,10 @@ plan、別PRでのauthorization review、1回限りのrun、独立analysisの順
 [`docs/countdown_thompson_diagnostic_execution_contract.md`](docs/countdown_thompson_diagnostic_execution_contract.md)
 に固定した。通常の拒否は`NOT_RUN`/`INVALID`、directory durabilityとexact rollbackの両方が
 証明不能なI/O障害は`PUBLICATION_STATE_AMBIGUOUS`として分離し、残存fileをevidenceに使わない。
-attempt予約のparent fsync失敗は、exact receiptとdirectoryの削除、child/parent fsync、absenceの
-再確認まで閉じた場合だけ`NOT_RUN`とする。
+attempt予約のparent fsync失敗は、public nameからinode/bytes検証済みretained tombstoneへの
+atomic移動、parent fsync、public authority不在の再確認まで閉じた場合だけ`NOT_RUN`とする。
+summaryもstableなnon-symlink ancestry・inode・canonical bytes・parent fsyncをすべて確認し、
+exact rollback不能な移動済みcopyは`INVALID`ではなくambiguityとして保持する。
 v2/v3/v4のどれもbase searchとしてgreedy/beamを上回れなければ、locked-128は
 開かず`STOP_REPAIR_NO_LOCKED_128_RUN`とする。
 

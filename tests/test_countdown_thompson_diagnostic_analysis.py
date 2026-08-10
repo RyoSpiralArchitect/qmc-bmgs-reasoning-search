@@ -749,6 +749,398 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                     output, analysis._canonical_bytes(payload)
                 )
 
+    def test_summary_ancestor_symlink_pivot_cannot_reach_protected_root(
+        self,
+    ) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_open = analysis._open_protected_root_authority
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protected = root / "protected"
+            (protected / "nested").mkdir(parents=True)
+            publication_parent = root / "publication-parent"
+            (publication_parent / "nested").mkdir(parents=True)
+            displaced = root / "displaced-publication-parent"
+            output = publication_parent / "nested" / "summary.json"
+            pivoted = False
+
+            def revalidate_after_pivot(path: Path, label: str):
+                nonlocal pivoted
+                if label == "protected root 0 after pinning" and not pivoted:
+                    publication_parent.rename(displaced)
+                    publication_parent.symlink_to(
+                        protected,
+                        target_is_directory=True,
+                    )
+                    pivoted = True
+                return original_open(path, label)
+
+            pinned = analysis._pin_protected_roots((protected,))
+            try:
+                with patch.object(
+                    analysis,
+                    "_open_protected_root_authority",
+                    side_effect=revalidate_after_pivot,
+                ):
+                    with self.assertRaisesRegex(
+                        analysis.DiagnosticAnalysisError,
+                        "cannot modify",
+                    ):
+                        analysis._atomic_write_no_replace(
+                            output,
+                            payload,
+                            protected_roots=pinned,
+                        )
+            finally:
+                analysis._close_pinned_protected_roots(pinned)
+            self.assertTrue(pivoted)
+            self.assertFalse((protected / "nested" / output.name).exists())
+            self.assertFalse((displaced / "nested" / output.name).exists())
+
+    def test_summary_real_parent_move_under_protected_root_precedes_staging(
+        self,
+    ) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_open = analysis._open_stable_directory_with_ancestry
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protected = root / "protected"
+            protected.mkdir()
+            publication_parent = root / "publication-parent"
+            publication_parent.mkdir()
+            relocated = protected / "relocated-publication-parent"
+            output = publication_parent / "summary.json"
+            parent_was_relocated = False
+
+            def relocate_after_parent_open(path: Path, label: str):
+                nonlocal parent_was_relocated
+                opened = original_open(path, label)
+                if label == "summary parent" and not parent_was_relocated:
+                    publication_parent.rename(relocated)
+                    publication_parent.mkdir()
+                    parent_was_relocated = True
+                return opened
+
+            pinned = analysis._pin_protected_roots((protected,))
+            try:
+                with patch.object(
+                    analysis,
+                    "_open_stable_directory_with_ancestry",
+                    side_effect=relocate_after_parent_open,
+                ):
+                    with self.assertRaisesRegex(
+                        analysis.DiagnosticAnalysisError,
+                        "protected",
+                    ):
+                        analysis._atomic_write_no_replace(
+                            output,
+                            payload,
+                            protected_roots=pinned,
+                        )
+            finally:
+                analysis._close_pinned_protected_roots(pinned)
+            self.assertTrue(parent_was_relocated)
+            self.assertEqual(list(relocated.iterdir()), [])
+            self.assertFalse(output.exists())
+
+    def test_summary_parent_move_under_protected_root_after_fsync_is_ambiguous(
+        self,
+    ) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_fsync = analysis.os.fsync
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protected = root / "protected"
+            protected.mkdir()
+            publication_parent = root / "publication-parent"
+            publication_parent.mkdir()
+            relocated = protected / "relocated-publication-parent"
+            output = publication_parent / "summary.json"
+            parent_identity = (
+                publication_parent.stat().st_dev,
+                publication_parent.stat().st_ino,
+            )
+            parent_was_relocated = False
+
+            def relocate_after_parent_barrier(descriptor: int) -> None:
+                nonlocal parent_was_relocated
+                opened = analysis.os.fstat(descriptor)
+                original_fsync(descriptor)
+                if (
+                    not parent_was_relocated
+                    and (opened.st_dev, opened.st_ino) == parent_identity
+                    and output.exists()
+                ):
+                    publication_parent.rename(relocated)
+                    publication_parent.mkdir()
+                    parent_was_relocated = True
+
+            pinned = analysis._pin_protected_roots((protected,))
+            try:
+                with patch.object(
+                    analysis.os,
+                    "fsync",
+                    side_effect=relocate_after_parent_barrier,
+                ):
+                    with self.assertRaisesRegex(
+                        analysis.DiagnosticAnalysisPublicationAmbiguousError,
+                        "must not be used",
+                    ):
+                        analysis._atomic_write_no_replace(
+                            output,
+                            payload,
+                            protected_roots=pinned,
+                        )
+            finally:
+                analysis._close_pinned_protected_roots(pinned)
+            self.assertTrue(parent_was_relocated)
+            self.assertFalse(output.exists())
+            self.assertEqual((relocated / output.name).read_bytes(), payload)
+
+    def test_summary_protected_authority_swap_before_revalidation_is_rejected(
+        self,
+    ) -> None:
+        original_open = analysis._open_protected_root_authority
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protected = root / "protected"
+            (protected / "out").mkdir(parents=True)
+            original_protected_identity = (
+                protected.stat().st_dev,
+                protected.stat().st_ino,
+            )
+            bundle = root / "bundle"
+            bundle.mkdir()
+            safe = root / "safe"
+            (safe / "out").mkdir(parents=True)
+            displaced_safe = root / "displaced-safe"
+            output = safe / "out" / "summary.json"
+            swapped = False
+            protected_revalidation_count = 0
+
+            def swap_before_revalidation(path: Path, label: str):
+                nonlocal protected_revalidation_count, swapped
+                if label == "protected root 0 after pinning":
+                    protected_revalidation_count += 1
+                if protected_revalidation_count == 2 and not swapped:
+                    safe.rename(displaced_safe)
+                    protected.rename(safe)
+                    protected.mkdir()
+                    swapped = True
+                return original_open(path, label)
+
+            with (
+                patch.object(
+                    analysis,
+                    "_open_protected_root_authority",
+                    side_effect=swap_before_revalidation,
+                ),
+                patch.object(
+                    analysis,
+                    "analyze_countdown_thompson_diagnostic_artifact",
+                    return_value={
+                        "schema_version": "synthetic/v1",
+                        "status": "PASS",
+                    },
+                ) as analyze,
+            ):
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "path identity changed",
+                ):
+                    analysis.write_countdown_thompson_diagnostic_summary(
+                        protected,
+                        bundle,
+                        root / "authorization.json",
+                        "0" * 64,
+                        output,
+                        repository_root=root,
+                    )
+            self.assertTrue(swapped)
+            analyze.assert_called_once()
+            self.assertEqual(
+                (safe.stat().st_dev, safe.stat().st_ino),
+                original_protected_identity,
+            )
+            self.assertFalse(output.exists())
+            self.assertEqual(list((safe / "out").iterdir()), [])
+
+    def test_summary_path_only_protected_authority_is_rejected(self) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            protected = root / "protected"
+            protected.mkdir()
+            output = root / "summary.json"
+            with self.assertRaisesRegex(
+                analysis.DiagnosticAnalysisError,
+                "requires pinned protected-root authority",
+            ):
+                analysis._atomic_write_no_replace(
+                    output,
+                    payload,
+                    protected_roots=(protected,),
+                )
+            self.assertFalse(output.exists())
+
+    def test_summary_move_after_parent_fsync_is_publication_ambiguous(self) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_fsync = analysis.os.fsync
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "summary.json"
+            moved = root / "moved-summary.json"
+            parent_identity = (root.stat().st_dev, root.stat().st_ino)
+            moved_after_barrier = False
+
+            def move_after_parent_barrier(descriptor: int) -> None:
+                nonlocal moved_after_barrier
+                observed = analysis.os.fstat(descriptor)
+                original_fsync(descriptor)
+                if (
+                    not moved_after_barrier
+                    and (observed.st_dev, observed.st_ino) == parent_identity
+                    and output.exists()
+                ):
+                    output.rename(moved)
+                    moved_after_barrier = True
+
+            with patch.object(
+                analysis.os,
+                "fsync",
+                side_effect=move_after_parent_barrier,
+            ):
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisPublicationAmbiguousError,
+                    "must not be used",
+                ):
+                    analysis._atomic_write_no_replace(output, payload)
+            self.assertTrue(moved_after_barrier)
+            self.assertFalse(output.exists())
+            self.assertEqual(moved.read_bytes(), payload)
+
+    def test_summary_swap_during_final_topology_is_not_reported_pass(self) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_exact = analysis._summary_publication_is_exact
+        original_topology = analysis._assert_summary_publication_topology
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "summary.json"
+            moved = root / "moved-summary.json"
+            exact_observations = 0
+            swapped = False
+
+            def count_exact(*args: object, **kwargs: object) -> bool:
+                nonlocal exact_observations
+                result = original_exact(*args, **kwargs)
+                if result:
+                    exact_observations += 1
+                return result
+
+            def swap_after_final_topology(*args: object, **kwargs: object) -> None:
+                nonlocal swapped
+                original_topology(*args, **kwargs)
+                if exact_observations >= 2 and not swapped and output.exists():
+                    output.rename(moved)
+                    swapped = True
+
+            with (
+                patch.object(
+                    analysis,
+                    "_summary_publication_is_exact",
+                    side_effect=count_exact,
+                ),
+                patch.object(
+                    analysis,
+                    "_assert_summary_publication_topology",
+                    side_effect=swap_after_final_topology,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisPublicationAmbiguousError,
+                    "must not be used",
+                ):
+                    analysis._atomic_write_no_replace(output, payload)
+            self.assertTrue(swapped)
+            self.assertFalse(output.exists())
+            self.assertEqual(moved.read_bytes(), payload)
+
+    def test_summary_move_back_to_staging_after_fsync_is_ambiguous(self) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_fsync = analysis.os.fsync
+        original_rename = analysis._rename_noreplace_at
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "summary.json"
+            parent_identity = (root.stat().st_dev, root.stat().st_ino)
+            staging_name = ""
+            moved_back_after_barrier = False
+
+            def capture_staging_name(
+                directory_fd: int,
+                source_name: str,
+                destination_name: str,
+            ) -> None:
+                nonlocal staging_name
+                original_rename(directory_fd, source_name, destination_name)
+                if destination_name == output.name:
+                    staging_name = source_name
+
+            def move_back_after_parent_barrier(descriptor: int) -> None:
+                nonlocal moved_back_after_barrier
+                observed = analysis.os.fstat(descriptor)
+                original_fsync(descriptor)
+                if (
+                    not moved_back_after_barrier
+                    and staging_name
+                    and (observed.st_dev, observed.st_ino) == parent_identity
+                    and output.exists()
+                ):
+                    output.rename(root / staging_name)
+                    moved_back_after_barrier = True
+
+            with (
+                patch.object(
+                    analysis,
+                    "_rename_noreplace_at",
+                    side_effect=capture_staging_name,
+                ),
+                patch.object(
+                    analysis.os,
+                    "fsync",
+                    side_effect=move_back_after_parent_barrier,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisPublicationAmbiguousError,
+                    "must not be used",
+                ):
+                    analysis._atomic_write_no_replace(output, payload)
+            self.assertTrue(moved_back_after_barrier)
+            self.assertFalse(output.exists())
+            self.assertEqual((root / staging_name).read_bytes(), payload)
+
     def test_summary_parent_sync_retry_proves_success(self) -> None:
         payload = analysis._canonical_bytes(
             {"schema_version": "synthetic/v1", "status": "PASS"}
@@ -773,44 +1165,193 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 analysis._atomic_write_no_replace(output, payload)
             self.assertEqual(output.read_bytes(), payload)
 
-    def test_summary_observation_error_is_not_treated_as_absence(self) -> None:
-        destination = Path("/tmp/qmc-diagnostic-summary-observation.json")
-        with patch.object(
-            analysis.os,
-            "stat",
-            side_effect=PermissionError("summary observation blocked"),
-        ):
-            with self.assertRaisesRegex(
-                analysis.DiagnosticAnalysisPublicationAmbiguousError,
-                "could not be observed",
+    def test_summary_post_rename_exception_or_interrupt_recovers_success(self) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_rename = analysis._rename_noreplace_at
+        for exception_type in (OSError, KeyboardInterrupt):
+            with self.subTest(exception_type=exception_type.__name__):
+                with tempfile.TemporaryDirectory() as directory:
+                    output = Path(directory) / "summary.json"
+
+                    def rename_then_raise(*args: object) -> None:
+                        original_rename(*args)
+                        raise exception_type("synthetic post-rename interruption")
+
+                    with patch.object(
+                        analysis,
+                        "_rename_noreplace_at",
+                        side_effect=rename_then_raise,
+                    ):
+                        analysis._atomic_write_no_replace(output, payload)
+                    self.assertEqual(output.read_bytes(), payload)
+                    self.assertEqual(
+                        {path.name for path in Path(directory).iterdir()},
+                        {output.name},
+                    )
+
+    def test_summary_same_inode_corruption_is_never_success(self) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        corrupted = b'{"status":"CORRUPTED"}\n'
+        original_rename = analysis._rename_noreplace_at
+        renamed_identities: list[tuple[tuple[int, int], tuple[int, int]]] = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "summary.json"
+
+            def rename_then_corrupt(
+                directory_fd: int,
+                source: str,
+                destination: str,
+            ) -> None:
+                source_stat = analysis.os.stat(
+                    source,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+                original_rename(directory_fd, source, destination)
+                destination_stat = analysis.os.stat(
+                    destination,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+                renamed_identities.append(
+                    (
+                        (source_stat.st_dev, source_stat.st_ino),
+                        (destination_stat.st_dev, destination_stat.st_ino),
+                    )
+                )
+                descriptor = analysis.os.open(
+                    destination,
+                    analysis.os.O_WRONLY | analysis.os.O_TRUNC,
+                    dir_fd=directory_fd,
+                )
+                try:
+                    analysis.os.write(descriptor, corrupted)
+                    analysis.os.fsync(descriptor)
+                finally:
+                    analysis.os.close(descriptor)
+
+            with patch.object(
+                analysis,
+                "_rename_noreplace_at",
+                side_effect=rename_then_corrupt,
             ):
-                analysis._summary_publication_is_exact(
-                    destination,
-                    17,
-                    (1, 2),
-                    (3, 4),
-                )
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisPublicationAmbiguousError,
+                    "must not be used",
+                ):
+                    analysis._atomic_write_no_replace(output, payload)
+            self.assertEqual(renamed_identities[0][0], renamed_identities[0][1])
+            self.assertEqual(output.read_bytes(), corrupted)
 
-        with patch.object(
-            analysis.os,
-            "stat",
-            side_effect=FileNotFoundError,
-        ):
-            self.assertFalse(
-                analysis._summary_publication_is_exact(
-                    destination,
-                    17,
-                    (1, 2),
-                    (3, 4),
-                )
+    def test_summary_observation_error_is_not_treated_as_absence(self) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_open = analysis.os.open
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "summary.json"
+            destination.write_bytes(payload)
+            parent_fd, parent_stat = analysis._open_stable_directory(
+                destination.parent,
+                "synthetic summary parent",
             )
+            published = destination.stat()
+            identity = (published.st_dev, published.st_ino)
 
-    def test_summary_observed_absence_requires_parent_sync(self) -> None:
+            def fail_entry_observation(
+                path: object,
+                *args: object,
+                **kwargs: object,
+            ) -> int:
+                if path == destination.name and kwargs.get("dir_fd") is not None:
+                    raise PermissionError("summary observation blocked")
+                return original_open(path, *args, **kwargs)
+
+            try:
+                with patch.object(
+                    analysis.os,
+                    "open",
+                    side_effect=fail_entry_observation,
+                ):
+                    with self.assertRaisesRegex(
+                        analysis.DiagnosticAnalysisPublicationAmbiguousError,
+                        "could not be observed",
+                    ):
+                        analysis._summary_publication_is_exact(
+                            destination,
+                            parent_fd,
+                            (parent_stat.st_dev, parent_stat.st_ino),
+                            identity,
+                            payload,
+                        )
+
+                def report_entry_absent(
+                    path: object,
+                    *args: object,
+                    **kwargs: object,
+                ) -> int:
+                    if path == destination.name and kwargs.get("dir_fd") is not None:
+                        raise FileNotFoundError
+                    return original_open(path, *args, **kwargs)
+
+                with patch.object(
+                    analysis.os,
+                    "open",
+                    side_effect=report_entry_absent,
+                ):
+                    self.assertFalse(
+                        analysis._summary_publication_is_exact(
+                            destination,
+                            parent_fd,
+                            (parent_stat.st_dev, parent_stat.st_ino),
+                            identity,
+                            payload,
+                        )
+                    )
+            finally:
+                analysis.os.close(parent_fd)
+
+    def test_summary_initial_observation_io_failure_is_ambiguous(self) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_stat = analysis.os.stat
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "summary.json"
+
+            def fail_destination_stat(
+                path: object,
+                *args: object,
+                **kwargs: object,
+            ) -> object:
+                if path == output.name and kwargs.get("dir_fd") is not None:
+                    raise PermissionError("initial destination observation blocked")
+                return original_stat(path, *args, **kwargs)
+
+            with patch.object(
+                analysis.os,
+                "stat",
+                side_effect=fail_destination_stat,
+            ):
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisPublicationAmbiguousError,
+                    "initial state could not be observed",
+                ):
+                    analysis._atomic_write_no_replace(output, payload)
+            self.assertFalse(output.exists())
+
+    def test_summary_sync_failure_uses_durable_quarantine_rollback(self) -> None:
         payload = analysis._canonical_bytes(
             {"schema_version": "synthetic/v1", "status": "PASS"}
         )
         original_fsync = analysis.os.fsync
-        original_unlink = analysis._unlink_if_identity
         call_count = 0
 
         def fail_commit_and_retry(descriptor: int) -> None:
@@ -820,36 +1361,26 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 raise OSError("summary parent sync failure")
             original_fsync(descriptor)
 
-        def remove_but_report_no_match(
-            directory_fd: int,
-            filename: str,
-            identity: tuple[int, int],
-        ) -> bool:
-            if filename == "summary.json":
-                analysis.os.unlink(filename, dir_fd=directory_fd)
-                return False
-            return original_unlink(directory_fd, filename, identity)
-
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "summary.json"
-            with (
-                patch.object(
-                    analysis.os,
-                    "fsync",
-                    side_effect=fail_commit_and_retry,
-                ),
-                patch.object(
-                    analysis,
-                    "_unlink_if_identity",
-                    side_effect=remove_but_report_no_match,
-                ),
+            with patch.object(
+                analysis.os,
+                "fsync",
+                side_effect=fail_commit_and_retry,
             ):
                 with self.assertRaisesRegex(OSError, "summary parent sync failure"):
                     analysis._atomic_write_no_replace(output, payload)
             self.assertEqual(call_count, 4)
             self.assertFalse(output.exists())
+            quarantines = tuple(
+                path
+                for path in Path(directory).iterdir()
+                if path.name.startswith(".summary.json.rollback-")
+            )
+            self.assertEqual(len(quarantines), 1)
+            self.assertEqual(quarantines[0].read_bytes(), payload)
 
-    def test_summary_sync_failure_rolls_back_or_reports_ambiguity(self) -> None:
+    def test_summary_rollback_sync_failure_reports_ambiguity(self) -> None:
         payload = analysis._canonical_bytes(
             {"schema_version": "synthetic/v1", "status": "PASS"}
         )
@@ -859,27 +1390,6 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             output = Path(directory) / "summary.json"
             call_count = 0
 
-            def fail_commit_and_retry(descriptor: int) -> None:
-                nonlocal call_count
-                call_count += 1
-                if call_count in {2, 3}:
-                    raise OSError("summary parent sync failure")
-                original_fsync(descriptor)
-
-            with patch.object(
-                analysis.os,
-                "fsync",
-                side_effect=fail_commit_and_retry,
-            ):
-                with self.assertRaisesRegex(OSError, "summary parent sync failure"):
-                    analysis._atomic_write_no_replace(output, payload)
-            self.assertFalse(output.exists())
-
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "summary.json"
-            call_count = 0
-            original_unlink = analysis._unlink_if_identity
-
             def fail_every_parent_sync(descriptor: int) -> None:
                 nonlocal call_count
                 call_count += 1
@@ -887,33 +1397,154 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                     raise OSError("persistent summary parent sync failure")
                 original_fsync(descriptor)
 
-            def refuse_summary_rollback(
-                directory_fd: int,
-                filename: str,
-                identity: tuple[int, int],
-            ) -> bool:
-                if filename == output.name:
-                    raise OSError("summary rollback failure")
-                return original_unlink(directory_fd, filename, identity)
-
-            with (
-                patch.object(
-                    analysis.os,
-                    "fsync",
-                    side_effect=fail_every_parent_sync,
-                ),
-                patch.object(
-                    analysis,
-                    "_unlink_if_identity",
-                    side_effect=refuse_summary_rollback,
-                ),
+            with patch.object(
+                analysis.os,
+                "fsync",
+                side_effect=fail_every_parent_sync,
             ):
                 with self.assertRaisesRegex(
                     analysis.DiagnosticAnalysisPublicationAmbiguousError,
                     "must not be used",
                 ):
                     analysis._atomic_write_no_replace(output, payload)
+            self.assertFalse(output.exists())
+            quarantines = tuple(
+                path
+                for path in Path(directory).iterdir()
+                if path.name.startswith(".summary.json.rollback-")
+            )
+            self.assertEqual(len(quarantines), 1)
+            self.assertEqual(quarantines[0].read_bytes(), payload)
+
+    def test_summary_cleanup_error_does_not_mask_primary_ambiguity(self) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        primary = analysis.DiagnosticAnalysisPublicationAmbiguousError(
+            "primary summary observation ambiguity"
+        )
+        original_close = analysis.os.close
+
+        def close_then_raise(descriptor: int) -> None:
+            original_close(descriptor)
+            raise RuntimeError("synthetic descriptor cleanup failure")
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "summary.json"
+            with (
+                patch.object(
+                    analysis,
+                    "_summary_publication_state",
+                    side_effect=primary,
+                ),
+                patch.object(
+                    analysis.os,
+                    "close",
+                    side_effect=close_then_raise,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisPublicationAmbiguousError,
+                    "primary summary observation ambiguity",
+                ):
+                    analysis._atomic_write_no_replace(output, payload)
             self.assertEqual(output.read_bytes(), payload)
+
+    def test_summary_pre_rename_failure_retains_foreign_staging_replacement(
+        self,
+    ) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        foreign = b'{"foreign_staging_replacement":true}\n'
+        original_unlink = analysis.os.unlink
+        retained_names: list[str] = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "summary.json"
+
+            def swap_staging_then_fail_rename(
+                directory_fd: int,
+                source: str,
+                destination: str,
+            ) -> None:
+                del destination
+                original_unlink(source, dir_fd=directory_fd)
+                descriptor = analysis.os.open(
+                    source,
+                    analysis.os.O_WRONLY | analysis.os.O_CREAT | analysis.os.O_EXCL,
+                    0o600,
+                    dir_fd=directory_fd,
+                )
+                try:
+                    analysis.os.write(descriptor, foreign)
+                    analysis.os.fsync(descriptor)
+                finally:
+                    analysis.os.close(descriptor)
+                retained_names.append(source)
+                raise OSError("synthetic pre-rename failure")
+
+            with (
+                patch.object(
+                    analysis,
+                    "_rename_noreplace_at",
+                    side_effect=swap_staging_then_fail_rename,
+                ),
+                patch.object(
+                    analysis.os,
+                    "unlink",
+                    wraps=original_unlink,
+                ) as observed_unlink,
+            ):
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "publication is unavailable",
+                ):
+                    analysis._atomic_write_no_replace(output, payload)
+            self.assertEqual(observed_unlink.call_count, 0)
+            self.assertFalse(output.exists())
+            self.assertEqual(len(retained_names), 1)
+            retained = Path(directory) / retained_names[0]
+            self.assertEqual(retained.read_bytes(), foreign)
+
+    def test_summary_recovery_never_deletes_foreign_destination(self) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        foreign = b'{"foreign":true}\n'
+        original_rename = analysis._rename_noreplace_at
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "summary.json"
+
+            def create_foreign_then_rename(
+                directory_fd: int,
+                source: str,
+                destination: str,
+            ) -> None:
+                descriptor = analysis.os.open(
+                    destination,
+                    analysis.os.O_WRONLY | analysis.os.O_CREAT | analysis.os.O_EXCL,
+                    0o600,
+                    dir_fd=directory_fd,
+                )
+                try:
+                    analysis.os.write(descriptor, foreign)
+                    analysis.os.fsync(descriptor)
+                finally:
+                    analysis.os.close(descriptor)
+                original_rename(directory_fd, source, destination)
+
+            with patch.object(
+                analysis,
+                "_rename_noreplace_at",
+                side_effect=create_foreign_then_rename,
+            ):
+                with self.assertRaises(
+                    analysis.DiagnosticAnalysisPublicationAmbiguousError
+                ):
+                    analysis._atomic_write_no_replace(output, payload)
+            self.assertEqual(output.read_bytes(), foreign)
 
     def test_summary_publication_ambiguity_has_a_distinct_cli_status(self) -> None:
         with (

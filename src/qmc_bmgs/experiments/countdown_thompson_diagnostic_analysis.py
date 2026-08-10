@@ -66,6 +66,7 @@ ARTIFACT_COMMIT_SCHEMA_VERSION = (
 )
 SUMMARY_FILENAME = "summary.json"
 RUN_ARTIFACT_FILENAMES = ("commit.json", "manifest.json", "records.jsonl")
+_ArtifactReceipt = tuple[tuple[str, int, str], ...]
 ANALYZER_RELATIVE_PATH = Path(
     "src/qmc_bmgs/experiments/countdown_thompson_diagnostic_analysis.py"
 )
@@ -479,6 +480,47 @@ def _read_artifact_member_preflight(directory: Path, filename: str) -> bytes:
         _close_descriptor_best_effort(directory_fd)
 
 
+def _read_artifact_snapshot_from_descriptor(
+    directory_fd: int,
+    label: str,
+) -> dict[str, bytes]:
+    """Take one exact closed artifact snapshot through a pinned root fd."""
+
+    try:
+        if not stat.S_ISDIR(os.fstat(directory_fd).st_mode):
+            raise DiagnosticAnalysisError(f"{label} must be a regular directory")
+        names = os.listdir(directory_fd)
+    except DiagnosticAnalysisError:
+        raise
+    except OSError as error:
+        raise DiagnosticAnalysisError(f"{label} could not be observed") from error
+    if len(names) != len(set(names)) or set(names) != set(RUN_ARTIFACT_FILENAMES):
+        raise DiagnosticAnalysisError(f"{label} directory closure drifted")
+    snapshot: dict[str, bytes] = {}
+    for filename in RUN_ARTIFACT_FILENAMES:
+        file_fd = -1
+        try:
+            file_fd = os.open(
+                filename,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory_fd,
+            )
+            if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+                raise DiagnosticAnalysisError(
+                    f"{label} member is not regular: {filename}"
+                )
+            snapshot[filename] = _read_fd_bytes(file_fd)
+        except DiagnosticAnalysisError:
+            raise
+        except OSError as error:
+            raise DiagnosticAnalysisError(
+                f"{label} member is unavailable: {filename}"
+            ) from error
+        finally:
+            _close_descriptor_best_effort(file_fd)
+    return snapshot
+
+
 def _read_artifact_snapshot(directory: Path) -> dict[str, bytes]:
     """Take one descriptor-bound closed artifact snapshot on POSIX hosts."""
 
@@ -493,31 +535,10 @@ def _read_artifact_snapshot(directory: Path) -> dict[str, bytes]:
                 "runner artifact path must be a regular directory"
             ) from error
         try:
-            names = os.listdir(directory_fd)
-            if len(names) != len(set(names)) or set(names) != set(
-                RUN_ARTIFACT_FILENAMES
-            ):
-                raise DiagnosticAnalysisError(
-                    "runner artifact directory closure drifted"
-                )
-            snapshot: dict[str, bytes] = {}
-            for filename in RUN_ARTIFACT_FILENAMES:
-                file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-                try:
-                    file_fd = os.open(filename, file_flags, dir_fd=directory_fd)
-                except OSError as error:
-                    raise DiagnosticAnalysisError(
-                        f"runner artifact member is unavailable: {filename}"
-                    ) from error
-                try:
-                    if not stat.S_ISREG(os.fstat(file_fd).st_mode):
-                        raise DiagnosticAnalysisError(
-                            f"runner artifact member is not regular: {filename}"
-                        )
-                    snapshot[filename] = _read_fd_bytes(file_fd)
-                finally:
-                    _close_descriptor_best_effort(file_fd)
-            return snapshot
+            return _read_artifact_snapshot_from_descriptor(
+                directory_fd,
+                "runner artifact",
+            )
         finally:
             _close_descriptor_best_effort(directory_fd)
 
@@ -537,6 +558,35 @@ def _read_artifact_snapshot(directory: Path) -> dict[str, bytes]:
             )
         snapshot[filename] = path.read_bytes()
     return snapshot
+
+
+def _artifact_snapshot_receipt(
+    snapshot: Mapping[str, bytes],
+) -> _ArtifactReceipt:
+    """Reduce an exact artifact snapshot to one immutable byte receipt."""
+
+    if set(snapshot) != set(RUN_ARTIFACT_FILENAMES):
+        raise DiagnosticAnalysisError("runner artifact receipt closure is invalid")
+    return tuple(
+        (filename, len(snapshot[filename]), _sha256_bytes(snapshot[filename]))
+        for filename in RUN_ARTIFACT_FILENAMES
+    )
+
+
+def _read_artifact_receipt_from_descriptor(
+    directory_fd: int,
+    label: str,
+) -> _ArtifactReceipt:
+    """Read a stable byte receipt through an already pinned artifact root."""
+
+    if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
+        raise DiagnosticAnalysisError(
+            f"{label} validation requires POSIX descriptor-bound reads"
+        )
+    first = _read_artifact_snapshot_from_descriptor(directory_fd, label)
+    if _read_artifact_snapshot_from_descriptor(directory_fd, label) != first:
+        raise DiagnosticAnalysisError(f"{label} changed during descriptor snapshot")
+    return _artifact_snapshot_receipt(first)
 
 
 def _strict_json_object(raw: bytes, label: str) -> dict[str, Any]:
@@ -1759,6 +1809,7 @@ class _ValidatedRun:
     records: tuple[dict[str, Any], ...]
     manifest: dict[str, Any]
     analyzer_build_digest: str
+    artifact_receipt: _ArtifactReceipt = ()
 
 
 def _validate_artifact(
@@ -1924,6 +1975,7 @@ def _validate_artifact(
         validated_rows,
         manifest,
         analyzer_build_digest,
+        _artifact_snapshot_receipt(first_snapshot),
     )
 
 
@@ -3564,6 +3616,21 @@ def write_countdown_thompson_diagnostic_summary(
             )
         if destination.exists() or destination.is_symlink():
             raise FileExistsError(f"summary destination exists: {destination}")
+        historical_receipt = _read_artifact_receipt_from_descriptor(
+            historical_roots[0].descriptor,
+            "historical committed artifact",
+        )
+        validated_receipt = getattr(validated, "artifact_receipt", ())
+        if not validated_receipt:
+            raise DiagnosticAnalysisError(
+                "validated runner artifact byte receipt is unavailable"
+            )
+        if historical_receipt != validated_receipt:
+            raise DiagnosticAnalysisError(
+                "historical committed artifact bytes differ from the validated "
+                "runner artifact"
+            )
+        _assert_pinned_protected_roots(protected_roots)
         _atomic_write_no_replace(
             destination,
             _canonical_bytes(summary),

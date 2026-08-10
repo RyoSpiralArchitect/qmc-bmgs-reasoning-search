@@ -209,8 +209,10 @@ summary. A byte-identical committed artifact may be analyzed from a relocated
 copy only while the historical `authorized_output_path` still exists and can be
 opened through its raw name with `O_NOFOLLOW` and pinned by descriptor and inode
 through publication. A symlink alias or absent historical path is refused before
-summary staging begins. Both artifacts remain protected and the summary path
-may not modify either one. The analyzer writes
+summary staging begins. Before publication, the analyzer also requires exact
+three-file closure and matching filename, byte-count, and SHA-256 receipts for
+the historical and validated relocated artifacts. Both artifacts remain
+protected and the summary path may not modify either one. The analyzer writes
 one canonical no-overwrite summary only after every gate passes. Success
 reports `PASS`; any CLI, integrity, analysis, or publication
 failure with durably proven absence reports canonical `INVALID` and emits no

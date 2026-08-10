@@ -399,7 +399,8 @@ authorization candidateとrun artifactの出力parentは事前に作成済みの
 runner自身は未同期のancestorを暗黙作成しない。
 summaryもstableなnon-symlink ancestry・inode・canonical bytes・parent fsyncをすべて確認する。
 relocated artifactの解析は、元の`authorized_output_path`が現存しdescriptorでpinできる場合だけ
-許可する。exact rollback不能な移動済みcopyは`INVALID`ではなくambiguityとして保持する。
+許可し、両artifactの厳密3-file byte receipt一致もpublication前に検証する。exact rollback不能な
+移動済みcopyは`INVALID`ではなくambiguityとして保持する。
 v2/v3/v4のどれもbase searchとしてgreedy/beamを上回れなければ、locked-128は
 開かず`STOP_REPAIR_NO_LOCKED_128_RUN`とする。
 

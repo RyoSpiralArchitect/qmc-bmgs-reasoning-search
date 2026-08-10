@@ -82,6 +82,20 @@ def _validated(records: list[dict[str, object]]) -> analysis._ValidatedRun:
     )
 
 
+def _write_synthetic_artifact_members(
+    directory: Path,
+    marker: bytes,
+) -> analysis._ArtifactReceipt:
+    directory.mkdir(parents=True, exist_ok=True)
+    snapshot = {
+        filename: marker + b":" + filename.encode("ascii") + b"\n"
+        for filename in analysis.RUN_ARTIFACT_FILENAMES
+    }
+    for filename, payload in snapshot.items():
+        (directory / filename).write_bytes(payload)
+    return analysis._artifact_snapshot_receipt(snapshot)
+
+
 def _proposal_and_selection(
     *,
     digest: str,
@@ -1082,11 +1096,131 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             self.assertTrue(historical.is_symlink())
             self.assertFalse(output.exists())
 
+    def test_historical_empty_or_foreign_artifact_is_rejected_before_write(
+        self,
+    ) -> None:
+        for case in ("empty", "foreign"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                artifact = root / "relocated-artifact"
+                artifact_receipt = _write_synthetic_artifact_members(
+                    artifact,
+                    b"validated-artifact",
+                )
+                historical = root / "historical-artifact"
+                if case == "empty":
+                    historical.mkdir()
+                else:
+                    _write_synthetic_artifact_members(
+                        historical,
+                        b"foreign-artifact",
+                    )
+                bundle = root / "bundle"
+                bundle.mkdir()
+                publication_parent = root / "publication-parent"
+                publication_parent.mkdir()
+                output = publication_parent / "summary.json"
+
+                with (
+                    patch.object(
+                        analysis,
+                        "_validate_artifact",
+                        return_value=SimpleNamespace(
+                            manifest={"authorized_output_path": str(historical)},
+                            artifact_receipt=artifact_receipt,
+                        ),
+                    ) as validate,
+                    patch.object(
+                        analysis,
+                        "_build_summary",
+                        return_value={
+                            "schema_version": "synthetic/v1",
+                            "status": "PASS",
+                        },
+                    ),
+                    patch.object(
+                        analysis,
+                        "_atomic_write_no_replace",
+                    ) as atomic_write,
+                ):
+                    with self.assertRaisesRegex(
+                        analysis.DiagnosticAnalysisError,
+                        "historical committed artifact",
+                    ):
+                        analysis.write_countdown_thompson_diagnostic_summary(
+                            artifact,
+                            bundle,
+                            root / "authorization.json",
+                            "0" * 64,
+                            output,
+                            repository_root=root,
+                        )
+                validate.assert_called_once()
+                atomic_write.assert_not_called()
+                self.assertFalse(output.exists())
+
+    def test_byte_identical_relocated_and_historical_artifacts_can_publish(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "relocated-artifact"
+            artifact_receipt = _write_synthetic_artifact_members(
+                artifact,
+                b"identical-artifact",
+            )
+            historical = root / "historical-artifact"
+            historical_receipt = _write_synthetic_artifact_members(
+                historical,
+                b"identical-artifact",
+            )
+            self.assertEqual(historical_receipt, artifact_receipt)
+            bundle = root / "bundle"
+            bundle.mkdir()
+            publication_parent = root / "publication-parent"
+            publication_parent.mkdir()
+            output = publication_parent / "summary.json"
+            summary = {
+                "schema_version": "synthetic/v1",
+                "status": "PASS",
+            }
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    return_value=SimpleNamespace(
+                        manifest={"authorized_output_path": str(historical)},
+                        artifact_receipt=artifact_receipt,
+                    ),
+                ),
+                patch.object(
+                    analysis,
+                    "_build_summary",
+                    return_value=summary,
+                ),
+                patch.object(analysis, "_atomic_write_no_replace") as atomic_write,
+            ):
+                observed = analysis.write_countdown_thompson_diagnostic_summary(
+                    artifact,
+                    bundle,
+                    root / "authorization.json",
+                    "0" * 64,
+                    output,
+                    repository_root=root,
+                )
+            self.assertEqual(observed, summary)
+            atomic_write.assert_called_once()
+            self.assertFalse(output.exists())
+
     def test_historical_directory_equal_to_artifact_retains_raw_pin(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             artifact = root / "artifact"
-            artifact.mkdir()
+            artifact_receipt = _write_synthetic_artifact_members(
+                artifact,
+                b"same-directory-artifact",
+            )
             bundle = root / "bundle"
             bundle.mkdir()
             publication_parent = root / "publication-parent"
@@ -1119,7 +1253,8 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                     analysis,
                     "_validate_artifact",
                     return_value=SimpleNamespace(
-                        manifest={"authorized_output_path": str(artifact)}
+                        manifest={"authorized_output_path": str(artifact)},
+                        artifact_receipt=artifact_receipt,
                     ),
                 ),
                 patch.object(

@@ -773,6 +773,82 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 analysis._atomic_write_no_replace(output, payload)
             self.assertEqual(output.read_bytes(), payload)
 
+    def test_summary_observation_error_is_not_treated_as_absence(self) -> None:
+        destination = Path("/tmp/qmc-diagnostic-summary-observation.json")
+        with patch.object(
+            analysis.os,
+            "stat",
+            side_effect=PermissionError("summary observation blocked"),
+        ):
+            with self.assertRaisesRegex(
+                analysis.DiagnosticAnalysisPublicationAmbiguousError,
+                "could not be observed",
+            ):
+                analysis._summary_publication_is_exact(
+                    destination,
+                    17,
+                    (1, 2),
+                    (3, 4),
+                )
+
+        with patch.object(
+            analysis.os,
+            "stat",
+            side_effect=FileNotFoundError,
+        ):
+            self.assertFalse(
+                analysis._summary_publication_is_exact(
+                    destination,
+                    17,
+                    (1, 2),
+                    (3, 4),
+                )
+            )
+
+    def test_summary_observed_absence_requires_parent_sync(self) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_fsync = analysis.os.fsync
+        original_unlink = analysis._unlink_if_identity
+        call_count = 0
+
+        def fail_commit_and_retry(descriptor: int) -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count in {2, 3}:
+                raise OSError("summary parent sync failure")
+            original_fsync(descriptor)
+
+        def remove_but_report_no_match(
+            directory_fd: int,
+            filename: str,
+            identity: tuple[int, int],
+        ) -> bool:
+            if filename == "summary.json":
+                analysis.os.unlink(filename, dir_fd=directory_fd)
+                return False
+            return original_unlink(directory_fd, filename, identity)
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "summary.json"
+            with (
+                patch.object(
+                    analysis.os,
+                    "fsync",
+                    side_effect=fail_commit_and_retry,
+                ),
+                patch.object(
+                    analysis,
+                    "_unlink_if_identity",
+                    side_effect=remove_but_report_no_match,
+                ),
+            ):
+                with self.assertRaisesRegex(OSError, "summary parent sync failure"):
+                    analysis._atomic_write_no_replace(output, payload)
+            self.assertEqual(call_count, 4)
+            self.assertFalse(output.exists())
+
     def test_summary_sync_failure_rolls_back_or_reports_ambiguity(self) -> None:
         payload = analysis._canonical_bytes(
             {"schema_version": "synthetic/v1", "status": "PASS"}

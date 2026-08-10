@@ -2552,8 +2552,12 @@ def _summary_publication_is_exact(
             dir_fd=parent_fd,
             follow_symlinks=False,
         )
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError as error:
+        raise DiagnosticAnalysisPublicationAmbiguousError(
+            "summary destination could not be observed"
+        ) from error
     if (published.st_dev, published.st_ino) != staged_identity:
         return False
     current_parent_fd = -1
@@ -2573,8 +2577,18 @@ def _summary_publication_is_exact(
             follow_symlinks=False,
         )
         return (current_published.st_dev, current_published.st_ino) == staged_identity
-    except (DiagnosticAnalysisError, OSError):
+    except DiagnosticAnalysisError as error:
+        if isinstance(error.__cause__, OSError):
+            raise DiagnosticAnalysisPublicationAmbiguousError(
+                "summary parent could not be observed"
+            ) from error
         return False
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise DiagnosticAnalysisPublicationAmbiguousError(
+            "summary destination could not be re-observed"
+        ) from error
     finally:
         if current_parent_fd >= 0:
             try:
@@ -2737,14 +2751,29 @@ def _atomic_write_no_replace(
                 if removed:
                     linked = False
                     os.fsync(parent_fd)
-                    rollback_durable = True
-                else:
                     rollback_durable = not _summary_publication_is_exact(
                         destination,
                         parent_fd,
                         (parent_stat.st_dev, parent_stat.st_ino),
                         staged_identity,
                     )
+                else:
+                    exact_summary_remains = _summary_publication_is_exact(
+                        destination,
+                        parent_fd,
+                        (parent_stat.st_dev, parent_stat.st_ino),
+                        staged_identity,
+                    )
+                    if not exact_summary_remains:
+                        os.fsync(parent_fd)
+                        rollback_durable = not _summary_publication_is_exact(
+                            destination,
+                            parent_fd,
+                            (parent_stat.st_dev, parent_stat.st_ino),
+                            staged_identity,
+                        )
+            except DiagnosticAnalysisPublicationAmbiguousError:
+                raise
             except OSError:
                 rollback_durable = False
             if not rollback_durable:

@@ -151,6 +151,13 @@ reports `PUBLICATION_STATE_AMBIGUOUS`. This also spends the one-shot authority:
 preserve the attempt and output paths, do not analyze the artifact, and do not
 retry.
 
+An attempt reservation is durable only after its parent directory is synced.
+If that barrier persistently fails, `NOT_RUN` is permitted only after the exact
+pre-outcome receipt and reservation directory are removed, both child and
+parent directory barriers complete, and absence is re-observed. An I/O error
+that prevents either durability or rollback from being proven is
+`PUBLICATION_STATE_AMBIGUOUS`, never inferred absence.
+
 A valid completed artifact is one directory containing exactly:
 
 - `commit.json`

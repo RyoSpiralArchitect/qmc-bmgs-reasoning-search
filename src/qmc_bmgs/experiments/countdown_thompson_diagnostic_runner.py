@@ -431,8 +431,12 @@ def _published_file_matches(
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(filename, flags, dir_fd=directory_fd)
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"published file observation failed: {filename}"
+        ) from error
     try:
         observed = os.fstat(descriptor)
         if (
@@ -446,8 +450,10 @@ def _published_file_matches(
             return False
         with os.fdopen(descriptor, "rb", closefd=False) as handle:
             return handle.read() == expected
-    except OSError:
-        return False
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"published file observation failed: {filename}"
+        ) from error
     finally:
         try:
             os.close(descriptor)
@@ -492,6 +498,8 @@ def _unlink_exact_file_at(
         os.unlink(filename, dir_fd=directory_fd)
         os.fsync(directory_fd)
         return True
+    except DiagnosticPublicationStateAmbiguousError:
+        raise
     except (FileNotFoundError, OSError, DiagnosticRunnerError):
         return False
 
@@ -512,8 +520,12 @@ def _published_artifact_matches(
     flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
         output_fd = os.open(output_name, flags, dir_fd=parent_fd)
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"published artifact observation failed: {output_name}"
+        ) from error
     try:
         observed = os.fstat(output_fd)
         if (observed.st_dev, observed.st_ino) != staging_identity:
@@ -536,8 +548,14 @@ def _published_artifact_matches(
             output_fd,
             "commit.json",
         ) == _canonical_bytes(commit_receipt)
-    except (OSError, DiagnosticRunnerError):
+    except DiagnosticPublicationStateAmbiguousError:
+        raise
+    except (FileNotFoundError, DiagnosticRunnerError):
         return False
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"published artifact observation failed: {output_name}"
+        ) from error
     finally:
         try:
             os.close(output_fd)
@@ -1819,8 +1837,14 @@ def _attempt_receipt_matches(
 ) -> bool:
     try:
         observed = _read_regular_file_at(attempt.directory_fd, filename)
-    except (FileNotFoundError, OSError, DiagnosticRunnerError):
+    except DiagnosticPublicationStateAmbiguousError:
+        raise
+    except (FileNotFoundError, DiagnosticRunnerError):
         return False
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"attempt receipt observation failed: {filename}"
+        ) from error
     return observed == _canonical_bytes(payload)
 
 
@@ -1837,8 +1861,10 @@ def _published_attempt_entry_is_pinned(
         os.stat(temporary_name, dir_fd=parent_fd, follow_symlinks=False)
     except FileNotFoundError:
         pass
-    except OSError:
-        return False
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "attempt reservation source observation failed"
+        ) from error
     else:
         return False
     try:
@@ -1848,8 +1874,12 @@ def _published_attempt_entry_is_pinned(
             follow_symlinks=False,
         )
         pinned = os.fstat(pinned_fd)
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "attempt reservation destination observation failed"
+        ) from error
     if (
         not stat.S_ISDIR(destination.st_mode)
         or not stat.S_ISDIR(pinned.st_mode)
@@ -1893,30 +1923,74 @@ def _published_attempt_reservation_matches(
             pinned_fd,
             pinned_identity,
         )
-    except (OSError, DiagnosticRunnerError):
+    except DiagnosticPublicationStateAmbiguousError:
+        raise
+    except (FileNotFoundError, DiagnosticRunnerError):
         return False
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "attempt reservation content observation failed"
+        ) from error
 
 
-def _terminalize_published_attempt_not_run(
-    attempt: _Attempt,
+def _revoke_exact_attempt_reservation(
     parent_fd: int,
-    reason: str,
-) -> None:
-    """Best-effort terminal receipt for a proven published pre-outcome inode."""
+    attempt_name: str,
+    temporary_name: str,
+    pinned_fd: int,
+    pinned_identity: tuple[int, int],
+    pre_outcome_receipt: Mapping[str, Any],
+) -> bool:
+    """Durably remove one exact pre-outcome reservation and prove absence."""
 
+    if not _published_attempt_reservation_matches(
+        parent_fd,
+        attempt_name,
+        temporary_name,
+        pinned_fd,
+        pinned_identity,
+        pre_outcome_receipt,
+    ):
+        return False
     try:
-        _write_attempt_receipt(
-            attempt,
-            "not_run.json",
-            phase="PRE_OUTCOME",
-            status="NOT_RUN",
-            reason=reason,
-        )
+        if _read_regular_file_at(
+            pinned_fd,
+            "pre_outcome.json",
+        ) != _canonical_bytes(pre_outcome_receipt):
+            return False
+        os.unlink("pre_outcome.json", dir_fd=pinned_fd)
+        os.fsync(pinned_fd)
+        if os.listdir(pinned_fd):
+            return False
+        if not _published_attempt_entry_is_pinned(
+            parent_fd,
+            attempt_name,
+            temporary_name,
+            pinned_fd,
+            pinned_identity,
+        ):
+            return False
+        os.rmdir(attempt_name, dir_fd=parent_fd)
         os.fsync(parent_fd)
-    except BaseException:
-        # The caller still fails closed.  Never touch an unproven path merely to
-        # manufacture a terminal receipt after publication validation failed.
-        pass
+        for name in (attempt_name, temporary_name):
+            try:
+                os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "attempt reservation rollback observation failed"
+                ) from error
+            return False
+        return True
+    except DiagnosticPublicationStateAmbiguousError:
+        raise
+    except (FileNotFoundError, DiagnosticRunnerError):
+        return False
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "attempt reservation exact rollback failed"
+        ) from error
 
 
 def _cleanup_private_attempt_scratch(
@@ -2112,13 +2186,9 @@ def _reserve_attempt(
                     temporary_fd,
                     temporary_identity,
                 ):
-                    _terminalize_published_attempt_not_run(
-                        attempt,
-                        parent_fd,
-                        str(error),
-                    )
-                    raise DiagnosticNotRunError(
-                        "published attempt reservation failed exact validation"
+                    raise DiagnosticPublicationStateAmbiguousError(
+                        "published attempt reservation is pinned but its exact "
+                        "content cannot be authorized"
                     ) from error
                 if isinstance(error, FileExistsError):
                     raise DiagnosticNotRunError(
@@ -2140,10 +2210,9 @@ def _reserve_attempt(
                 temporary_fd,
                 temporary_identity,
             ):
-                _terminalize_published_attempt_not_run(
-                    attempt,
-                    parent_fd,
-                    "attempt reservation publication identity or bytes drifted",
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "published attempt reservation is pinned but its exact "
+                    "content cannot be authorized"
                 )
             raise DiagnosticNotRunError(
                 "attempt reservation publication identity or bytes drifted"
@@ -2151,28 +2220,37 @@ def _reserve_attempt(
         try:
             os.fsync(parent_fd)
         except BaseException as error:
-            durable_attempt = _Attempt(
-                directory=attempt_directory,
-                directory_fd=temporary_fd,
-                directory_name=attempt_name,
-                staging_path=staging_path,
-                receipt_base=receipt_base,
-            )
             try:
-                _write_attempt_receipt(
-                    durable_attempt,
-                    "not_run.json",
-                    phase="PRE_OUTCOME",
-                    status="NOT_RUN",
-                    reason=str(error),
+                os.fsync(parent_fd)
+                retry_proved_exact = _published_attempt_reservation_matches(
+                    parent_fd,
+                    attempt_name,
+                    temporary_name,
+                    temporary_fd,
+                    temporary_identity,
+                    pre_outcome_receipt,
                 )
+            except DiagnosticPublicationStateAmbiguousError:
+                raise
             except BaseException:
-                # The no-replace marker is already the durable once-only
-                # authority even if appending its explanatory receipt fails.
-                pass
-            raise DiagnosticNotRunError(
-                "attempt reservation parent-directory sync failed"
-            ) from error
+                retry_proved_exact = False
+            if not retry_proved_exact:
+                if _revoke_exact_attempt_reservation(
+                    parent_fd,
+                    attempt_name,
+                    temporary_name,
+                    temporary_fd,
+                    temporary_identity,
+                    pre_outcome_receipt,
+                ):
+                    raise DiagnosticNotRunError(
+                        "attempt reservation was durably revoked after a "
+                        "parent-directory sync failure"
+                    ) from error
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "attempt reservation durability and exact rollback are both "
+                    "unproven"
+                ) from error
         completed = True
     finally:
         if not completed:
@@ -2183,7 +2261,10 @@ def _reserve_attempt(
                 temporary_identity,
                 pre_outcome_receipt,
             )
-            os.close(temporary_fd)
+            try:
+                os.close(temporary_fd)
+            except OSError:
+                pass
     return _Attempt(
         directory=attempt_directory,
         directory_fd=temporary_fd,

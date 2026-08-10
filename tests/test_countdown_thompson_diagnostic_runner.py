@@ -1155,6 +1155,127 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             }
         )
 
+    def test_publication_observation_io_errors_never_collapse_to_false(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            candidate = root / "candidate.json"
+            candidate.write_bytes(b"candidate\n")
+            artifact = root / "artifact"
+            artifact.mkdir()
+            attempt_path = root / "attempt"
+            attempt_path.mkdir()
+            receipt = {"status": "PENDING"}
+            (attempt_path / "pre_outcome.json").write_bytes(
+                runner._canonical_bytes(receipt)
+            )
+            parent_fd = runner.os.open(root, runner.os.O_RDONLY)
+            attempt_fd = runner.os.open(attempt_path, runner.os.O_RDONLY)
+            try:
+                candidate_stat = candidate.stat()
+                candidate_identity = (
+                    candidate_stat.st_dev,
+                    candidate_stat.st_ino,
+                )
+                artifact_stat = artifact.stat()
+                artifact_identity = (artifact_stat.st_dev, artifact_stat.st_ino)
+                attempt_stat = attempt_path.stat()
+                attempt_identity = (attempt_stat.st_dev, attempt_stat.st_ino)
+                attempt = runner._Attempt(
+                    directory=attempt_path,
+                    directory_fd=attempt_fd,
+                    directory_name="attempt",
+                    staging_path=attempt_path / "staging",
+                    receipt_base={},
+                )
+
+                with patch.object(
+                    runner.os,
+                    "open",
+                    side_effect=OSError("candidate observation unavailable"),
+                ):
+                    with self.assertRaisesRegex(
+                        runner.DiagnosticPublicationStateAmbiguousError,
+                        "published file observation failed",
+                    ):
+                        runner._published_file_matches(
+                            parent_fd,
+                            candidate.name,
+                            candidate_identity,
+                            candidate.read_bytes(),
+                        )
+
+                with patch.object(
+                    runner.os,
+                    "listdir",
+                    side_effect=OSError("artifact observation unavailable"),
+                ):
+                    with self.assertRaisesRegex(
+                        runner.DiagnosticPublicationStateAmbiguousError,
+                        "published artifact observation failed",
+                    ):
+                        runner._published_artifact_matches(
+                            parent_fd,
+                            artifact.name,
+                            artifact_identity,
+                            {},
+                            records_byte_count=0,
+                            records_sha256=runner._sha256_bytes(b""),
+                            commit_receipt=None,
+                        )
+
+                with patch.object(
+                    runner.os,
+                    "stat",
+                    side_effect=OSError("attempt entry observation unavailable"),
+                ):
+                    with self.assertRaisesRegex(
+                        runner.DiagnosticPublicationStateAmbiguousError,
+                        "attempt reservation source observation failed",
+                    ):
+                        runner._published_attempt_entry_is_pinned(
+                            parent_fd,
+                            attempt_path.name,
+                            "missing-temporary-attempt",
+                            attempt_fd,
+                            attempt_identity,
+                        )
+
+                with patch.object(
+                    runner.os,
+                    "listdir",
+                    side_effect=OSError("attempt content observation unavailable"),
+                ):
+                    with self.assertRaisesRegex(
+                        runner.DiagnosticPublicationStateAmbiguousError,
+                        "attempt reservation content observation failed",
+                    ):
+                        runner._published_attempt_reservation_matches(
+                            parent_fd,
+                            attempt_path.name,
+                            "missing-temporary-attempt",
+                            attempt_fd,
+                            attempt_identity,
+                            receipt,
+                        )
+
+                with patch.object(
+                    runner,
+                    "_read_regular_file_at",
+                    side_effect=OSError("attempt receipt observation unavailable"),
+                ):
+                    with self.assertRaisesRegex(
+                        runner.DiagnosticPublicationStateAmbiguousError,
+                        "attempt receipt observation failed",
+                    ):
+                        runner._attempt_receipt_matches(
+                            attempt,
+                            "started.json",
+                            receipt,
+                        )
+            finally:
+                runner.os.close(attempt_fd)
+                runner.os.close(parent_fd)
+
     def test_atomic_artifact_publication_on_nondiagnostic_fixture(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "artifact"
@@ -1656,6 +1777,73 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             )
             self.assertFalse((attempt / "not_run.json").exists())
 
+    def test_started_receipt_observation_failure_is_publication_ambiguous(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_write = runner._write_attempt_receipt
+            original_read = runner._read_regular_file_at
+            started_written = False
+
+            def publish_started_then_interrupt(*args: object, **kwargs: object):
+                nonlocal started_written
+                payload = original_write(*args, **kwargs)
+                if args[1] == "started.json":
+                    started_written = True
+                    raise OSError("synthetic STARTED publication interruption")
+                return payload
+
+            def fail_started_observation(
+                directory_fd: int,
+                filename: str,
+            ) -> bytes:
+                if started_written and filename == "started.json":
+                    raise OSError("synthetic STARTED observation failure")
+                return original_read(directory_fd, filename)
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_write_attempt_receipt",
+                    side_effect=publish_started_then_interrupt,
+                ),
+                patch.object(
+                    runner,
+                    "_read_regular_file_at",
+                    side_effect=fail_started_observation,
+                ),
+                patch.object(
+                    runner,
+                    "_resolve_components",
+                    side_effect=AssertionError("search must not start"),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "attempt receipt observation failed",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertEqual(
+                {path.name for path in attempt.iterdir()},
+                {"pre_outcome.json", "staging", "started.json"},
+            )
+            self.assertFalse((attempt / "invalid.json").exists())
+            self.assertFalse((attempt / "not_run.json").exists())
+
     def test_pre_outcome_closure_failure_is_not_run_and_never_resolves_task(
         self,
     ) -> None:
@@ -1775,7 +1963,9 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         )
                     )
 
-    def test_post_attempt_rename_validation_failure_is_durable_not_run(self) -> None:
+    def test_post_attempt_rename_validation_failure_is_publication_ambiguous(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             output = root / "artifact"
@@ -1795,8 +1985,8 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 ),
             ):
                 with self.assertRaisesRegex(
-                    runner.DiagnosticNotRunError,
-                    "publication identity or bytes drifted",
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "pinned but its exact content",
                 ):
                     runner._publish_run_artifact(
                         preflight,
@@ -1807,16 +1997,11 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             attempt = root / attempt_name
             self.assertEqual(
                 {path.name for path in attempt.iterdir()},
-                {"not_run.json", "pre_outcome.json"},
+                {"pre_outcome.json"},
             )
-            receipt_raw = (attempt / "not_run.json").read_bytes()
-            receipt = json.loads(receipt_raw)
-            self.assertEqual(receipt_raw, runner._canonical_bytes(receipt))
-            self.assertEqual(receipt["phase"], "PRE_OUTCOME")
-            self.assertEqual(receipt["status"], "NOT_RUN")
             self.assertFalse(output.exists())
 
-    def test_attempt_parent_sync_failure_is_durable_not_run(self) -> None:
+    def test_attempt_parent_sync_transient_failure_retries_and_commits(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             output = root / "artifact"
@@ -1836,6 +2021,50 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(runner.os, "fsync", side_effect=fail_after_attempt_rename),
+            ):
+                manifest = runner._publish_run_artifact(
+                    preflight,
+                    authorization,
+                    reviewed_authorization_revision=(_AUTHORIZATION_REVISION),
+                    repository_root=root,
+                )
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertEqual(
+                {path.name for path in attempt.iterdir()},
+                {"pre_outcome.json", "ready_to_commit.json", "started.json"},
+            )
+            self.assertEqual(manifest["attempt_phase"], "READY_TO_COMMIT")
+            self.assertTrue((output / "commit.json").is_file())
+            self.assertFalse((root / ".artifact.publish-lock").exists())
+
+    def test_persistent_attempt_parent_sync_failure_durably_revokes_reservation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_fsync = runner.os.fsync
+            call_count = 0
+
+            def fail_initial_and_retry_parent_sync(descriptor: int) -> None:
+                nonlocal call_count
+                call_count += 1
+                if call_count in {4, 5}:
+                    raise OSError("persistent attempt parent sync failure")
+                original_fsync(descriptor)
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner.os,
+                    "fsync",
+                    side_effect=fail_initial_and_retry_parent_sync,
+                ),
                 patch.object(
                     runner,
                     "_resolve_components",
@@ -1844,22 +2073,124 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             ):
                 with self.assertRaisesRegex(
                     runner.DiagnosticNotRunError,
-                    "attempt reservation parent-directory sync failed",
+                    "durably revoked",
                 ):
                     runner._publish_run_artifact(
                         preflight,
                         authorization,
-                        reviewed_authorization_revision=(_AUTHORIZATION_REVISION),
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
                         repository_root=root,
                     )
             attempt = root / (
                 f".artifact.attempt-{authorization['deterministic_digest']}"
             )
-            self.assertEqual(
-                {path.name for path in attempt.iterdir()},
-                {"not_run.json", "pre_outcome.json"},
-            )
+            self.assertFalse(attempt.exists())
             self.assertFalse(output.exists())
+            self.assertFalse((root / ".artifact.publish-lock").exists())
+
+    def test_attempt_reservation_rollback_sync_failure_is_ambiguous(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_fsync = runner.os.fsync
+            call_count = 0
+
+            def fail_publication_and_child_rollback_sync(descriptor: int) -> None:
+                nonlocal call_count
+                call_count += 1
+                if call_count in {4, 5, 6}:
+                    raise OSError("attempt rollback sync failure")
+                original_fsync(descriptor)
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner.os,
+                    "fsync",
+                    side_effect=fail_publication_and_child_rollback_sync,
+                ),
+                patch.object(
+                    runner,
+                    "_resolve_components",
+                    side_effect=AssertionError("sealed task must not be resolved"),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "exact rollback failed",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue(attempt.is_dir())
+            self.assertEqual(list(attempt.iterdir()), [])
+            self.assertFalse((root / ".artifact.publish-lock").exists())
+
+    def test_attempt_reservation_rollback_observation_failure_is_ambiguous(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_fsync = runner.os.fsync
+            original_listdir = runner.os.listdir
+            fsync_count = 0
+            listdir_count = 0
+
+            def fail_parent_sync(descriptor: int) -> None:
+                nonlocal fsync_count
+                fsync_count += 1
+                if fsync_count in {4, 5}:
+                    raise OSError("persistent attempt parent sync failure")
+                original_fsync(descriptor)
+
+            def fail_rollback_observation(path: object = ".") -> list[str]:
+                nonlocal listdir_count
+                listdir_count += 1
+                if listdir_count == 2:
+                    raise OSError("attempt rollback observation failure")
+                return original_listdir(path)
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(runner.os, "fsync", side_effect=fail_parent_sync),
+                patch.object(
+                    runner.os,
+                    "listdir",
+                    side_effect=fail_rollback_observation,
+                ),
+                patch.object(
+                    runner,
+                    "_resolve_components",
+                    side_effect=AssertionError("sealed task must not be resolved"),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "content observation failed",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue((attempt / "pre_outcome.json").is_file())
             self.assertFalse((root / ".artifact.publish-lock").exists())
 
     def test_output_parent_creation_failure_is_canonical_not_run(self) -> None:

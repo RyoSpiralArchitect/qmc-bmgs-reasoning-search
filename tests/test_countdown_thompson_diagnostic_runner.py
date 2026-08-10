@@ -1311,7 +1311,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
 
                 with patch.object(
                     runner.os,
-                    "listdir",
+                    "scandir",
                     side_effect=OSError("artifact observation unavailable"),
                 ):
                     with self.assertRaisesRegex(
@@ -1347,7 +1347,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
 
                 with patch.object(
                     runner.os,
-                    "listdir",
+                    "scandir",
                     side_effect=OSError("attempt content observation unavailable"),
                 ):
                     with self.assertRaisesRegex(
@@ -1380,6 +1380,278 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             finally:
                 runner.os.close(attempt_fd)
                 runner.os.close(parent_fd)
+
+    @unittest.skipUnless(hasattr(runner.os, "mkfifo"), "POSIX FIFO required")
+    def test_bounded_readers_reject_fifo_and_stat_open_fifo_race(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fifo = root / "blocked-reader"
+            runner.os.mkfifo(fifo)
+            with (
+                patch.object(
+                    runner.os,
+                    "open",
+                    side_effect=AssertionError("direct FIFO must fail before open"),
+                ),
+                self.assertRaisesRegex(
+                    runner.DiagnosticRunnerError,
+                    "not a regular file",
+                ),
+            ):
+                runner._read_regular_file_nofollow(fifo, "synthetic FIFO")
+
+            candidate = root / "candidate.json"
+            candidate.write_bytes(b"candidate\n")
+            parent_fd = runner.os.open(root, runner.os.O_RDONLY)
+            original_open = runner.os.open
+
+            def swap_regular_for_fifo(
+                path: object,
+                flags: int,
+                *args: object,
+                **kwargs: object,
+            ) -> int:
+                if path == candidate.name:
+                    self.assertTrue(flags & getattr(runner.os, "O_NONBLOCK", 0))
+                    return original_open(fifo.name, flags, *args, **kwargs)
+                return original_open(path, flags, *args, **kwargs)
+
+            try:
+                with (
+                    patch.object(
+                        runner.os,
+                        "open",
+                        side_effect=swap_regular_for_fifo,
+                    ),
+                    self.assertRaisesRegex(
+                        runner.DiagnosticRunnerError,
+                        "changed while its regular file was opened",
+                    ),
+                ):
+                    runner._read_regular_file_at(parent_fd, candidate.name)
+            finally:
+                runner.os.close(parent_fd)
+
+    def test_bounded_reader_rejects_growth_and_explicit_oversize(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            candidate = root / "candidate.json"
+            candidate.write_bytes(b"candidate\n")
+            parent_fd = runner.os.open(root, runner.os.O_RDONLY)
+            original_read = runner.os.read
+            grew = False
+
+            def grow_after_first_read(descriptor: int, byte_count: int) -> bytes:
+                nonlocal grew
+                chunk = original_read(descriptor, byte_count)
+                if not grew:
+                    with candidate.open("ab") as handle:
+                        handle.write(b"growth")
+                    grew = True
+                return chunk
+
+            try:
+                with (
+                    patch.object(
+                        runner.os,
+                        "read",
+                        side_effect=grow_after_first_read,
+                    ),
+                    self.assertRaisesRegex(
+                        runner.DiagnosticRunnerError,
+                        "grew during observation",
+                    ),
+                ):
+                    runner._read_regular_file_at(parent_fd, candidate.name)
+                with self.assertRaisesRegex(
+                    runner.DiagnosticRunnerError,
+                    "bounded regular file",
+                ):
+                    runner._read_regular_file_at(
+                        parent_fd,
+                        candidate.name,
+                        max_bytes=4,
+                    )
+            finally:
+                runner.os.close(parent_fd)
+
+    def test_directory_closure_exits_and_closes_on_first_foreign_entry(
+        self,
+    ) -> None:
+        class _Entry:
+            name = "foreign"
+
+        class _UnboundedScandir:
+            def __init__(self) -> None:
+                self.closed = False
+                self.next_calls = 0
+
+            def __enter__(self) -> _UnboundedScandir:
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                self.closed = True
+
+            def __iter__(self) -> _UnboundedScandir:
+                return self
+
+            def __next__(self) -> _Entry:
+                self.next_calls += 1
+                if self.next_calls > 4:
+                    raise AssertionError("directory closure exhausted unbounded input")
+                return _Entry()
+
+        entries = _UnboundedScandir()
+        with patch.object(runner.os, "scandir", return_value=entries):
+            self.assertFalse(
+                runner._directory_has_exact_entries(
+                    123,
+                    {"manifest.json", "records.jsonl"},
+                )
+            )
+        self.assertEqual(entries.next_calls, 1)
+        self.assertTrue(entries.closed)
+
+    def test_artifact_records_observer_streams_and_rejects_growth_or_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact = root / "artifact"
+            artifact.mkdir()
+            manifest_payload: dict[str, object] = {}
+            (artifact / "manifest.json").write_bytes(
+                runner._canonical_bytes(manifest_payload)
+            )
+            records = artifact / "records.jsonl"
+            records_bytes = b'{"fixture":true}\n'
+            records.write_bytes(records_bytes)
+            parent_fd = runner.os.open(root, runner.os.O_RDONLY)
+            artifact_stat = artifact.stat()
+            artifact_identity = (artifact_stat.st_dev, artifact_stat.st_ino)
+            digest = runner._sha256_bytes(records_bytes)
+            try:
+                self.assertTrue(
+                    runner._published_artifact_matches(
+                        parent_fd,
+                        artifact.name,
+                        artifact_identity,
+                        manifest_payload,
+                        records_byte_count=len(records_bytes),
+                        records_sha256=digest,
+                        commit_receipt=None,
+                    )
+                )
+                with patch.object(runner, "_MAX_RECORDS_FILE_BYTES", 4):
+                    self.assertFalse(
+                        runner._published_artifact_matches(
+                            parent_fd,
+                            artifact.name,
+                            artifact_identity,
+                            manifest_payload,
+                            records_byte_count=len(records_bytes),
+                            records_sha256=digest,
+                            commit_receipt=None,
+                        )
+                    )
+
+                original_read = runner.os.read
+                records_identity = (records.stat().st_dev, records.stat().st_ino)
+                grew = False
+
+                def grow_records_after_first_read(
+                    descriptor: int,
+                    byte_count: int,
+                ) -> bytes:
+                    nonlocal grew
+                    chunk = original_read(descriptor, byte_count)
+                    observed = runner.os.fstat(descriptor)
+                    if (
+                        not grew
+                        and (
+                            observed.st_dev,
+                            observed.st_ino,
+                        )
+                        == records_identity
+                    ):
+                        with records.open("ab") as handle:
+                            handle.write(b"growth")
+                        grew = True
+                    return chunk
+
+                with patch.object(
+                    runner.os,
+                    "read",
+                    side_effect=grow_records_after_first_read,
+                ):
+                    self.assertFalse(
+                        runner._published_artifact_matches(
+                            parent_fd,
+                            artifact.name,
+                            artifact_identity,
+                            manifest_payload,
+                            records_byte_count=len(records_bytes),
+                            records_sha256=digest,
+                            commit_receipt=None,
+                        )
+                    )
+                self.assertTrue(grew)
+            finally:
+                runner.os.close(parent_fd)
+
+    def test_artifact_collective_snapshot_rejects_final_closure_manifest_race(
+        self,
+    ) -> None:
+        for race in ("mutation", "replacement"):
+            with self.subTest(race=race), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                artifact = root / "artifact"
+                artifact.mkdir()
+                manifest_payload: dict[str, object] = {}
+                manifest = artifact / "manifest.json"
+                manifest.write_bytes(runner._canonical_bytes(manifest_payload))
+                records_bytes = b'{"fixture":true}\n'
+                (artifact / "records.jsonl").write_bytes(records_bytes)
+                parent_fd = runner.os.open(root, runner.os.O_RDONLY)
+                artifact_stat = artifact.stat()
+                artifact_identity = (artifact_stat.st_dev, artifact_stat.st_ino)
+                original_closure = runner._directory_has_exact_entries
+                closure_calls = 0
+
+                def race_after_final_closure(
+                    directory_fd: int,
+                    expected_filenames: set[str],
+                ) -> bool:
+                    nonlocal closure_calls
+                    exact = original_closure(directory_fd, expected_filenames)
+                    closure_calls += 1
+                    if closure_calls == 2:
+                        if race == "mutation":
+                            manifest.write_bytes(b"[]\n")
+                        else:
+                            replacement = artifact / ".manifest-replacement"
+                            replacement.write_bytes(manifest.read_bytes())
+                            replacement.replace(manifest)
+                    return exact
+
+                try:
+                    with patch.object(
+                        runner,
+                        "_directory_has_exact_entries",
+                        side_effect=race_after_final_closure,
+                    ):
+                        self.assertFalse(
+                            runner._published_artifact_matches(
+                                parent_fd,
+                                artifact.name,
+                                artifact_identity,
+                                manifest_payload,
+                                records_byte_count=len(records_bytes),
+                                records_sha256=runner._sha256_bytes(records_bytes),
+                                commit_receipt=None,
+                            )
+                        )
+                    self.assertEqual(closure_calls, 2)
+                finally:
+                    runner.os.close(parent_fd)
 
     def test_authorization_mismatch_requires_a_parent_durability_barrier(
         self,
@@ -2281,6 +2553,203 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 f".artifact.attempt-{authorization['deterministic_digest']}"
             )
             self.assertTrue((attempt / "invalid.json").is_file())
+
+    @unittest.skipUnless(hasattr(runner.os, "mkfifo"), "POSIX FIFO required")
+    def test_post_started_fifo_substitution_is_invalid_without_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_rename = runner._rename_noreplace_at
+
+            def replace_manifest_with_fifo(
+                source_directory_fd: int,
+                source_name: str,
+                destination_directory_fd: int,
+                destination_name: str,
+            ) -> None:
+                original_rename(
+                    source_directory_fd,
+                    source_name,
+                    destination_directory_fd,
+                    destination_name,
+                )
+                if destination_name == output.name:
+                    (output / "manifest.json").unlink()
+                    runner.os.mkfifo(output / "manifest.json")
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_rename_noreplace_at",
+                    side_effect=replace_manifest_with_fifo,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticInvalidRunError,
+                    "published artifact identity or bytes drifted",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue((attempt / "started.json").is_file())
+            self.assertTrue((attempt / "invalid.json").is_file())
+            self.assertFalse((attempt / "not_run.json").exists())
+            self.assertTrue((output / "manifest.json").is_fifo())
+
+    def test_post_started_final_closure_member_replacement_is_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_closure = runner._directory_has_exact_entries
+            artifact_closure_calls = 0
+
+            def replace_after_final_artifact_closure(
+                directory_fd: int,
+                expected_filenames: set[str],
+            ) -> bool:
+                nonlocal artifact_closure_calls
+                exact = original_closure(directory_fd, expected_filenames)
+                if expected_filenames == {"manifest.json", "records.jsonl"}:
+                    artifact_closure_calls += 1
+                    if artifact_closure_calls == 2:
+                        manifest = output / "manifest.json"
+                        replacement = output / ".manifest-replacement"
+                        replacement.write_bytes(manifest.read_bytes())
+                        replacement.replace(manifest)
+                return exact
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_directory_has_exact_entries",
+                    side_effect=replace_after_final_artifact_closure,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticInvalidRunError,
+                    "published artifact identity or bytes drifted",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+            self.assertEqual(artifact_closure_calls, 2)
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue((attempt / "started.json").is_file())
+            self.assertTrue((attempt / "invalid.json").is_file())
+            self.assertFalse((attempt / "not_run.json").exists())
+
+    def test_post_started_unbounded_directory_entries_exit_as_invalid(self) -> None:
+        class _Entry:
+            name = "foreign"
+
+        class _UnboundedScandir:
+            def __init__(self) -> None:
+                self.closed = False
+                self.next_calls = 0
+
+            def __enter__(self) -> _UnboundedScandir:
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                self.closed = True
+
+            def __iter__(self) -> _UnboundedScandir:
+                return self
+
+            def __next__(self) -> _Entry:
+                self.next_calls += 1
+                if self.next_calls > 4:
+                    raise AssertionError("artifact closure exhausted entries")
+                return _Entry()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_rename = runner._rename_noreplace_at
+            original_scandir = runner.os.scandir
+            artifact_identity: tuple[int, int] | None = None
+            synthetic_entries: list[_UnboundedScandir] = []
+
+            def capture_artifact_identity(
+                source_directory_fd: int,
+                source_name: str,
+                destination_directory_fd: int,
+                destination_name: str,
+            ) -> None:
+                nonlocal artifact_identity
+                original_rename(
+                    source_directory_fd,
+                    source_name,
+                    destination_directory_fd,
+                    destination_name,
+                )
+                if destination_name == output.name:
+                    observed = output.stat()
+                    artifact_identity = (observed.st_dev, observed.st_ino)
+
+            def bounded_artifact_scandir(path: object = "."):
+                if type(path) is int and artifact_identity is not None:
+                    observed = runner.os.fstat(path)
+                    if (observed.st_dev, observed.st_ino) == artifact_identity:
+                        entries = _UnboundedScandir()
+                        synthetic_entries.append(entries)
+                        return entries
+                return original_scandir(path)
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_rename_noreplace_at",
+                    side_effect=capture_artifact_identity,
+                ),
+                patch.object(
+                    runner.os,
+                    "scandir",
+                    side_effect=bounded_artifact_scandir,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticInvalidRunError,
+                    "published artifact identity or bytes drifted",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+            self.assertEqual(len(synthetic_entries), 1)
+            self.assertEqual(synthetic_entries[0].next_calls, 1)
+            self.assertTrue(synthetic_entries[0].closed)
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue((attempt / "started.json").is_file())
+            self.assertTrue((attempt / "invalid.json").is_file())
+            self.assertFalse((attempt / "not_run.json").exists())
 
     def test_moved_committed_artifact_is_revoked_through_pinned_fd(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -3317,9 +3786,9 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             preflight = _preflight(output)
             authorization = runner._authorization_payload(preflight)
             original_fsync = runner.os.fsync
-            original_listdir = runner.os.listdir
+            original_closure = runner._directory_has_exact_entries
             fsync_count = 0
-            listdir_count = 0
+            closure_count = 0
 
             def fail_parent_sync(descriptor: int) -> None:
                 nonlocal fsync_count
@@ -3328,20 +3797,23 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     raise OSError("persistent attempt parent sync failure")
                 original_fsync(descriptor)
 
-            def fail_rollback_observation(path: object = ".") -> list[str]:
-                nonlocal listdir_count
-                listdir_count += 1
-                if listdir_count == 2:
+            def fail_rollback_observation(
+                descriptor: int,
+                expected: set[str],
+            ) -> bool:
+                nonlocal closure_count
+                closure_count += 1
+                if closure_count == 2:
                     raise OSError("attempt rollback observation failure")
-                return original_listdir(path)
+                return original_closure(descriptor, expected)
 
             with (
                 patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(runner.os, "fsync", side_effect=fail_parent_sync),
                 patch.object(
-                    runner.os,
-                    "listdir",
+                    runner,
+                    "_directory_has_exact_entries",
                     side_effect=fail_rollback_observation,
                 ),
                 patch.object(

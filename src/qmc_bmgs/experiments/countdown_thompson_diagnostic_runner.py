@@ -127,6 +127,11 @@ _PROTECTED_MODULE_PATHS = {
 }
 _MICRO_TASK = CountdownTask((1, 2, 3, 4, 5, 6), target=720)
 _TELEMETRY_ROLE = "descriptive_only_excluded_from_search_core_identity_and_gates"
+_REGULAR_FILE_READ_CHUNK_BYTES = 1024 * 1024
+_MAX_COMMIT_FILE_BYTES = 1 * 1024 * 1024
+_MAX_CONTROL_FILE_BYTES = 8 * 1024 * 1024
+_MAX_ATTESTED_FILE_BYTES = 512 * 1024 * 1024
+_MAX_RECORDS_FILE_BYTES = 256 * 1024 * 1024
 
 
 class DiagnosticRunnerError(RuntimeError):
@@ -200,28 +205,11 @@ def _require_git_oid(value: object, label: str) -> str:
 
 def _strict_canonical_object(path: Path) -> tuple[dict[str, Any], bytes]:
     candidate = Path(path)
-    if sys.platform == "win32":
-        if candidate.is_symlink() or not candidate.is_file():
-            raise DiagnosticRunnerError(
-                f"not a regular authorization file: {candidate}"
-            )
-        raw = candidate.read_bytes()
-    else:
-        try:
-            descriptor = os.open(candidate, os.O_RDONLY | os.O_NOFOLLOW)
-        except OSError as error:
-            raise DiagnosticRunnerError(
-                f"not a regular authorization file: {candidate}"
-            ) from error
-        try:
-            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                raise DiagnosticRunnerError(
-                    f"not a regular authorization file: {candidate}"
-                )
-            with os.fdopen(descriptor, "rb", closefd=False) as handle:
-                raw = handle.read()
-        finally:
-            _close_descriptor_best_effort(descriptor)
+    raw = _read_regular_file_nofollow(
+        candidate,
+        "authorization",
+        max_bytes=_MAX_CONTROL_FILE_BYTES,
+    )
     try:
         parsed = strict_json_loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, TraceValidationError) as error:
@@ -231,25 +219,99 @@ def _strict_canonical_object(path: Path) -> tuple[dict[str, Any], bytes]:
     return parsed, raw
 
 
-def _read_regular_file_nofollow(path: Path, label: str) -> bytes:
-    """Read one regular file without following its final path component."""
+def _stable_stat_signature(observed: os.stat_result) -> tuple[int, ...]:
+    """Return metadata that must remain fixed across one authority observation."""
+
+    return (
+        observed.st_dev,
+        observed.st_ino,
+        observed.st_mode,
+        observed.st_size,
+        observed.st_mtime_ns,
+        observed.st_ctime_ns,
+    )
+
+
+def _read_exact_descriptor_bytes(
+    descriptor: int,
+    byte_count: int,
+    *,
+    label: str,
+) -> bytes:
+    """Read exactly a bounded regular-file extent and require immediate EOF."""
+
+    payload = bytearray()
+    remaining = byte_count
+    try:
+        while remaining:
+            chunk = os.read(
+                descriptor,
+                min(remaining, _REGULAR_FILE_READ_CHUNK_BYTES),
+            )
+            if not chunk:
+                raise DiagnosticRunnerError(
+                    f"{label} became shorter during observation"
+                )
+            payload.extend(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            raise DiagnosticRunnerError(f"{label} grew during observation")
+    except BlockingIOError as error:
+        raise DiagnosticRunnerError(
+            f"{label} did not provide bounded regular-file bytes"
+        ) from error
+    return bytes(payload)
+
+
+def _read_regular_file_nofollow(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int = _MAX_ATTESTED_FILE_BYTES,
+) -> bytes:
+    """Read one stable bounded regular file without following its final name."""
 
     candidate = Path(path)
-    if sys.platform == "win32":
-        if candidate.is_symlink() or not candidate.is_file():
-            raise DiagnosticRunnerError(f"{label} is not a regular file: {candidate}")
-        return candidate.read_bytes()
+    descriptor = -1
     try:
-        descriptor = os.open(candidate, os.O_RDONLY | os.O_NOFOLLOW)
+        before = os.stat(candidate, follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > max_bytes:
+            raise DiagnosticRunnerError(
+                f"{label} is not a regular file within the bounded size limit: "
+                f"{candidate}"
+            )
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        flags |= getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(candidate, flags)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or _stable_stat_signature(
+            opened
+        ) != _stable_stat_signature(before):
+            raise DiagnosticRunnerError(
+                f"{label} changed while its regular file was opened: {candidate}"
+            )
+        raw = _read_exact_descriptor_bytes(
+            descriptor,
+            opened.st_size,
+            label=label,
+        )
+        after_descriptor = os.fstat(descriptor)
+        after_path = os.stat(candidate, follow_symlinks=False)
+        signature = _stable_stat_signature(opened)
+        if (
+            _stable_stat_signature(after_descriptor) != signature
+            or _stable_stat_signature(after_path) != signature
+        ):
+            raise DiagnosticRunnerError(
+                f"{label} changed during regular-file observation: {candidate}"
+            )
+        return raw
+    except DiagnosticRunnerError:
+        raise
     except OSError as error:
         raise DiagnosticRunnerError(
-            f"{label} is not a regular file: {candidate}"
+            f"{label} is not a stable bounded regular file: {candidate}"
         ) from error
-    try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise DiagnosticRunnerError(f"{label} is not a regular file: {candidate}")
-        with os.fdopen(descriptor, "rb", closefd=False) as handle:
-            return handle.read()
     finally:
         _close_descriptor_best_effort(descriptor)
 
@@ -371,6 +433,150 @@ def _rename_noreplace_at(
     raise OSError(error_number, os.strerror(error_number), destination_name)
 
 
+@dataclass(frozen=True)
+class _PinnedRegularFileObservation:
+    descriptor: int
+    signature: tuple[int, ...]
+
+
+def _pin_bounded_regular_file_at(
+    directory_fd: int,
+    filename: str,
+    *,
+    expected_size: int,
+    max_bytes: int,
+    expected_bytes: bytes | None = None,
+    expected_sha256: str | None = None,
+    expected_identity: tuple[int, int] | None = None,
+) -> _PinnedRegularFileObservation | None:
+    """Read and retain one exact descriptor-relative regular-file snapshot."""
+
+    if (
+        type(expected_size) is not int
+        or expected_size < 0
+        or expected_size > max_bytes
+        or (expected_bytes is not None and len(expected_bytes) != expected_size)
+    ):
+        return None
+    try:
+        before = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(before.st_mode) or before.st_size != expected_size:
+        return None
+
+    descriptor = -1
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        flags |= getattr(os, "O_NONBLOCK", 0)
+        try:
+            descriptor = os.open(filename, flags, dir_fd=directory_fd)
+        except FileNotFoundError:
+            return None
+        opened = os.fstat(descriptor)
+        signature = _stable_stat_signature(opened)
+        identity = (opened.st_dev, opened.st_ino)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or signature != _stable_stat_signature(before)
+            or (expected_identity is not None and identity != expected_identity)
+        ):
+            return None
+
+        hasher = hashlib.sha256() if expected_sha256 is not None else None
+        offset = 0
+        matches = True
+        remaining = expected_size
+        while remaining:
+            chunk = os.read(
+                descriptor,
+                min(remaining, _REGULAR_FILE_READ_CHUNK_BYTES),
+            )
+            if not chunk:
+                return None
+            if (
+                expected_bytes is not None
+                and chunk != expected_bytes[offset : offset + len(chunk)]
+            ):
+                matches = False
+            if hasher is not None:
+                hasher.update(chunk)
+            offset += len(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            return None
+
+        after_descriptor = os.fstat(descriptor)
+        try:
+            after_path = os.stat(
+                filename,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return None
+        if (
+            _stable_stat_signature(after_descriptor) != signature
+            or _stable_stat_signature(after_path) != signature
+        ):
+            return None
+        if not matches or (
+            hasher is not None and hasher.hexdigest() != expected_sha256
+        ):
+            return None
+        pinned = _PinnedRegularFileObservation(
+            descriptor=descriptor,
+            signature=signature,
+        )
+        descriptor = -1
+        return pinned
+    finally:
+        _close_descriptor_best_effort(descriptor)
+
+
+def _bounded_regular_file_identity_at(
+    directory_fd: int,
+    filename: str,
+    *,
+    expected_size: int,
+    max_bytes: int,
+    expected_bytes: bytes | None = None,
+    expected_sha256: str | None = None,
+    expected_identity: tuple[int, int] | None = None,
+) -> tuple[int, int] | None:
+    """Stream one exact descriptor-relative regular file without blocking."""
+
+    pinned = _pin_bounded_regular_file_at(
+        directory_fd,
+        filename,
+        expected_size=expected_size,
+        max_bytes=max_bytes,
+        expected_bytes=expected_bytes,
+        expected_sha256=expected_sha256,
+        expected_identity=expected_identity,
+    )
+    if pinned is None:
+        return None
+    try:
+        after_descriptor = os.fstat(pinned.descriptor)
+        try:
+            after_path = os.stat(
+                filename,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return None
+        if (
+            _stable_stat_signature(after_descriptor) != pinned.signature
+            or _stable_stat_signature(after_path) != pinned.signature
+        ):
+            return None
+        return pinned.signature[0], pinned.signature[1]
+    finally:
+        _close_descriptor_best_effort(pinned.descriptor)
+
+
 def _exact_regular_file_identity_at(
     directory_fd: int,
     filename: str,
@@ -381,32 +587,19 @@ def _exact_regular_file_identity_at(
 ) -> tuple[int, int] | None:
     """Return the pinned identity of one exact file, absent/different, or raise."""
 
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        descriptor = os.open(filename, flags, dir_fd=directory_fd)
-    except FileNotFoundError:
-        return None
+        return _bounded_regular_file_identity_at(
+            directory_fd,
+            filename,
+            expected_size=len(expected),
+            max_bytes=_MAX_CONTROL_FILE_BYTES,
+            expected_bytes=expected,
+            expected_identity=expected_identity,
+        )
     except OSError as error:
         raise DiagnosticPublicationStateAmbiguousError(
             f"{label} observation failed: {filename}"
         ) from error
-    try:
-        observed = os.fstat(descriptor)
-        identity = (observed.st_dev, observed.st_ino)
-        if not stat.S_ISREG(observed.st_mode) or (
-            expected_identity is not None and identity != expected_identity
-        ):
-            return None
-        with os.fdopen(descriptor, "rb", closefd=False) as handle:
-            if handle.read() != expected:
-                return None
-        return identity
-    except OSError as error:
-        raise DiagnosticPublicationStateAmbiguousError(
-            f"{label} observation failed: {filename}"
-        ) from error
-    finally:
-        _close_descriptor_best_effort(descriptor)
 
 
 def _durably_prove_file_not_exact_at(
@@ -705,14 +898,48 @@ def _write_canonical_file_noreplace_at(
                 pass
 
 
-def _read_regular_file_at(directory_fd: int, filename: str) -> bytes:
+def _read_regular_file_at(
+    directory_fd: int,
+    filename: str,
+    *,
+    max_bytes: int = _MAX_CONTROL_FILE_BYTES,
+) -> bytes:
+    """Read one stable bounded descriptor-relative control file."""
+
+    before = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode) or before.st_size > max_bytes:
+        raise DiagnosticRunnerError("attempt receipt is not a bounded regular file")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
     descriptor = os.open(filename, flags, dir_fd=directory_fd)
     try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise DiagnosticRunnerError("attempt receipt is not a regular file")
-        with os.fdopen(descriptor, "rb", closefd=False) as handle:
-            return handle.read()
+        opened = os.fstat(descriptor)
+        signature = _stable_stat_signature(opened)
+        if not stat.S_ISREG(opened.st_mode) or signature != _stable_stat_signature(
+            before
+        ):
+            raise DiagnosticRunnerError(
+                "attempt receipt changed while its regular file was opened"
+            )
+        raw = _read_exact_descriptor_bytes(
+            descriptor,
+            opened.st_size,
+            label="attempt receipt",
+        )
+        after_descriptor = os.fstat(descriptor)
+        after_path = os.stat(
+            filename,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if (
+            _stable_stat_signature(after_descriptor) != signature
+            or _stable_stat_signature(after_path) != signature
+        ):
+            raise DiagnosticRunnerError(
+                "attempt receipt changed during regular-file observation"
+            )
+        return raw
     finally:
         _close_descriptor_best_effort(descriptor)
 
@@ -725,34 +952,37 @@ def _published_file_matches(
 ) -> bool:
     """Prove one published file is the exact staged inode and byte payload."""
 
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        descriptor = os.open(filename, flags, dir_fd=directory_fd)
-    except FileNotFoundError:
-        return False
-    except OSError as error:
-        raise DiagnosticPublicationStateAmbiguousError(
-            f"published file observation failed: {filename}"
-        ) from error
-    try:
-        observed = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(observed.st_mode)
-            or (
-                observed.st_dev,
-                observed.st_ino,
+        return (
+            _bounded_regular_file_identity_at(
+                directory_fd,
+                filename,
+                expected_size=len(expected),
+                max_bytes=_MAX_CONTROL_FILE_BYTES,
+                expected_bytes=expected,
+                expected_identity=staging_identity,
             )
-            != staging_identity
-        ):
-            return False
-        with os.fdopen(descriptor, "rb", closefd=False) as handle:
-            return handle.read() == expected
+            is not None
+        )
     except OSError as error:
         raise DiagnosticPublicationStateAmbiguousError(
             f"published file observation failed: {filename}"
         ) from error
-    finally:
-        _close_descriptor_best_effort(descriptor)
+
+
+def _directory_has_exact_entries(
+    directory_fd: int,
+    expected_filenames: set[str],
+) -> bool:
+    """Check exact directory closure with bounded iteration and early exit."""
+
+    remaining = set(expected_filenames)
+    with os.scandir(directory_fd) as entries:
+        for entry in entries:
+            if entry.name not in remaining:
+                return False
+            remaining.remove(entry.name)
+    return not remaining
 
 
 def _revoke_published_file_at(
@@ -796,6 +1026,7 @@ def _published_artifact_matches(
 
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
+    member_snapshots: dict[str, _PinnedRegularFileObservation] = {}
     try:
         output_fd = os.open(output_name, flags, dir_fd=parent_fd)
     except FileNotFoundError:
@@ -808,24 +1039,69 @@ def _published_artifact_matches(
         observed = os.fstat(output_fd)
         if (observed.st_dev, observed.st_ino) != staging_identity:
             return False
+        directory_signature = _stable_stat_signature(observed)
         expected_filenames = {"manifest.json", "records.jsonl"}
         if commit_receipt is not None:
             expected_filenames.add("commit.json")
-        if set(os.listdir(output_fd)) != expected_filenames:
+        if not _directory_has_exact_entries(output_fd, expected_filenames):
             return False
-        if _read_regular_file_at(output_fd, "manifest.json") != _canonical_bytes(
-            run_manifest
-        ):
-            return False
-        records = _read_regular_file_at(output_fd, "records.jsonl")
-        if len(records) != records_byte_count or _sha256_bytes(records) != (
-            records_sha256
-        ):
-            return False
-        return commit_receipt is None or _read_regular_file_at(
+        manifest_bytes = _canonical_bytes(run_manifest)
+        manifest_snapshot = _pin_bounded_regular_file_at(
             output_fd,
-            "commit.json",
-        ) == _canonical_bytes(commit_receipt)
+            "manifest.json",
+            expected_size=len(manifest_bytes),
+            max_bytes=_MAX_CONTROL_FILE_BYTES,
+            expected_bytes=manifest_bytes,
+        )
+        if manifest_snapshot is None:
+            return False
+        member_snapshots["manifest.json"] = manifest_snapshot
+        records_snapshot = _pin_bounded_regular_file_at(
+            output_fd,
+            "records.jsonl",
+            expected_size=records_byte_count,
+            max_bytes=_MAX_RECORDS_FILE_BYTES,
+            expected_sha256=records_sha256,
+        )
+        if records_snapshot is None:
+            return False
+        member_snapshots["records.jsonl"] = records_snapshot
+        if commit_receipt is not None:
+            commit_bytes = _canonical_bytes(commit_receipt)
+            commit_snapshot = _pin_bounded_regular_file_at(
+                output_fd,
+                "commit.json",
+                expected_size=len(commit_bytes),
+                max_bytes=_MAX_COMMIT_FILE_BYTES,
+                expected_bytes=commit_bytes,
+            )
+            if commit_snapshot is None:
+                return False
+            member_snapshots["commit.json"] = commit_snapshot
+        if not _directory_has_exact_entries(output_fd, expected_filenames):
+            return False
+        descriptor_signatures = {
+            filename: _stable_stat_signature(os.fstat(snapshot.descriptor))
+            for filename, snapshot in member_snapshots.items()
+        }
+        named_signatures = {
+            filename: _stable_stat_signature(
+                os.stat(
+                    filename,
+                    dir_fd=output_fd,
+                    follow_symlinks=False,
+                )
+            )
+            for filename in expected_filenames
+        }
+        return (
+            all(
+                named_signatures[filename] == snapshot.signature
+                and descriptor_signatures[filename] == snapshot.signature
+                for filename, snapshot in member_snapshots.items()
+            )
+            and _stable_stat_signature(os.fstat(output_fd)) == directory_signature
+        )
     except DiagnosticPublicationStateAmbiguousError:
         raise
     except (FileNotFoundError, DiagnosticRunnerError):
@@ -835,6 +1111,8 @@ def _published_artifact_matches(
             f"published artifact observation failed: {output_name}"
         ) from error
     finally:
+        for snapshot in member_snapshots.values():
+            _close_descriptor_best_effort(snapshot.descriptor)
         _close_descriptor_best_effort(output_fd)
 
 
@@ -2214,7 +2492,7 @@ def _published_attempt_reservation_matches(
     ):
         return False
     try:
-        if set(os.listdir(pinned_fd)) != {"pre_outcome.json"}:
+        if not _directory_has_exact_entries(pinned_fd, {"pre_outcome.json"}):
             return False
         if _read_regular_file_at(
             pinned_fd,
@@ -2391,7 +2669,7 @@ def _revoke_exact_attempt_reservation(
         )
         if tombstone_name is None:
             return False
-        if set(os.listdir(pinned_fd)) != {"pre_outcome.json"}:
+        if not _directory_has_exact_entries(pinned_fd, {"pre_outcome.json"}):
             return False
         if _read_regular_file_at(
             pinned_fd,
@@ -2480,7 +2758,7 @@ def _cleanup_private_attempt_scratch(
             or (pinned.st_dev, pinned.st_ino) != pinned_identity
         ):
             return
-        if set(os.listdir(temporary_fd)) != {"pre_outcome.json"}:
+        if not _directory_has_exact_entries(temporary_fd, {"pre_outcome.json"}):
             return
         if _read_regular_file_at(
             temporary_fd,

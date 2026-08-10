@@ -402,7 +402,8 @@ relocated artifactの解析は、元の`authorized_output_path`が現存しdescr
 許可し、両artifactの厳密3-file byte receipt一致もpublication前に検証する。exact rollback不能な
 移動済みcopyは`INVALID`ではなくambiguityとして保持する。artifact memberはnon-regularを
 open前に拒否し、v1上限（commit 1 MiB / manifest 8 MiB / records 256 MiB）内でexact EOFまで
-bounded readする。historical byte receiptはvalidated sizeに従いstreaming hashで照合する。
+bounded readする。historical byte receiptはvalidated sizeに従いstreaming hashで照合し、summary
+durability barrier後にもhistorical/relocated両receiptを集合的に再確認する。
 v2/v3/v4のどれもbase searchとしてgreedy/beamを上回れなければ、locked-128は
 開かず`STOP_REPAIR_NO_LOCKED_128_RUN`とする。
 

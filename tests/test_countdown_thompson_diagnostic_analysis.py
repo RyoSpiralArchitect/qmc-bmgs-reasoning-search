@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import stat
 import tempfile
 import time
 import unittest
@@ -96,6 +97,13 @@ def _write_synthetic_artifact_members(
     for filename, payload in snapshot.items():
         (directory / filename).write_bytes(payload)
     return analysis._artifact_snapshot_receipt(snapshot)
+
+
+def _mutate_file_preserving_size(path: Path) -> None:
+    payload = path.read_bytes()
+    if not payload:
+        raise AssertionError("synthetic mutation requires non-empty bytes")
+    path.write_bytes(bytes((payload[0] ^ 1,)) + payload[1:])
 
 
 def _proposal_and_selection(
@@ -987,6 +995,101 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             finally:
                 analysis._close_pinned_protected_roots(pinned)
 
+    def _exercise_final_receipt_pass_replacement(self, target_label: str) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "relocated-artifact"
+            artifact_receipt = _write_synthetic_artifact_members(
+                artifact,
+                b"identical-artifact",
+            )
+            historical = root / "historical-artifact"
+            self.assertEqual(
+                _write_synthetic_artifact_members(
+                    historical,
+                    b"identical-artifact",
+                ),
+                artifact_receipt,
+            )
+            bundle = root / "bundle"
+            bundle.mkdir()
+            publication_parent = root / "publication-parent"
+            publication_parent.mkdir()
+            output = publication_parent / "summary.json"
+            summary = {"schema_version": "synthetic/v1", "status": "PASS"}
+            target = historical if target_label.startswith("historical") else artifact
+            records = target / "records.jsonl"
+            displaced = target / "records.original"
+            foreign = b"X" * len(records.read_bytes())
+            original_closure = analysis._assert_artifact_directory_closure
+            target_closure_count = 0
+            replacement_completed = False
+
+            def replace_after_final_closure(
+                directory_fd: int,
+                label: str,
+            ) -> None:
+                nonlocal replacement_completed, target_closure_count
+                original_closure(directory_fd, label)
+                if label == target_label:
+                    target_closure_count += 1
+                    if target_closure_count == 8:
+                        records.rename(displaced)
+                        records.write_bytes(foreign)
+                        replacement_completed = True
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    return_value=SimpleNamespace(
+                        manifest={"authorized_output_path": str(historical)},
+                        artifact_receipt=artifact_receipt,
+                    ),
+                ),
+                patch.object(analysis, "_build_summary", return_value=summary),
+                patch.object(
+                    analysis,
+                    "_assert_artifact_directory_closure",
+                    side_effect=replace_after_final_closure,
+                ),
+            ):
+                with self.assertRaises(analysis.DiagnosticAnalysisError) as raised:
+                    analysis.write_countdown_thompson_diagnostic_summary(
+                        artifact,
+                        bundle,
+                        root / "authorization.json",
+                        "0" * 64,
+                        output,
+                        repository_root=root,
+                    )
+                self.assertIs(type(raised.exception), analysis.DiagnosticAnalysisError)
+            self.assertTrue(replacement_completed)
+            self.assertEqual(target_closure_count, 8)
+            self.assertEqual(records.read_bytes(), foreign)
+            self.assertTrue(displaced.is_file())
+            self.assertFalse(output.exists())
+            quarantines = tuple(
+                path
+                for path in publication_parent.iterdir()
+                if path.name.startswith(".summary.json.rollback-")
+            )
+            self.assertEqual(len(quarantines), 1)
+            self.assertEqual(
+                quarantines[0].read_bytes(),
+                analysis._canonical_bytes(summary),
+            )
+
+    def test_historical_final_receipt_pass_replacement_revokes_summary(self) -> None:
+        self._exercise_final_receipt_pass_replacement(
+            "historical committed artifact",
+        )
+
+    def test_relocated_final_receipt_pass_replacement_revokes_summary(self) -> None:
+        self._exercise_final_receipt_pass_replacement(
+            "relocated validated artifact",
+        )
+
     def test_summary_ancestor_symlink_pivot_cannot_reach_protected_root(
         self,
     ) -> None:
@@ -1423,7 +1526,6 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                     "_build_summary",
                     return_value=summary,
                 ),
-                patch.object(analysis, "_atomic_write_no_replace") as atomic_write,
             ):
                 observed = analysis.write_countdown_thompson_diagnostic_summary(
                     artifact,
@@ -1434,8 +1536,155 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                     repository_root=root,
                 )
             self.assertEqual(observed, summary)
-            atomic_write.assert_called_once()
+            self.assertEqual(output.read_bytes(), analysis._canonical_bytes(summary))
+
+    def _exercise_post_barrier_artifact_receipt_drift(
+        self,
+        *,
+        mutate_historical: bool,
+        mutate_relocated: bool,
+        fail_rollback_sync: bool = False,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "relocated-artifact"
+            artifact_receipt = _write_synthetic_artifact_members(
+                artifact,
+                b"identical-artifact",
+            )
+            historical = root / "historical-artifact"
+            self.assertEqual(
+                _write_synthetic_artifact_members(
+                    historical,
+                    b"identical-artifact",
+                ),
+                artifact_receipt,
+            )
+            bundle = root / "bundle"
+            bundle.mkdir()
+            publication_parent = root / "publication-parent"
+            publication_parent.mkdir()
+            parent_identity = (
+                publication_parent.stat().st_dev,
+                publication_parent.stat().st_ino,
+            )
+            output = publication_parent / "summary.json"
+            summary = {
+                "schema_version": "synthetic/v1",
+                "status": "PASS",
+            }
+            summary_bytes = analysis._canonical_bytes(summary)
+            original_fsync = analysis.os.fsync
+            parent_sync_count = 0
+            mutation_completed = False
+
+            def mutate_after_summary_barrier(descriptor: int) -> None:
+                nonlocal mutation_completed, parent_sync_count
+                opened = analysis.os.fstat(descriptor)
+                if (opened.st_dev, opened.st_ino) == parent_identity:
+                    parent_sync_count += 1
+                    if fail_rollback_sync and parent_sync_count == 2:
+                        raise OSError("synthetic rollback parent barrier failure")
+                original_fsync(descriptor)
+                if (
+                    not mutation_completed
+                    and parent_sync_count == 1
+                    and output.exists()
+                ):
+                    if mutate_historical:
+                        _mutate_file_preserving_size(historical / "records.jsonl")
+                    if mutate_relocated:
+                        _mutate_file_preserving_size(artifact / "records.jsonl")
+                    mutation_completed = True
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    return_value=SimpleNamespace(
+                        manifest={"authorized_output_path": str(historical)},
+                        artifact_receipt=artifact_receipt,
+                    ),
+                ),
+                patch.object(analysis, "_build_summary", return_value=summary),
+                patch.object(
+                    analysis.os,
+                    "fsync",
+                    side_effect=mutate_after_summary_barrier,
+                ),
+            ):
+                if fail_rollback_sync:
+                    with self.assertRaisesRegex(
+                        analysis.DiagnosticAnalysisPublicationAmbiguousError,
+                        "must not be used",
+                    ):
+                        analysis.write_countdown_thompson_diagnostic_summary(
+                            artifact,
+                            bundle,
+                            root / "authorization.json",
+                            "0" * 64,
+                            output,
+                            repository_root=root,
+                        )
+                else:
+                    with self.assertRaises(
+                        analysis.DiagnosticAnalysisError,
+                    ) as raised:
+                        analysis.write_countdown_thompson_diagnostic_summary(
+                            artifact,
+                            bundle,
+                            root / "authorization.json",
+                            "0" * 64,
+                            output,
+                            repository_root=root,
+                        )
+                    self.assertIs(
+                        type(raised.exception), analysis.DiagnosticAnalysisError
+                    )
+                    self.assertIn("bytes differ", str(raised.exception))
+            self.assertTrue(mutation_completed)
             self.assertFalse(output.exists())
+            quarantines = tuple(
+                path
+                for path in publication_parent.iterdir()
+                if path.name.startswith(".summary.json.rollback-")
+            )
+            self.assertEqual(len(quarantines), 1)
+            self.assertEqual(quarantines[0].read_bytes(), summary_bytes)
+            self.assertEqual(parent_sync_count, 2)
+
+    def test_historical_receipt_drift_after_summary_barrier_revokes_summary(
+        self,
+    ) -> None:
+        self._exercise_post_barrier_artifact_receipt_drift(
+            mutate_historical=True,
+            mutate_relocated=False,
+        )
+
+    def test_relocated_receipt_drift_after_summary_barrier_revokes_summary(
+        self,
+    ) -> None:
+        self._exercise_post_barrier_artifact_receipt_drift(
+            mutate_historical=False,
+            mutate_relocated=True,
+        )
+
+    def test_both_artifact_receipts_drift_after_summary_barrier_revokes_summary(
+        self,
+    ) -> None:
+        self._exercise_post_barrier_artifact_receipt_drift(
+            mutate_historical=True,
+            mutate_relocated=True,
+        )
+
+    def test_post_barrier_receipt_drift_rollback_sync_failure_is_ambiguous(
+        self,
+    ) -> None:
+        self._exercise_post_barrier_artifact_receipt_drift(
+            mutate_historical=True,
+            mutate_relocated=False,
+            fail_rollback_sync=True,
+        )
 
     def test_historical_directory_equal_to_artifact_retains_raw_pin(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1460,6 +1709,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 _payload: bytes,
                 *,
                 protected_roots: tuple[analysis._PinnedProtectedRoot, ...],
+                post_durability_check: object,
             ) -> None:
                 self.assertEqual(len(protected_roots), 3)
                 artifact_pin, _bundle_pin, historical_pin = protected_roots
@@ -1470,6 +1720,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 )
                 self.assertEqual(artifact_pin.authority_path, artifact)
                 self.assertEqual(historical_pin.authority_path, artifact)
+                self.assertTrue(callable(post_durability_check))
                 analysis._assert_pinned_protected_roots(protected_roots)
 
             with (
@@ -1599,6 +1850,163 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                     protected_roots=(protected,),
                 )
             self.assertFalse(output.exists())
+
+    def test_summary_entry_stat_open_fifo_race_is_nonblocking(self) -> None:
+        if not hasattr(os, "mkfifo") or not hasattr(os, "O_NONBLOCK"):
+            self.skipTest("non-blocking FIFO observation is unavailable")
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_open = analysis.os.open
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "summary.json"
+            destination.write_bytes(payload)
+            opened = destination.stat()
+            staged_identity = (opened.st_dev, opened.st_ino)
+            parent_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            swapped = False
+
+            def swap_to_fifo_before_open(
+                path: object,
+                flags: int,
+                *args: object,
+                **kwargs: object,
+            ) -> int:
+                nonlocal swapped
+                if (
+                    path == destination.name
+                    and kwargs.get("dir_fd") == parent_fd
+                    and not swapped
+                ):
+                    destination.unlink()
+                    os.mkfifo(destination)
+                    swapped = True
+                    if not flags & os.O_NONBLOCK:
+                        raise AssertionError("summary observation omitted O_NONBLOCK")
+                return original_open(path, flags, *args, **kwargs)
+
+            try:
+                started = time.monotonic()
+                with patch.object(
+                    analysis.os,
+                    "open",
+                    side_effect=swap_to_fifo_before_open,
+                ):
+                    state = analysis._summary_entry_state(
+                        parent_fd,
+                        destination.name,
+                        staged_identity,
+                        payload,
+                    )
+                elapsed = time.monotonic() - started
+            finally:
+                os.close(parent_fd)
+            self.assertTrue(swapped)
+            self.assertEqual(state, analysis._SUMMARY_ENTRY_OTHER)
+            self.assertLess(elapsed, 1.0)
+            self.assertTrue(stat.S_ISFIFO(destination.lstat().st_mode))
+
+    def test_summary_entry_growth_is_bounded_and_not_exact(self) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_read = analysis.os.read
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "summary.json"
+            destination.write_bytes(payload)
+            opened = destination.stat()
+            staged_identity = (opened.st_dev, opened.st_ino)
+            parent_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            grew = False
+            requested_sizes: list[int] = []
+
+            def grow_after_first_read(descriptor: int, size: int) -> bytes:
+                nonlocal grew
+                current = os.fstat(descriptor)
+                if (current.st_dev, current.st_ino) == staged_identity:
+                    requested_sizes.append(size)
+                    if size > len(payload) + 1:
+                        raise AssertionError("summary observation read is unbounded")
+                chunk = original_read(descriptor, size)
+                if (
+                    not grew
+                    and chunk
+                    and (current.st_dev, current.st_ino) == staged_identity
+                ):
+                    with destination.open("ab") as handle:
+                        handle.write(b"growth" * 1024)
+                    grew = True
+                return chunk
+
+            try:
+                with patch.object(
+                    analysis.os,
+                    "read",
+                    side_effect=grow_after_first_read,
+                ):
+                    state = analysis._summary_entry_state(
+                        parent_fd,
+                        destination.name,
+                        staged_identity,
+                        payload,
+                    )
+            finally:
+                os.close(parent_fd)
+            self.assertTrue(grew)
+            self.assertTrue(requested_sizes)
+            self.assertEqual(state, analysis._SUMMARY_ENTRY_OTHER)
+
+    def test_pinned_summary_inode_growth_is_bounded_and_not_exact(self) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_read = analysis.os.read
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "summary.json"
+            destination.write_bytes(payload)
+            descriptor = os.open(destination, os.O_RDWR | os.O_NOFOLLOW)
+            opened = os.fstat(descriptor)
+            staged_identity = (opened.st_dev, opened.st_ino)
+            grew = False
+            requested_sizes: list[int] = []
+
+            def grow_after_first_read(observed_fd: int, size: int) -> bytes:
+                nonlocal grew
+                current = os.fstat(observed_fd)
+                if (current.st_dev, current.st_ino) == staged_identity:
+                    requested_sizes.append(size)
+                    if size > len(payload) + 1:
+                        raise AssertionError("pinned summary read is unbounded")
+                chunk = original_read(observed_fd, size)
+                if (
+                    not grew
+                    and chunk
+                    and (current.st_dev, current.st_ino) == staged_identity
+                ):
+                    with destination.open("ab") as handle:
+                        handle.write(b"growth" * 1024)
+                    grew = True
+                return chunk
+
+            try:
+                with patch.object(
+                    analysis.os,
+                    "read",
+                    side_effect=grow_after_first_read,
+                ):
+                    state, link_count = analysis._pinned_summary_inode_state(
+                        descriptor,
+                        staged_identity,
+                        payload,
+                    )
+            finally:
+                os.close(descriptor)
+            self.assertTrue(grew)
+            self.assertTrue(requested_sizes)
+            self.assertEqual(state, analysis._SUMMARY_ENTRY_OTHER)
+            self.assertEqual(link_count, 1)
 
     def test_summary_move_after_parent_fsync_is_publication_ambiguous(self) -> None:
         payload = analysis._canonical_bytes(
@@ -1908,6 +2316,150 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                     analysis._atomic_write_no_replace(output, payload)
             self.assertEqual(renamed_identities[0][0], renamed_identities[0][1])
             self.assertEqual(output.read_bytes(), corrupted)
+
+    def test_summary_rollback_restores_foreign_swap_before_reporting_ambiguity(
+        self,
+    ) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        foreign = b'{"foreign":true}\n'
+        original_rename = analysis._rename_noreplace_at
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "summary.json"
+            exact_survivor = root / "moved-exact-summary.json"
+            foreign_identity: tuple[int, int] | None = None
+            swap_completed = False
+
+            def fail_commit_receipt() -> None:
+                raise analysis.DiagnosticAnalysisError(
+                    "synthetic post-durability receipt drift"
+                )
+
+            def swap_before_rollback_rename(
+                directory_fd: int,
+                source_name: str,
+                destination_name: str,
+            ) -> None:
+                nonlocal foreign_identity, swap_completed
+                if (
+                    source_name == output.name
+                    and destination_name.startswith(".summary.json.rollback-")
+                    and not swap_completed
+                ):
+                    output.rename(exact_survivor)
+                    output.write_bytes(foreign)
+                    observed = output.stat()
+                    foreign_identity = (observed.st_dev, observed.st_ino)
+                    swap_completed = True
+                original_rename(directory_fd, source_name, destination_name)
+
+            with patch.object(
+                analysis,
+                "_rename_noreplace_at",
+                side_effect=swap_before_rollback_rename,
+            ):
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisPublicationAmbiguousError,
+                    "must not be used",
+                ):
+                    analysis._atomic_write_no_replace(
+                        output,
+                        payload,
+                        post_durability_check=fail_commit_receipt,
+                    )
+            self.assertTrue(swap_completed)
+            self.assertIsNotNone(foreign_identity)
+            self.assertEqual(output.read_bytes(), foreign)
+            restored = output.stat()
+            self.assertEqual(
+                (restored.st_dev, restored.st_ino),
+                foreign_identity,
+            )
+            self.assertEqual(exact_survivor.read_bytes(), payload)
+            self.assertEqual(
+                tuple(
+                    path
+                    for path in root.iterdir()
+                    if path.name.startswith(".summary.json.rollback-")
+                ),
+                (),
+            )
+
+    def test_summary_rollback_restores_foreign_symlink_on_darwin(self) -> None:
+        if not hasattr(os, "O_SYMLINK"):
+            self.skipTest("Darwin O_SYMLINK is unavailable")
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_rename = analysis._rename_noreplace_at
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "summary.json"
+            exact_survivor = root / "moved-exact-summary.json"
+            foreign_target = root / "foreign-target.json"
+            foreign_target.write_text("foreign\n", encoding="utf-8")
+            foreign_identity: tuple[int, int] | None = None
+            swap_completed = False
+
+            def fail_commit_receipt() -> None:
+                raise analysis.DiagnosticAnalysisError(
+                    "synthetic post-durability receipt drift"
+                )
+
+            def swap_symlink_before_rollback_rename(
+                directory_fd: int,
+                source_name: str,
+                destination_name: str,
+            ) -> None:
+                nonlocal foreign_identity, swap_completed
+                if (
+                    source_name == output.name
+                    and destination_name.startswith(".summary.json.rollback-")
+                    and not swap_completed
+                ):
+                    output.rename(exact_survivor)
+                    output.symlink_to(foreign_target.name)
+                    observed = output.lstat()
+                    foreign_identity = (observed.st_dev, observed.st_ino)
+                    swap_completed = True
+                original_rename(directory_fd, source_name, destination_name)
+
+            with patch.object(
+                analysis,
+                "_rename_noreplace_at",
+                side_effect=swap_symlink_before_rollback_rename,
+            ):
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisPublicationAmbiguousError,
+                    "must not be used",
+                ):
+                    analysis._atomic_write_no_replace(
+                        output,
+                        payload,
+                        post_durability_check=fail_commit_receipt,
+                    )
+            self.assertTrue(swap_completed)
+            self.assertIsNotNone(foreign_identity)
+            self.assertTrue(output.is_symlink())
+            self.assertEqual(os.readlink(output), foreign_target.name)
+            restored = output.lstat()
+            self.assertEqual(
+                (restored.st_dev, restored.st_ino),
+                foreign_identity,
+            )
+            self.assertEqual(exact_survivor.read_bytes(), payload)
+            self.assertEqual(
+                tuple(
+                    path
+                    for path in root.iterdir()
+                    if path.name.startswith(".summary.json.rollback-")
+                ),
+                (),
+            )
 
     def test_summary_observation_error_is_not_treated_as_absence(self) -> None:
         payload = analysis._canonical_bytes(

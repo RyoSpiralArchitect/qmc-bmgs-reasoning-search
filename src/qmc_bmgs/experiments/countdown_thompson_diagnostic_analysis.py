@@ -28,7 +28,7 @@ import tempfile
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Mapping, Sequence, TypedDict
+from typing import Any, Callable, Mapping, Sequence, TypedDict
 
 from qmc_bmgs.benchmarks.countdown import CountdownTask
 from qmc_bmgs.experiments.countdown_thompson_diagnostic_manifest import (
@@ -468,6 +468,18 @@ def _validate_artifact_member_size(
     return value
 
 
+def _artifact_member_stable_state(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
 def _read_bounded_artifact_member_from_descriptor(
     directory_fd: int,
     filename: str,
@@ -529,17 +541,6 @@ def _read_bounded_artifact_member_from_descriptor(
             label,
         )
 
-        def stable_state(value: os.stat_result) -> tuple[int, ...]:
-            return (
-                value.st_dev,
-                value.st_ino,
-                value.st_mode,
-                value.st_nlink,
-                value.st_size,
-                value.st_mtime_ns,
-                value.st_ctime_ns,
-            )
-
         if (opened.st_dev, opened.st_ino) != (
             observed.st_dev,
             observed.st_ino,
@@ -569,7 +570,9 @@ def _read_bounded_artifact_member_from_descriptor(
                 f"{label} member grew beyond its declared byte size: {filename}"
             )
         after = os.fstat(file_fd)
-        if stable_state(after) != stable_state(opened):
+        if _artifact_member_stable_state(after) != _artifact_member_stable_state(
+            opened
+        ):
             raise DiagnosticAnalysisError(
                 f"{label} member changed during bounded read: {filename}"
             )
@@ -800,7 +803,11 @@ def _read_artifact_receipt_from_descriptor(
 ) -> _ArtifactReceipt:
     """Stream a stable byte receipt through an already pinned artifact root."""
 
-    if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
+    if (
+        os.name != "posix"
+        or not hasattr(os, "O_NOFOLLOW")
+        or not hasattr(os, "O_NONBLOCK")
+    ):
         raise DiagnosticAnalysisError(
             f"{label} validation requires POSIX descriptor-bound reads"
         )
@@ -808,20 +815,143 @@ def _read_artifact_receipt_from_descriptor(
 
     def read_once() -> _ArtifactReceipt:
         _assert_artifact_directory_closure(directory_fd, label)
-        observed: list[tuple[str, int, str]] = []
-        for filename, byte_count, _digest in expected:
-            payload, member_receipt = _read_bounded_artifact_member_from_descriptor(
-                directory_fd,
-                filename,
-                label,
-                expected_size=byte_count,
-                capture_bytes=False,
+        pinned_members: list[tuple[str, int, os.stat_result]] = []
+        try:
+            for filename, expected_size, _digest in expected:
+                try:
+                    named_before = os.stat(
+                        filename,
+                        dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                except OSError as error:
+                    raise DiagnosticAnalysisError(
+                        f"{label} member could not be observed: {filename}"
+                    ) from error
+                if not stat.S_ISREG(named_before.st_mode):
+                    raise DiagnosticAnalysisError(
+                        f"{label} member is not regular: {filename}"
+                    )
+                named_size = _validate_artifact_member_size(
+                    filename,
+                    named_before.st_size,
+                    label,
+                )
+                if named_size != expected_size:
+                    raise DiagnosticAnalysisError(
+                        f"{label} member byte size differs from the validated "
+                        f"artifact: {filename}"
+                    )
+
+                member_fd = -1
+                try:
+                    member_fd = os.open(
+                        filename,
+                        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                        dir_fd=directory_fd,
+                    )
+                    opened = os.fstat(member_fd)
+                    if not stat.S_ISREG(opened.st_mode):
+                        raise DiagnosticAnalysisError(
+                            f"{label} member raced to a non-regular file: {filename}"
+                        )
+                    opened_size = _validate_artifact_member_size(
+                        filename,
+                        opened.st_size,
+                        label,
+                    )
+                    if (opened.st_dev, opened.st_ino) != (
+                        named_before.st_dev,
+                        named_before.st_ino,
+                    ) or opened_size != expected_size:
+                        raise DiagnosticAnalysisError(
+                            f"{label} member changed before descriptor acquisition: "
+                            f"{filename}"
+                        )
+                    pinned_members.append((filename, member_fd, opened))
+                    member_fd = -1
+                finally:
+                    _close_descriptor_best_effort(member_fd)
+
+            observed: list[tuple[str, int, str]] = []
+            for filename, member_fd, opened in pinned_members:
+                os.lseek(member_fd, 0, os.SEEK_SET)
+                remaining = opened.st_size
+                hasher = hashlib.sha256()
+                while remaining:
+                    chunk = os.read(
+                        member_fd,
+                        min(remaining, _ARTIFACT_READ_CHUNK_BYTES),
+                    )
+                    if not chunk:
+                        raise DiagnosticAnalysisError(
+                            f"{label} member ended before its declared byte size: "
+                            f"{filename}"
+                        )
+                    remaining -= len(chunk)
+                    hasher.update(chunk)
+                if os.read(member_fd, 1):
+                    raise DiagnosticAnalysisError(
+                        f"{label} member grew beyond its declared byte size: {filename}"
+                    )
+                after_read = os.fstat(member_fd)
+                if _artifact_member_stable_state(
+                    after_read
+                ) != _artifact_member_stable_state(opened):
+                    raise DiagnosticAnalysisError(
+                        f"{label} member changed during bounded read: {filename}"
+                    )
+                observed.append((filename, opened.st_size, hasher.hexdigest()))
+
+            _assert_artifact_directory_closure(directory_fd, label)
+            descriptor_states = tuple(
+                os.fstat(member_fd) for _filename, member_fd, _opened in pinned_members
             )
-            if payload is not None:
-                raise AssertionError("streamed artifact member retained full bytes")
-            observed.append(member_receipt)
-        _assert_artifact_directory_closure(directory_fd, label)
-        return tuple(observed)
+            try:
+                named_states = tuple(
+                    os.stat(
+                        filename,
+                        dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                    for filename, _member_fd, _opened in pinned_members
+                )
+            except OSError as error:
+                raise DiagnosticAnalysisError(
+                    f"{label} member names could not be reobserved"
+                ) from error
+            for (
+                (filename, _member_fd, opened),
+                descriptor_state,
+                named_state,
+            ) in zip(
+                pinned_members,
+                descriptor_states,
+                named_states,
+                strict=True,
+            ):
+                expected_state = _artifact_member_stable_state(opened)
+                if _artifact_member_stable_state(descriptor_state) != expected_state:
+                    raise DiagnosticAnalysisError(
+                        f"{label} member changed after bounded receipt: {filename}"
+                    )
+                if (
+                    not stat.S_ISREG(named_state.st_mode)
+                    or _artifact_member_stable_state(named_state) != expected_state
+                ):
+                    raise DiagnosticAnalysisError(
+                        f"{label} member name changed after bounded receipt: {filename}"
+                    )
+            return tuple(observed)
+        except DiagnosticAnalysisError:
+            raise
+        except OSError as error:
+            raise DiagnosticAnalysisError(
+                f"{label} bounded receipt could not be completed"
+            ) from error
+        finally:
+            for _filename, member_fd, _opened in pinned_members:
+                _close_descriptor_best_effort(member_fd)
 
     first = read_once()
     if first != expected:
@@ -3146,6 +3276,36 @@ _SUMMARY_ENTRY_EXACT = "EXACT"
 _SUMMARY_ENTRY_OTHER = "OTHER"
 
 
+def _summary_inode_stable_state(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _read_exact_bounded_summary_payload(
+    descriptor: int,
+    expected_size: int,
+) -> tuple[bytes, bool]:
+    """Read at most expected_size plus one EOF-probe byte."""
+
+    remaining = expected_size
+    chunks: list[bytes] = []
+    while remaining:
+        chunk = os.read(descriptor, remaining)
+        if not chunk:
+            break
+        remaining -= len(chunk)
+        chunks.append(chunk)
+    extra = bool(os.read(descriptor, 1))
+    return b"".join(chunks), extra
+
+
 def _summary_entry_state(
     directory_fd: int,
     filename: str,
@@ -3154,7 +3314,26 @@ def _summary_entry_state(
 ) -> str:
     """Observe one entry by descriptor, including its exact expected bytes."""
 
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        named_before = os.stat(
+            filename,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return _SUMMARY_ENTRY_ABSENT
+    except OSError as error:
+        raise DiagnosticAnalysisPublicationAmbiguousError(
+            f"summary entry could not be observed: {filename}"
+        ) from error
+    if (
+        not stat.S_ISREG(named_before.st_mode)
+        or (named_before.st_dev, named_before.st_ino) != staged_identity
+        or named_before.st_size != len(expected_payload)
+    ):
+        return _SUMMARY_ENTRY_OTHER
+
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
     try:
         descriptor = os.open(filename, flags, dir_fd=directory_fd)
     except FileNotFoundError:
@@ -3164,20 +3343,41 @@ def _summary_entry_state(
             f"summary entry could not be observed: {filename}"
         ) from error
     try:
-        observed = os.fstat(descriptor)
-        observed_identity = (observed.st_dev, observed.st_ino)
+        opened = os.fstat(descriptor)
         if (
-            not stat.S_ISREG(observed.st_mode)
-            or observed_identity != staged_identity
-            or observed.st_size != len(expected_payload)
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != staged_identity
+            or opened.st_size != len(expected_payload)
+            or _summary_inode_stable_state(opened)
+            != _summary_inode_stable_state(named_before)
         ):
             return _SUMMARY_ENTRY_OTHER
-        observed_payload = _read_fd_bytes(descriptor)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        observed_payload, has_extra = _read_exact_bounded_summary_payload(
+            descriptor,
+            len(expected_payload),
+        )
         after = os.fstat(descriptor)
+        try:
+            named_after = os.stat(
+                filename,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return _SUMMARY_ENTRY_OTHER
+        except OSError as error:
+            raise DiagnosticAnalysisPublicationAmbiguousError(
+                f"summary entry could not be reobserved: {filename}"
+            ) from error
         if (
             not stat.S_ISREG(after.st_mode)
             or (after.st_dev, after.st_ino) != staged_identity
             or after.st_size != len(expected_payload)
+            or _summary_inode_stable_state(after) != _summary_inode_stable_state(opened)
+            or _summary_inode_stable_state(named_after)
+            != _summary_inode_stable_state(opened)
+            or has_extra
             or observed_payload != expected_payload
         ):
             return _SUMMARY_ENTRY_OTHER
@@ -3202,35 +3402,30 @@ def _pinned_summary_inode_state(
 
     try:
         before = os.fstat(descriptor)
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        first = _read_fd_bytes(descriptor)
-        middle = os.fstat(descriptor)
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        second = _read_fd_bytes(descriptor)
-        after = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or (before.st_dev, before.st_ino) != staged_identity
+            or before.st_size != len(expected_payload)
+        ):
+            return _SUMMARY_ENTRY_OTHER, before.st_nlink
+        expected_state = _summary_inode_stable_state(before)
+        for _pass in range(2):
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            observed_payload, has_extra = _read_exact_bounded_summary_payload(
+                descriptor,
+                len(expected_payload),
+            )
+            after = os.fstat(descriptor)
+            if (
+                _summary_inode_stable_state(after) != expected_state
+                or observed_payload != expected_payload
+                or has_extra
+            ):
+                return _SUMMARY_ENTRY_OTHER, after.st_nlink
     except BaseException as error:
         raise DiagnosticAnalysisPublicationAmbiguousError(
             "pinned summary inode could not be observed"
         ) from error
-
-    def snapshot(value: os.stat_result) -> tuple[int, int, int, int, int]:
-        return (
-            value.st_dev,
-            value.st_ino,
-            value.st_size,
-            value.st_mtime_ns,
-            value.st_ctime_ns,
-        )
-
-    if (
-        not stat.S_ISREG(before.st_mode)
-        or (before.st_dev, before.st_ino) != staged_identity
-        or snapshot(before) != snapshot(middle)
-        or snapshot(middle) != snapshot(after)
-        or first != expected_payload
-        or second != expected_payload
-    ):
-        return _SUMMARY_ENTRY_OTHER, after.st_nlink
     if after.st_nlink == 0:
         return _SUMMARY_ENTRY_ABSENT, 0
     return _SUMMARY_ENTRY_EXACT, after.st_nlink
@@ -3375,6 +3570,105 @@ def _rename_noreplace_at(
     raise OSError(error_number, os.strerror(error_number), destination_name)
 
 
+def _restore_foreign_summary_from_quarantine(
+    destination: Path,
+    parent_fd: int,
+    parent_identity: tuple[int, int],
+    protected_roots: Sequence[_PinnedProtectedRoot],
+    quarantine_name: str,
+    foreign_identity: tuple[int, int],
+) -> None:
+    """Restore the exact foreign inode moved by a raced rollback rename."""
+
+    foreign_fd = -1
+    current_parent_fd = -1
+    try:
+        if hasattr(os, "O_PATH"):
+            capture_flags = os.O_PATH | os.O_NOFOLLOW | os.O_NONBLOCK
+        elif hasattr(os, "O_SYMLINK"):
+            # Darwin's O_SYMLINK opens the link inode itself. Combining it with
+            # O_NOFOLLOW raises ELOOP, so the two platform contracts are kept
+            # deliberately separate.
+            capture_flags = os.O_SYMLINK | os.O_NONBLOCK
+        else:
+            capture_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        foreign_fd = os.open(
+            quarantine_name,
+            capture_flags,
+            dir_fd=parent_fd,
+        )
+        captured = os.fstat(foreign_fd)
+        if (captured.st_dev, captured.st_ino) != foreign_identity:
+            raise DiagnosticAnalysisPublicationAmbiguousError(
+                "foreign summary replacement changed before restoration"
+            )
+        try:
+            _rename_noreplace_at(
+                parent_fd,
+                quarantine_name,
+                destination.name,
+            )
+        except BaseException as error:
+            raise DiagnosticAnalysisPublicationAmbiguousError(
+                "foreign summary replacement could not be restored without overwrite"
+            ) from error
+        os.fsync(parent_fd)
+        _assert_summary_publication_topology(
+            parent_fd,
+            protected_roots,
+            publication_may_exist=True,
+        )
+        retained = os.fstat(foreign_fd)
+        pinned_destination = os.stat(
+            destination.name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        try:
+            os.stat(
+                quarantine_name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise DiagnosticAnalysisPublicationAmbiguousError(
+                "foreign summary quarantine survived restoration"
+            )
+        current_parent_fd, current_parent = _open_stable_directory(
+            destination.parent,
+            "summary parent after foreign restoration",
+        )
+        if (current_parent.st_dev, current_parent.st_ino) != parent_identity:
+            raise DiagnosticAnalysisPublicationAmbiguousError(
+                "summary parent changed during foreign restoration"
+            )
+        current_destination = os.stat(
+            destination.name,
+            dir_fd=current_parent_fd,
+            follow_symlinks=False,
+        )
+        observed_identities = {
+            (retained.st_dev, retained.st_ino),
+            (pinned_destination.st_dev, pinned_destination.st_ino),
+            (current_destination.st_dev, current_destination.st_ino),
+        }
+        if observed_identities != {foreign_identity}:
+            raise DiagnosticAnalysisPublicationAmbiguousError(
+                "foreign summary replacement identity changed during restoration"
+            )
+    except DiagnosticAnalysisPublicationAmbiguousError:
+        raise
+    except BaseException as error:
+        raise DiagnosticAnalysisPublicationAmbiguousError(
+            "foreign summary replacement restoration is ambiguous"
+        ) from error
+    finally:
+        _close_descriptor_best_effort(current_parent_fd)
+        _close_descriptor_best_effort(foreign_fd)
+
+
 def _durably_revoke_exact_summary(
     destination: Path,
     parent_fd: int,
@@ -3433,6 +3727,30 @@ def _durably_revoke_exact_summary(
             protected_roots,
             publication_may_exist=True,
         )
+        try:
+            quarantined_entry = os.stat(
+                quarantine_name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except OSError as error:
+            raise DiagnosticAnalysisPublicationAmbiguousError(
+                "summary rollback quarantine could not be observed"
+            ) from error
+        quarantine_identity = (
+            quarantined_entry.st_dev,
+            quarantined_entry.st_ino,
+        )
+        if quarantine_identity != staged_identity:
+            _restore_foreign_summary_from_quarantine(
+                destination,
+                parent_fd,
+                parent_identity,
+                protected_roots,
+                quarantine_name,
+                quarantine_identity,
+            )
+            return False
         destination_absent = (
             _summary_publication_state(
                 destination,
@@ -3598,6 +3916,7 @@ def _atomic_write_no_replace(
     payload: bytes,
     *,
     protected_roots: Sequence[_PinnedProtectedRoot] = (),
+    post_durability_check: Callable[[], None] | None = None,
 ) -> None:
     if os.name != "posix":
         raise DiagnosticAnalysisError(
@@ -3617,6 +3936,7 @@ def _atomic_write_no_replace(
     rename_attempted = False
     publication_observed_exact = False
     parent_barrier_completed = False
+    post_durability_check_failed = False
     try:
         # These descriptors were acquired before validation.  Revalidate their
         # names before touching any attacker-pivotable destination path.
@@ -3668,7 +3988,7 @@ def _atomic_write_no_replace(
             try:
                 file_descriptor = os.open(
                     candidate,
-                    os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                    os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK,
                     0o600,
                     dir_fd=parent_fd,
                 )
@@ -3745,6 +4065,12 @@ def _atomic_write_no_replace(
             raise DiagnosticAnalysisError(
                 "summary destination path or payload changed during publication"
             )
+        if post_durability_check is not None:
+            try:
+                post_durability_check()
+            except BaseException:
+                post_durability_check_failed = True
+                raise
         _assert_summary_publication_topology(
             parent_fd,
             pinned_protected_roots,
@@ -3767,6 +4093,30 @@ def _atomic_write_no_replace(
             and parent_fd >= 0
             and parent_identity is not None
         ):
+            if post_durability_check_failed:
+                try:
+                    revoked = _durably_revoke_exact_summary(
+                        destination,
+                        parent_fd,
+                        parent_identity,
+                        pinned_protected_roots,
+                        file_descriptor,
+                        staged_identity,
+                        payload,
+                    )
+                except DiagnosticAnalysisPublicationAmbiguousError:
+                    raise
+                except BaseException:
+                    raise DiagnosticAnalysisPublicationAmbiguousError(
+                        "summary publication durability and rollback are ambiguous; "
+                        "the destination must not be used as diagnostic evidence"
+                    ) from error
+                if revoked:
+                    raise
+                raise DiagnosticAnalysisPublicationAmbiguousError(
+                    "summary publication durability and rollback are ambiguous; "
+                    "the destination must not be used as diagnostic evidence"
+                ) from error
             committed = _recover_summary_publication(
                 destination,
                 parent_fd,
@@ -3864,16 +4214,28 @@ def write_countdown_thompson_diagnostic_summary(
             getattr(validated, "artifact_receipt", ()),
             "validated runner artifact",
         )
-        _read_artifact_receipt_from_descriptor(
-            historical_roots[0].descriptor,
-            "historical committed artifact",
-            validated_receipt,
-        )
+
+        def revalidate_artifact_receipts() -> None:
+            _assert_pinned_protected_roots(protected_roots)
+            _read_artifact_receipt_from_descriptor(
+                historical_roots[0].descriptor,
+                "historical committed artifact",
+                validated_receipt,
+            )
+            _read_artifact_receipt_from_descriptor(
+                protected_roots[0].descriptor,
+                "relocated validated artifact",
+                validated_receipt,
+            )
+            _assert_pinned_protected_roots(protected_roots)
+
+        revalidate_artifact_receipts()
         _assert_pinned_protected_roots(protected_roots)
         _atomic_write_no_replace(
             destination,
             _canonical_bytes(summary),
             protected_roots=protected_roots,
+            post_durability_check=revalidate_artifact_receipts,
         )
         return summary
     finally:

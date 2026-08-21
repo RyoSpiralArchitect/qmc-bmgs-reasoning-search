@@ -2485,6 +2485,223 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         self.assertFalse((attempt / "invalid.json").exists())
                         self.assertTrue((output / "commit.json").is_file())
 
+    def test_interrupt_after_started_transition_return_is_durably_invalid(
+        self,
+    ) -> None:
+        for interruption in (KeyboardInterrupt, SystemExit):
+            with (
+                self.subTest(interruption=interruption.__name__),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                output = root / "artifact"
+                preflight = _preflight(output)
+                authorization = runner._authorization_payload(preflight)
+                original_transition = runner._transition_attempt_to_started
+
+                def transition_then_interrupt(
+                    attempt: runner._Attempt,
+                ) -> dict[str, object]:
+                    original_transition(attempt)
+                    raise interruption("synthetic STARTED return interruption")
+
+                with (
+                    patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                    patch.object(runner, "_recheck_source_closure"),
+                    patch.object(
+                        runner,
+                        "_transition_attempt_to_started",
+                        side_effect=transition_then_interrupt,
+                    ),
+                ):
+                    with self.assertRaisesRegex(
+                        runner.DiagnosticInvalidRunError,
+                        "synthetic STARTED return interruption",
+                    ):
+                        runner._publish_run_artifact(
+                            preflight,
+                            authorization,
+                            reviewed_authorization_revision=(
+                                _AUTHORIZATION_REVISION
+                            ),
+                            repository_root=root,
+                        )
+
+                attempt = root / (
+                    f".artifact.attempt-{authorization['deterministic_digest']}"
+                )
+                self.assertTrue((attempt / "started.json").is_file())
+                self.assertTrue((attempt / "invalid.json").is_file())
+                self.assertFalse((attempt / "not_run.json").exists())
+                self.assertFalse(output.exists())
+
+    def test_interrupt_after_locked_publication_return_is_never_not_run(
+        self,
+    ) -> None:
+        for interruption in (KeyboardInterrupt, SystemExit):
+            with (
+                self.subTest(interruption=interruption.__name__),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                output = root / "artifact"
+                preflight = _preflight(output)
+                authorization = runner._authorization_payload(preflight)
+                original_publish_locked = runner._publish_run_artifact_locked
+
+                def publish_then_interrupt(*args: object, **kwargs: object):
+                    original_publish_locked(*args, **kwargs)
+                    raise interruption("synthetic publication return interruption")
+
+                with (
+                    patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                    patch.object(runner, "_recheck_source_closure"),
+                    patch.object(
+                        runner,
+                        "_publish_run_artifact_locked",
+                        side_effect=publish_then_interrupt,
+                    ),
+                ):
+                    with self.assertRaisesRegex(
+                        runner.DiagnosticPublicationStateAmbiguousError,
+                        "publication call boundary",
+                    ):
+                        runner._publish_run_artifact(
+                            preflight,
+                            authorization,
+                            reviewed_authorization_revision=(
+                                _AUTHORIZATION_REVISION
+                            ),
+                            repository_root=root,
+                        )
+
+                attempt = root / (
+                    f".artifact.attempt-{authorization['deterministic_digest']}"
+                )
+                self.assertTrue((attempt / "started.json").is_file())
+                self.assertTrue((attempt / "ready_to_commit.json").is_file())
+                self.assertFalse((attempt / "invalid.json").exists())
+                self.assertFalse((attempt / "not_run.json").exists())
+                self.assertEqual(
+                    {path.name for path in output.iterdir()},
+                    set(runner.ARTIFACT_FILENAMES),
+                )
+
+    def test_transient_double_none_commit_observation_recovers_committed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_write = runner._write_canonical_file_noreplace_at
+
+            def commit_then_interrupt(
+                directory_fd: int,
+                filename: str,
+                payload: dict[str, object],
+            ) -> tuple[int, int]:
+                identity = original_write(directory_fd, filename, payload)
+                if filename == "commit.json":
+                    raise OSError("synthetic post-commit observation window")
+                return identity
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_write_canonical_file_noreplace_at",
+                    side_effect=commit_then_interrupt,
+                ),
+                patch.object(
+                    runner,
+                    "_pinned_exact_artifact_commit_identity",
+                    return_value=None,
+                ),
+                patch.object(
+                    runner,
+                    "_published_exact_artifact_commit_identity",
+                    return_value=None,
+                ),
+            ):
+                manifest = runner._publish_run_artifact(
+                    preflight,
+                    authorization,
+                    reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                    repository_root=root,
+                )
+
+            attempt = root / manifest["attempt_marker_basename"]
+            self.assertEqual(manifest["attempt_phase"], "READY_TO_COMMIT")
+            self.assertTrue((output / "commit.json").is_file())
+            self.assertFalse((attempt / "invalid.json").exists())
+            self.assertFalse((attempt / "not_run.json").exists())
+
+    def test_byte_identical_public_directory_replacement_is_ambiguous(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            stolen = root / "stolen-original-artifact"
+            replacement = root / "replacement-artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_write = runner._write_canonical_file_noreplace_at
+
+            def commit_then_replace_directory(
+                directory_fd: int,
+                filename: str,
+                payload: dict[str, object],
+            ) -> tuple[int, int]:
+                identity = original_write(directory_fd, filename, payload)
+                if filename == "commit.json":
+                    replacement.mkdir()
+                    for member in runner.ARTIFACT_FILENAMES:
+                        (replacement / member).write_bytes(
+                            (output / member).read_bytes()
+                        )
+                    output.rename(stolen)
+                    replacement.rename(output)
+                    raise OSError("synthetic byte-identical directory replacement")
+                return identity
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_write_canonical_file_noreplace_at",
+                    side_effect=commit_then_replace_directory,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "unproven directory identity",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertNotEqual(
+                (output.stat().st_dev, output.stat().st_ino),
+                (stolen.stat().st_dev, stolen.stat().st_ino),
+            )
+            self.assertEqual(
+                {name: (output / name).read_bytes() for name in runner.ARTIFACT_FILENAMES},
+                {name: (stolen / name).read_bytes() for name in runner.ARTIFACT_FILENAMES},
+            )
+            self.assertFalse((attempt / "invalid.json").exists())
+            self.assertFalse((attempt / "not_run.json").exists())
+
     def test_persistent_artifact_parent_sync_failure_revokes_commit_as_invalid(
         self,
     ) -> None:

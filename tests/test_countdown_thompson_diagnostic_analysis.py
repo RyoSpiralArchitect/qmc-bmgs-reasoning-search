@@ -238,6 +238,20 @@ def _score_vectors(v2_successes: int) -> dict[str, list[Fraction]]:
 
 
 class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls._original_tempdir = tempfile.tempdir
+        # Summary publication intentionally rejects raw symlink ancestry.  Use
+        # the canonical host temp namespace so macOS /var and /tmp aliases do
+        # not turn unrelated synthetic tests into symlink-path tests.
+        tempfile.tempdir = os.fspath(Path(tempfile.gettempdir()).resolve())
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        tempfile.tempdir = cls._original_tempdir
+        super().tearDownClass()
+
     def test_self_test_opens_no_sealed_authority_or_search(self) -> None:
         with (
             patch.object(
@@ -407,6 +421,94 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 manifest=numeric_alias_manifest,
                 attestation=attestation,
             )
+
+    def test_reviewed_authorization_rejects_oversize_before_open(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            authorization = Path(directory) / "authorization.json"
+            with authorization.open("wb") as handle:
+                handle.truncate(analysis._REVIEWED_AUTHORIZATION_BYTE_CAP_V1 + 1)
+
+            with (
+                patch.object(
+                    analysis.os,
+                    "open",
+                    side_effect=AssertionError("oversize authorization was opened"),
+                ),
+                self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "v1 byte cap",
+                ),
+            ):
+                analysis._reviewed_authorization(authorization, "a" * 64)
+
+    def test_reviewed_authorization_rejects_growth_during_bounded_read(
+        self,
+    ) -> None:
+        raw = analysis._canonical_bytes({"deterministic_digest": "a" * 64})
+        original_read = analysis.os.read
+        with tempfile.TemporaryDirectory() as directory:
+            authorization = Path(directory) / "authorization.json"
+            authorization.write_bytes(raw)
+            grew = False
+
+            def grow_after_first_read(descriptor: int, byte_count: int) -> bytes:
+                nonlocal grew
+                observed = original_read(descriptor, byte_count)
+                if not grew and byte_count > 1:
+                    with authorization.open("ab") as handle:
+                        handle.write(b"x")
+                    grew = True
+                return observed
+
+            with (
+                patch.object(analysis.os, "read", side_effect=grow_after_first_read),
+                self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "grew beyond its declared byte size",
+                ),
+            ):
+                analysis._reviewed_authorization(authorization, "a" * 64)
+            self.assertTrue(grew)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFO required")
+    def test_reviewed_authorization_rejects_regular_to_fifo_race_without_blocking(
+        self,
+    ) -> None:
+        raw = analysis._canonical_bytes({"deterministic_digest": "a" * 64})
+        original_open = analysis.os.open
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            authorization = root / "authorization.json"
+            authorization.write_bytes(raw)
+            fifo = root / "authorization-fifo"
+            os.mkfifo(fifo)
+
+            def open_fifo_after_regular_stat(
+                path: object,
+                flags: int,
+                *args: object,
+                **kwargs: object,
+            ) -> int:
+                if path == authorization:
+                    self.assertTrue(flags & os.O_NOFOLLOW)
+                    self.assertTrue(flags & os.O_NONBLOCK)
+                    return original_open(fifo, flags, *args, **kwargs)
+                return original_open(path, flags, *args, **kwargs)
+
+            started = time.monotonic()
+            with (
+                patch.object(
+                    analysis.os,
+                    "open",
+                    side_effect=open_fifo_after_regular_stat,
+                ),
+                self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "changed before descriptor acquisition",
+                ),
+            ):
+                analysis._reviewed_authorization(authorization, "a" * 64)
+            self.assertLess(time.monotonic() - started, 1.0)
 
     def test_verified_bundle_semantics_close_before_record_access(self) -> None:
         attestation = {"fixture": "already structurally validated"}
@@ -773,6 +875,65 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                     output, analysis._canonical_bytes(payload)
                 )
 
+    def test_summary_publication_rejects_symlinked_raw_parent(self) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            real_parent = root / "real-parent"
+            real_parent.mkdir()
+            raw_parent = root / "raw-parent"
+            raw_parent.symlink_to(real_parent, target_is_directory=True)
+            output = raw_parent / "summary.json"
+
+            with self.assertRaisesRegex(
+                analysis.DiagnosticAnalysisError,
+                "stable directory",
+            ):
+                analysis._atomic_write_no_replace(output, payload)
+            self.assertFalse((real_parent / output.name).exists())
+
+    def test_summary_ancestor_pivot_cannot_complete_in_another_raw_namespace(
+        self,
+    ) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_open = analysis._open_stable_directory_with_ancestry
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw_ancestor = root / "raw-ancestor"
+            raw_parent = raw_ancestor / "parent"
+            raw_parent.mkdir(parents=True)
+            displaced = root / "displaced-ancestor"
+            alternate = root / "alternate-ancestor"
+            (alternate / "parent").mkdir(parents=True)
+            output = raw_parent / "summary.json"
+            pivoted = False
+
+            def pivot_after_raw_parent_open(path: Path, label: str):
+                nonlocal pivoted
+                opened = original_open(path, label)
+                if label == "summary parent" and not pivoted:
+                    raw_ancestor.rename(displaced)
+                    raw_ancestor.symlink_to(alternate, target_is_directory=True)
+                    pivoted = True
+                return opened
+
+            with (
+                patch.object(
+                    analysis,
+                    "_open_stable_directory_with_ancestry",
+                    side_effect=pivot_after_raw_parent_open,
+                ),
+                self.assertRaises(analysis.DiagnosticAnalysisError),
+            ):
+                analysis._atomic_write_no_replace(output, payload)
+            self.assertTrue(pivoted)
+            self.assertFalse((alternate / "parent" / output.name).exists())
+            self.assertFalse((displaced / "parent" / output.name).exists())
+
     def test_artifact_snapshot_rejects_fifo_without_blocking(self) -> None:
         if not hasattr(os, "mkfifo"):
             self.skipTest("FIFO creation is unavailable")
@@ -1128,7 +1289,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 ):
                     with self.assertRaisesRegex(
                         analysis.DiagnosticAnalysisError,
-                        "cannot modify",
+                        "stable directory|cannot modify",
                     ):
                         analysis._atomic_write_no_replace(
                             output,
@@ -1177,7 +1338,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 ):
                     with self.assertRaisesRegex(
                         analysis.DiagnosticAnalysisError,
-                        "protected",
+                        "protected|path identity changed",
                     ):
                         analysis._atomic_write_no_replace(
                             output,
@@ -2260,6 +2421,219 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                         {output.name},
                     )
 
+    def test_summary_post_durability_baseexceptions_are_typed_invalid(
+        self,
+    ) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        for exception_type in (KeyboardInterrupt, SystemExit, BaseException):
+            with self.subTest(exception_type=exception_type.__name__):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    output = root / "summary.json"
+                    check_calls = 0
+
+                    def interrupt_post_durability_check() -> None:
+                        nonlocal check_calls
+                        check_calls += 1
+                        raise exception_type(
+                            "synthetic mandatory post-durability interruption"
+                        )
+
+                    with self.assertRaises(
+                        analysis.DiagnosticAnalysisError,
+                    ) as raised:
+                        analysis._atomic_write_no_replace(
+                            output,
+                            payload,
+                            post_durability_check=interrupt_post_durability_check,
+                        )
+                    self.assertIs(
+                        type(raised.exception), analysis.DiagnosticAnalysisError
+                    )
+                    self.assertIn(
+                        "mandatory summary post-durability check failed",
+                        str(raised.exception),
+                    )
+                    self.assertIsInstance(raised.exception.__cause__, exception_type)
+                    self.assertEqual(check_calls, 1)
+                    self.assertFalse(output.exists())
+                    quarantines = tuple(
+                        path
+                        for path in root.iterdir()
+                        if path.name.startswith(".summary.json.rollback-")
+                    )
+                    self.assertEqual(len(quarantines), 1)
+                    self.assertEqual(quarantines[0].read_bytes(), payload)
+
+    def test_summary_post_durability_interrupt_with_unproven_rollback_is_ambiguous(
+        self,
+    ) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_fsync = analysis.os.fsync
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "summary.json"
+            parent_identity = (root.stat().st_dev, root.stat().st_ino)
+            parent_sync_count = 0
+
+            def fail_rollback_parent_barrier(descriptor: int) -> None:
+                nonlocal parent_sync_count
+                observed = analysis.os.fstat(descriptor)
+                if (observed.st_dev, observed.st_ino) == parent_identity:
+                    parent_sync_count += 1
+                    if parent_sync_count == 2:
+                        raise OSError("synthetic rollback durability failure")
+                original_fsync(descriptor)
+
+            def interrupt_post_durability_check() -> None:
+                raise SystemExit("synthetic mandatory post-durability interruption")
+
+            with patch.object(
+                analysis.os,
+                "fsync",
+                side_effect=fail_rollback_parent_barrier,
+            ):
+                with self.assertRaises(
+                    analysis.DiagnosticAnalysisPublicationAmbiguousError,
+                ) as raised:
+                    analysis._atomic_write_no_replace(
+                        output,
+                        payload,
+                        post_durability_check=interrupt_post_durability_check,
+                    )
+            self.assertIs(
+                type(raised.exception),
+                analysis.DiagnosticAnalysisPublicationAmbiguousError,
+            )
+            self.assertIn("must not be used", str(raised.exception))
+            self.assertEqual(parent_sync_count, 2)
+            self.assertFalse(output.exists())
+            quarantines = tuple(
+                path
+                for path in root.iterdir()
+                if path.name.startswith(".summary.json.rollback-")
+            )
+            self.assertEqual(len(quarantines), 1)
+            self.assertEqual(quarantines[0].read_bytes(), payload)
+
+    def test_summary_barrier_interrupt_recovery_runs_mandatory_callback(
+        self,
+    ) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_fsync = analysis.os.fsync
+
+        for exception_type in (KeyboardInterrupt, SystemExit):
+            with self.subTest(exception_type=exception_type.__name__):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    output = root / "summary.json"
+                    parent_identity = (root.stat().st_dev, root.stat().st_ino)
+                    parent_sync_count = 0
+                    check_calls = 0
+
+                    def interrupt_after_first_parent_barrier(
+                        descriptor: int,
+                    ) -> None:
+                        nonlocal parent_sync_count
+                        observed = analysis.os.fstat(descriptor)
+                        original_fsync(descriptor)
+                        if (observed.st_dev, observed.st_ino) == parent_identity:
+                            parent_sync_count += 1
+                            if parent_sync_count == 1:
+                                raise exception_type(
+                                    "synthetic interruption after parent barrier"
+                                )
+
+                    def mandatory_post_durability_check() -> None:
+                        nonlocal check_calls
+                        check_calls += 1
+
+                    with patch.object(
+                        analysis.os,
+                        "fsync",
+                        side_effect=interrupt_after_first_parent_barrier,
+                    ):
+                        analysis._atomic_write_no_replace(
+                            output,
+                            payload,
+                            post_durability_check=mandatory_post_durability_check,
+                        )
+                    self.assertGreaterEqual(parent_sync_count, 2)
+                    self.assertEqual(check_calls, 1)
+                    self.assertEqual(output.read_bytes(), payload)
+                    self.assertEqual(
+                        {path.name for path in root.iterdir()},
+                        {output.name},
+                    )
+
+    def test_summary_barrier_recovery_callback_failure_revokes_as_invalid(
+        self,
+    ) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        original_fsync = analysis.os.fsync
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "summary.json"
+            parent_identity = (root.stat().st_dev, root.stat().st_ino)
+            parent_sync_count = 0
+            check_calls = 0
+
+            def interrupt_after_first_parent_barrier(descriptor: int) -> None:
+                nonlocal parent_sync_count
+                observed = analysis.os.fstat(descriptor)
+                original_fsync(descriptor)
+                if (observed.st_dev, observed.st_ino) == parent_identity:
+                    parent_sync_count += 1
+                    if parent_sync_count == 1:
+                        raise KeyboardInterrupt(
+                            "synthetic interruption after parent barrier"
+                        )
+
+            def interrupt_recovered_post_durability_check() -> None:
+                nonlocal check_calls
+                check_calls += 1
+                raise SystemExit(
+                    "synthetic recovered post-durability interruption"
+                )
+
+            with patch.object(
+                analysis.os,
+                "fsync",
+                side_effect=interrupt_after_first_parent_barrier,
+            ):
+                with self.assertRaises(
+                    analysis.DiagnosticAnalysisError,
+                ) as raised:
+                    analysis._atomic_write_no_replace(
+                        output,
+                        payload,
+                        post_durability_check=(
+                            interrupt_recovered_post_durability_check
+                        ),
+                    )
+            self.assertIs(type(raised.exception), analysis.DiagnosticAnalysisError)
+            self.assertIsInstance(raised.exception.__cause__, SystemExit)
+            self.assertEqual(check_calls, 1)
+            self.assertEqual(parent_sync_count, 3)
+            self.assertFalse(output.exists())
+            quarantines = tuple(
+                path
+                for path in root.iterdir()
+                if path.name.startswith(".summary.json.rollback-")
+            )
+            self.assertEqual(len(quarantines), 1)
+            self.assertEqual(quarantines[0].read_bytes(), payload)
+
     def test_summary_same_inode_corruption_is_never_success(self) -> None:
         payload = analysis._canonical_bytes(
             {"schema_version": "synthetic/v1", "status": "PASS"}
@@ -2788,6 +3162,60 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             )
         self.assertEqual(status, 3)
         self.assertIn("PUBLICATION_STATE_AMBIGUOUS", printed.call_args.args[0])
+
+    def test_summary_pass_reports_fixed_lexical_namespace_after_ancestor_pivot(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw_parent = root / "raw-parent"
+            raw_parent.mkdir()
+            displaced = root / "displaced-parent"
+            alternate = root / "alternate-parent"
+            alternate.mkdir()
+            output = raw_parent / "summary.json"
+
+            def publish_then_pivot(*args: object, **kwargs: object) -> dict[str, str]:
+                self.assertEqual(args[4], output)
+                raw_parent.rename(displaced)
+                raw_parent.symlink_to(alternate, target_is_directory=True)
+                return {
+                    "analyzer_build_digest": "a" * 64,
+                    "deterministic_digest": "b" * 64,
+                }
+
+            with (
+                patch.object(
+                    analysis,
+                    "write_countdown_thompson_diagnostic_summary",
+                    side_effect=publish_then_pivot,
+                ),
+                patch("builtins.print") as printed,
+            ):
+                status = analysis.main(
+                    [
+                        "--analyze",
+                        "artifact",
+                        "--bundle",
+                        "bundle",
+                        "--authorization-file",
+                        "authorization.json",
+                        "--authorization-digest",
+                        "0" * 64,
+                        "--output",
+                        os.fspath(output),
+                        "--repository-root",
+                        ".",
+                    ]
+                )
+            self.assertEqual(status, 0)
+            reported = analysis.strict_json_loads(printed.call_args.args[0])
+            self.assertEqual(reported["status"], "PASS")
+            self.assertEqual(reported["output_path"], os.fspath(output))
+            self.assertNotEqual(
+                reported["output_path"],
+                os.fspath(alternate / output.name),
+            )
 
 
 def _score256_profile() -> TrackABudgetProfile:

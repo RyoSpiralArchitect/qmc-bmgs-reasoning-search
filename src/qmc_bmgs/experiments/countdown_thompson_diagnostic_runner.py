@@ -1094,12 +1094,20 @@ def _published_artifact_matches(
             )
             for filename in expected_filenames
         }
+        final_path = os.stat(
+            output_name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
         return (
             all(
                 named_signatures[filename] == snapshot.signature
                 and descriptor_signatures[filename] == snapshot.signature
                 for filename, snapshot in member_snapshots.items()
             )
+            and stat.S_ISDIR(final_path.st_mode)
+            and _stable_stat_signature(final_path) == directory_signature
+            and (final_path.st_dev, final_path.st_ino) == staging_identity
             and _stable_stat_signature(os.fstat(output_fd)) == directory_signature
         )
     except DiagnosticPublicationStateAmbiguousError:
@@ -1114,6 +1122,51 @@ def _published_artifact_matches(
         for snapshot in member_snapshots.values():
             _close_descriptor_best_effort(snapshot.descriptor)
         _close_descriptor_best_effort(output_fd)
+
+
+def _published_artifact_content_identity(
+    parent_fd: int,
+    output_name: str,
+    run_manifest: Mapping[str, Any],
+    *,
+    records_byte_count: int,
+    records_sha256: str,
+    commit_receipt: Mapping[str, Any],
+) -> tuple[int, int] | None:
+    """Return the stable public directory identity for exact committed bytes.
+
+    Recovery normally requires the original staging directory identity.  This
+    weaker observation is used only to prevent an INVALID transition while a
+    byte-identical, analyzer-acceptable three-member artifact remains publicly
+    named through a replacement directory inode.
+    """
+
+    try:
+        observed = os.stat(
+            output_name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"published artifact observation failed: {output_name}"
+        ) from error
+    if not stat.S_ISDIR(observed.st_mode):
+        return None
+    identity = observed.st_dev, observed.st_ino
+    if not _published_artifact_matches(
+        parent_fd,
+        output_name,
+        identity,
+        run_manifest,
+        records_byte_count=records_byte_count,
+        records_sha256=records_sha256,
+        commit_receipt=commit_receipt,
+    ):
+        return None
+    return identity
 
 
 def _retry_committed_artifact_durability(
@@ -3152,6 +3205,7 @@ def _publish_run_artifact(
     lock_fd = -1
     lock_identity: tuple[int, int] | None = None
     lock_name = f".{output.name}.publish-lock"
+    publication_entered = False
     try:
         parent_fd, parent_stat = _open_stable_directory(
             parent,
@@ -3175,6 +3229,7 @@ def _publish_run_artifact(
             parent_stat,
             "run output parent",
         )
+        publication_entered = True
         manifest_payload, commit_payload = _publish_run_artifact_locked(
             preflight,
             authorization,
@@ -3199,6 +3254,10 @@ def _publish_run_artifact(
     ):
         raise
     except BaseException as error:
+        if publication_entered:
+            raise DiagnosticPublicationStateAmbiguousError(
+                "untyped failure at or after the publication call boundary"
+            ) from error
         raise DiagnosticNotRunError(str(error)) from error
     finally:
         if (
@@ -3296,12 +3355,58 @@ def _publish_run_artifact_locked(
         _close_descriptor_best_effort(attempt.directory_fd)
         raise DiagnosticNotRunError(str(error)) from error
 
+    expected_started_receipt = _attempt_receipt(
+        attempt,
+        phase="STARTED",
+        status="PENDING",
+    )
     try:
         started_receipt = _transition_attempt_to_started(attempt)
-    except BaseException:
+    except (
+        DiagnosticNotRunError,
+        DiagnosticInvalidRunError,
+        DiagnosticPublicationStateAmbiguousError,
+    ):
         _close_descriptor_best_effort(staging_fd)
         _close_descriptor_best_effort(attempt.directory_fd)
         raise
+    except BaseException as error:
+        try:
+            os.fsync(attempt.directory_fd)
+            started_is_durable = _attempt_receipt_matches(
+                attempt,
+                "started.json",
+                expected_started_receipt,
+            )
+        except BaseException as observation_error:
+            _close_descriptor_best_effort(staging_fd)
+            _close_descriptor_best_effort(attempt.directory_fd)
+            raise DiagnosticPublicationStateAmbiguousError(
+                "STARTED transition return state is unproven"
+            ) from observation_error
+        if not started_is_durable:
+            _close_descriptor_best_effort(staging_fd)
+            _close_descriptor_best_effort(attempt.directory_fd)
+            raise DiagnosticPublicationStateAmbiguousError(
+                "STARTED transition return state is unproven"
+            ) from error
+        try:
+            _write_attempt_receipt(
+                attempt,
+                "invalid.json",
+                phase="STARTED",
+                status="INVALID",
+                reason=str(error),
+            )
+        except BaseException as terminal_error:
+            _close_descriptor_best_effort(staging_fd)
+            _close_descriptor_best_effort(attempt.directory_fd)
+            raise DiagnosticPublicationStateAmbiguousError(
+                "INVALID receipt durability is unproven after STARTED return"
+            ) from terminal_error
+        _close_descriptor_best_effort(staging_fd)
+        _close_descriptor_best_effort(attempt.directory_fd)
+        raise DiagnosticInvalidRunError(str(error)) from error
 
     try:
         payloads = preflight.bundle.payloads  # type: ignore[attr-defined]
@@ -3545,7 +3650,21 @@ def _publish_run_artifact_locked(
             except BaseException as observation_error:
                 if commit_observation_error is None:
                     commit_observation_error = observation_error
-        if pinned_commit_identity is not None or public_commit_identity is not None:
+        commit_context_exists = (
+            "staging_identity" in locals() and "commit_receipt" in locals()
+        )
+        commit_identity_observed = (
+            pinned_commit_identity is not None or public_commit_identity is not None
+        )
+        if (
+            commit_context_exists
+            and not commit_identity_observed
+            and commit_observation_error is not None
+        ):
+            raise DiagnosticPublicationStateAmbiguousError(
+                "artifact commit presence and exact rollback are both unproven"
+            ) from commit_observation_error
+        if commit_context_exists:
             try:
                 commit_is_durable = _retry_committed_artifact_durability(
                     parent=output.parent,
@@ -3562,6 +3681,25 @@ def _publish_run_artifact_locked(
                 commit_is_durable = False
             if commit_is_durable:
                 return run_manifest, commit_receipt
+
+            public_content_identity = _published_artifact_content_identity(
+                parent_fd,
+                output.name,
+                run_manifest,
+                records_byte_count=records_byte_count,
+                records_sha256=records_hasher.hexdigest(),
+                commit_receipt=commit_receipt,
+            )
+            if public_content_identity is not None and (
+                not commit_identity_observed
+                or public_content_identity != staging_identity
+            ):
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "an exact committed artifact remains public through an "
+                    "unproven directory identity"
+                ) from error
+
+        if commit_identity_observed:
             try:
                 if pinned_commit_identity is not None:
                     commit_was_revoked = _revoke_exact_artifact_commit_at(
@@ -3584,10 +3722,50 @@ def _publish_run_artifact_locked(
                 raise DiagnosticPublicationStateAmbiguousError(
                     "artifact commit durability and exact rollback are both unproven"
                 ) from error
-        elif commit_observation_error is not None:
-            raise DiagnosticPublicationStateAmbiguousError(
-                "artifact commit presence and exact rollback are both unproven"
-            ) from commit_observation_error
+        elif commit_context_exists:
+            # A pair of transient absence observations is not proof that commit
+            # authority never became public.  Re-observe after the durability
+            # retry before permitting a terminal INVALID receipt.
+            try:
+                if output_fd >= 0:
+                    pinned_commit_identity = (
+                        _pinned_exact_artifact_commit_identity(
+                            output_fd,
+                            staging_identity,
+                            commit_receipt,
+                        )
+                    )
+                public_commit_identity = _published_exact_artifact_commit_identity(
+                    parent_fd,
+                    output.name,
+                    staging_identity,
+                    commit_receipt,
+                )
+            except BaseException as observation_error:
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "artifact commit absence could not be re-observed"
+                ) from observation_error
+            if (
+                pinned_commit_identity is not None
+                or public_commit_identity is not None
+            ):
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "artifact commit appeared during durable absence proof"
+                ) from error
+
+        if commit_context_exists:
+            remaining_public_content = _published_artifact_content_identity(
+                parent_fd,
+                output.name,
+                run_manifest,
+                records_byte_count=records_byte_count,
+                records_sha256=records_hasher.hexdigest(),
+                commit_receipt=commit_receipt,
+            )
+            if remaining_public_content is not None:
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "an exact committed artifact remains public after recovery"
+                ) from error
         try:
             _write_attempt_receipt(
                 attempt,

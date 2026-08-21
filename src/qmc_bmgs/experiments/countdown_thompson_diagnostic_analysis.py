@@ -73,6 +73,11 @@ _RUN_ARTIFACT_MEMBER_BYTE_CAPS_V1 = (
     ("records.jsonl", 256 * 1024 * 1024),
 )
 _ARTIFACT_READ_CHUNK_BYTES = 1024 * 1024
+# The runner accepts reviewed authorization as a control file under the same
+# 8 MiB ceiling.  Keep that v1 compatibility boundary explicit here so an
+# unreviewed oversized file is rejected before provenance inspection.
+_REVIEWED_AUTHORIZATION_BYTE_CAP_V1 = 8 * 1024 * 1024
+_REGULAR_FILE_READ_CHUNK_BYTES = 1024 * 1024
 ANALYZER_RELATIVE_PATH = Path(
     "src/qmc_bmgs/experiments/countdown_thompson_diagnostic_analysis.py"
 )
@@ -394,52 +399,116 @@ def _close_descriptor_best_effort(descriptor: int) -> None:
         pass
 
 
-def _read_fd_bytes(file_descriptor: int) -> bytes:
-    chunks: list[bytes] = []
-    while True:
-        chunk = os.read(file_descriptor, 1024 * 1024)
-        if not chunk:
-            return b"".join(chunks)
-        chunks.append(chunk)
+def _regular_file_stable_state(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
 
 
-def _read_regular_file_nofollow(path: Path, label: str) -> bytes:
-    """Read stable regular bytes through one O_NOFOLLOW descriptor."""
+def _read_exact_regular_file_extent(
+    file_descriptor: int,
+    byte_count: int,
+    label: str,
+) -> bytes:
+    """Read one already-capped extent and require immediate EOF."""
 
-    if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
-        raise DiagnosticAnalysisError(f"{label} validation requires POSIX O_NOFOLLOW")
-    candidate = Path(path)
+    payload = bytearray()
+    remaining = byte_count
     try:
-        descriptor = os.open(candidate, os.O_RDONLY | os.O_NOFOLLOW)
-    except OSError as error:
-        raise DiagnosticAnalysisError(f"{label} must be a regular file") from error
-    try:
-        before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode):
-            raise DiagnosticAnalysisError(f"{label} must be a regular file")
-        first = _read_fd_bytes(descriptor)
-        middle = os.fstat(descriptor)
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        second = _read_fd_bytes(descriptor)
-        after = os.fstat(descriptor)
-
-        def identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
-            return (
-                value.st_dev,
-                value.st_ino,
-                value.st_size,
-                value.st_mtime_ns,
-                value.st_ctime_ns,
+        while remaining:
+            chunk = os.read(
+                file_descriptor,
+                min(remaining, _REGULAR_FILE_READ_CHUNK_BYTES),
             )
+            if not chunk:
+                raise DiagnosticAnalysisError(
+                    f"{label} ended before its declared byte size"
+                )
+            payload.extend(chunk)
+            remaining -= len(chunk)
+        if os.read(file_descriptor, 1):
+            raise DiagnosticAnalysisError(
+                f"{label} grew beyond its declared byte size"
+            )
+    except BlockingIOError as error:
+        raise DiagnosticAnalysisError(
+            f"{label} did not provide bounded regular-file bytes"
+        ) from error
+    return bytes(payload)
 
+
+def _read_regular_file_nofollow(
+    path: Path,
+    label: str,
+    *,
+    max_bytes: int | None = None,
+) -> bytes:
+    """Read one stable regular-file extent through a nonblocking descriptor."""
+
+    if (
+        os.name != "posix"
+        or not hasattr(os, "O_NOFOLLOW")
+        or not hasattr(os, "O_NONBLOCK")
+    ):
+        raise DiagnosticAnalysisError(
+            f"{label} validation requires POSIX O_NOFOLLOW and O_NONBLOCK"
+        )
+    candidate = Path(path)
+    descriptor = -1
+    try:
+        before = os.stat(candidate, follow_symlinks=False)
         if (
-            identity(before) != identity(middle)
-            or identity(middle) != identity(after)
-            or len(first) != before.st_size
-            or second != first
+            not stat.S_ISREG(before.st_mode)
+            or before.st_size < 0
+            or (max_bytes is not None and before.st_size > max_bytes)
         ):
-            raise DiagnosticAnalysisError(f"{label} changed during descriptor read")
-        return first
+            boundary = (
+                f" within the v1 byte cap of {max_bytes}"
+                if max_bytes is not None
+                else ""
+            )
+            raise DiagnosticAnalysisError(
+                f"{label} must be a regular file{boundary}"
+            )
+        descriptor = os.open(
+            candidate,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+        )
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or _regular_file_stable_state(opened)
+            != _regular_file_stable_state(before)
+        ):
+            raise DiagnosticAnalysisError(
+                f"{label} changed before descriptor acquisition"
+            )
+        raw = _read_exact_regular_file_extent(
+            descriptor,
+            opened.st_size,
+            label,
+        )
+        after_descriptor = os.fstat(descriptor)
+        after_name = os.stat(candidate, follow_symlinks=False)
+        expected_state = _regular_file_stable_state(opened)
+        if (
+            _regular_file_stable_state(after_descriptor) != expected_state
+            or _regular_file_stable_state(after_name) != expected_state
+        ):
+            raise DiagnosticAnalysisError(f"{label} changed during bounded read")
+        return raw
+    except DiagnosticAnalysisError:
+        raise
+    except OSError as error:
+        raise DiagnosticAnalysisError(
+            f"{label} must be a stable bounded regular file"
+        ) from error
     finally:
         _close_descriptor_best_effort(descriptor)
 
@@ -983,6 +1052,7 @@ def _reviewed_authorization(
     raw = _read_regular_file_nofollow(
         Path(path),
         "reviewed authorization path",
+        max_bytes=_REVIEWED_AUTHORIZATION_BYTE_CAP_V1,
     )
     payload = _strict_json_object(raw, "reviewed authorization")
     if not _is_sha256(supplied_digest):
@@ -2327,6 +2397,7 @@ def _validate_artifact(
         _read_regular_file_nofollow(
             authorization_file,
             "reviewed authorization path",
+            max_bytes=_REVIEWED_AUTHORIZATION_BYTE_CAP_V1,
         )
         != reviewed_authorization_raw
     ):
@@ -3011,10 +3082,26 @@ def _open_stable_directory_with_ancestry(
 
 def _open_stable_directory(path: Path, label: str) -> tuple[int, os.stat_result]:
     directory_fd, opened, _ancestry = _open_stable_directory_with_ancestry(
-        Path(path).resolve(),
+        Path(path),
         label,
     )
     return directory_fd, opened
+
+
+def _assert_raw_directory_identity(
+    path: Path,
+    expected_identity: tuple[int, int],
+    label: str,
+) -> None:
+    """Prove one lexical raw directory name still reaches its pinned inode."""
+
+    descriptor = -1
+    try:
+        descriptor, opened = _open_stable_directory(path, label)
+        if (opened.st_dev, opened.st_ino) != expected_identity:
+            raise DiagnosticAnalysisError(f"{label} path identity changed")
+    finally:
+        _close_descriptor_best_effort(descriptor)
 
 
 @dataclass(frozen=True)
@@ -3922,7 +4009,7 @@ def _atomic_write_no_replace(
         raise DiagnosticAnalysisError(
             "descriptor-bound no-overwrite publication requires POSIX"
         )
-    requested_destination = Path(path)
+    requested_destination = Path(os.path.abspath(os.fspath(path)))
     if not requested_destination.name:
         raise DiagnosticAnalysisError("summary destination filename is empty")
     _strict_json_object(payload, "summary publication payload")
@@ -3937,27 +4024,71 @@ def _atomic_write_no_replace(
     publication_observed_exact = False
     parent_barrier_completed = False
     post_durability_check_failed = False
+    post_durability_check_completed = post_durability_check is None
+
+    def raise_after_failed_post_durability_check(
+        check_error: BaseException,
+    ) -> None:
+        """Revoke an exact summary, then report one typed INVALID failure."""
+
+        if (
+            staged_identity is None
+            or parent_identity is None
+            or parent_fd < 0
+            or file_descriptor < 0
+        ):
+            raise DiagnosticAnalysisPublicationAmbiguousError(
+                "summary publication durability and rollback are ambiguous; "
+                "the destination must not be used as diagnostic evidence"
+            ) from check_error
+        try:
+            revoked = _durably_revoke_exact_summary(
+                destination,
+                parent_fd,
+                parent_identity,
+                pinned_protected_roots,
+                file_descriptor,
+                staged_identity,
+                payload,
+            )
+        except DiagnosticAnalysisPublicationAmbiguousError:
+            raise
+        except BaseException:
+            raise DiagnosticAnalysisPublicationAmbiguousError(
+                "summary publication durability and rollback are ambiguous; "
+                "the destination must not be used as diagnostic evidence"
+            ) from check_error
+        if revoked:
+            raise DiagnosticAnalysisError(
+                "mandatory summary post-durability check failed after exact "
+                f"durable rollback: {type(check_error).__name__}: {check_error}"
+            ) from check_error
+        raise DiagnosticAnalysisPublicationAmbiguousError(
+            "summary publication durability and rollback are ambiguous; "
+            "the destination must not be used as diagnostic evidence"
+        ) from check_error
+
     try:
         # These descriptors were acquired before validation.  Revalidate their
         # names before touching any attacker-pivotable destination path.
         _assert_pinned_protected_roots(pinned_protected_roots)
-        destination_resolved = requested_destination.resolve()
-        destination = (
-            requested_destination.parent.resolve() / requested_destination.name
-        )
-        if any(
-            destination_resolved == protected.path
-            or destination_resolved.is_relative_to(protected.path)
-            for protected in pinned_protected_roots
-        ):
-            raise DiagnosticAnalysisError(
-                "summary destination cannot modify the run artifact or sealed bundle"
-            )
+        # Keep the lexical absolute namespace supplied by the caller.  Opening
+        # its raw parent component-by-component rejects every symlink component
+        # instead of resolving an alias and silently publishing elsewhere.
+        destination = requested_destination
         parent_fd, parent_stat, _parent_ancestry = _open_stable_directory_with_ancestry(
             destination.parent,
             "summary parent",
         )
         parent_identity = (parent_stat.st_dev, parent_stat.st_ino)
+        # Re-open the lexical name after authority acquisition.  This closes an
+        # ancestor pivot performed immediately after the component walk before
+        # even a staging inode can be allocated.
+        _assert_raw_directory_identity(
+            destination.parent,
+            parent_identity,
+            "summary parent after authority acquisition",
+        )
         _assert_summary_publication_topology(
             parent_fd,
             pinned_protected_roots,
@@ -4068,6 +4199,7 @@ def _atomic_write_no_replace(
         if post_durability_check is not None:
             try:
                 post_durability_check()
+                post_durability_check_completed = True
             except BaseException:
                 post_durability_check_failed = True
                 raise
@@ -4094,29 +4226,7 @@ def _atomic_write_no_replace(
             and parent_identity is not None
         ):
             if post_durability_check_failed:
-                try:
-                    revoked = _durably_revoke_exact_summary(
-                        destination,
-                        parent_fd,
-                        parent_identity,
-                        pinned_protected_roots,
-                        file_descriptor,
-                        staged_identity,
-                        payload,
-                    )
-                except DiagnosticAnalysisPublicationAmbiguousError:
-                    raise
-                except BaseException:
-                    raise DiagnosticAnalysisPublicationAmbiguousError(
-                        "summary publication durability and rollback are ambiguous; "
-                        "the destination must not be used as diagnostic evidence"
-                    ) from error
-                if revoked:
-                    raise
-                raise DiagnosticAnalysisPublicationAmbiguousError(
-                    "summary publication durability and rollback are ambiguous; "
-                    "the destination must not be used as diagnostic evidence"
-                ) from error
+                raise_after_failed_post_durability_check(error)
             committed = _recover_summary_publication(
                 destination,
                 parent_fd,
@@ -4131,6 +4241,53 @@ def _atomic_write_no_replace(
                 error,
             )
             if committed:
+                if not post_durability_check_completed:
+                    if post_durability_check is None:
+                        raise DiagnosticAnalysisPublicationAmbiguousError(
+                            "summary publication durability and rollback are "
+                            "ambiguous; the destination must not be used as "
+                            "diagnostic evidence"
+                        ) from error
+                    try:
+                        post_durability_check()
+                        post_durability_check_completed = True
+                        _assert_summary_publication_topology(
+                            parent_fd,
+                            pinned_protected_roots,
+                            publication_may_exist=True,
+                        )
+                        if not _summary_publication_is_exact(
+                            destination,
+                            parent_fd,
+                            parent_identity,
+                            staged_identity,
+                            payload,
+                        ):
+                            raise DiagnosticAnalysisError(
+                                "summary destination changed during recovered "
+                                "post-durability proof"
+                            )
+                    except BaseException as recovery_error:
+                        if not post_durability_check_completed:
+                            raise_after_failed_post_durability_check(
+                                recovery_error
+                            )
+                        committed_after_check = _recover_summary_publication(
+                            destination,
+                            parent_fd,
+                            parent_identity,
+                            pinned_protected_roots,
+                            staging_name,
+                            file_descriptor,
+                            staged_identity,
+                            payload,
+                            publication_observed_exact,
+                            parent_barrier_completed,
+                            recovery_error,
+                        )
+                        if committed_after_check:
+                            return
+                        raise
                 return
         raise
     finally:
@@ -4157,7 +4314,7 @@ def write_countdown_thompson_diagnostic_summary(
 ) -> dict[str, Any]:
     """Analyze fully, then atomically publish one canonical no-overwrite summary."""
 
-    destination = Path(output_path)
+    destination = Path(os.path.abspath(os.fspath(output_path)))
     protected_roots = _pin_protected_roots(
         (Path(artifact_dir), Path(bundle_dir)),
     )
@@ -4191,25 +4348,21 @@ def write_countdown_thompson_diagnostic_summary(
             ) from error
         protected_roots = (*protected_roots, *historical_roots)
         historical_canonical = historical_roots[0].path
-        destination_resolved = destination.resolve()
         if (
-            destination_resolved == historical_canonical
-            or destination_resolved.is_relative_to(historical_canonical)
+            destination == historical_canonical
+            or destination.is_relative_to(historical_canonical)
         ):
             raise DiagnosticAnalysisError(
                 "summary destination cannot modify the historical authorized artifact"
             )
         _assert_pinned_protected_roots(protected_roots)
         if any(
-            destination_resolved == root.path
-            or destination_resolved.is_relative_to(root.path)
+            destination == root.path or destination.is_relative_to(root.path)
             for root in protected_roots
         ):
             raise DiagnosticAnalysisError(
                 "summary destination cannot modify a protected artifact or bundle"
             )
-        if destination.exists() or destination.is_symlink():
-            raise FileExistsError(f"summary destination exists: {destination}")
         validated_receipt = _validated_artifact_receipt(
             getattr(validated, "artifact_receipt", ()),
             "validated runner artifact",
@@ -4256,7 +4409,9 @@ def _self_test() -> dict[str, Any]:
     if _strict_jsonl(canonical) != (fixture,):
         raise AssertionError("self-test canonical JSONL round trip drifted")
     with tempfile.TemporaryDirectory(prefix="qmc-track-a-analysis-self-test-") as root:
-        output = Path(root) / "summary.json"
+        # The self-test owns this temporary path, so hand the publisher its
+        # canonical spelling even on hosts where /tmp or /var is a symlink.
+        output = Path(root).resolve() / "summary.json"
         _atomic_write_no_replace(output, canonical)
         if output.read_bytes() != canonical:
             raise AssertionError("self-test atomic publication bytes drifted")
@@ -4346,12 +4501,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise DiagnosticAnalysisError(
                     f"--analyze is missing required arguments: {', '.join(missing)}"
                 )
+            requested_output = Path(
+                os.path.abspath(os.fspath(arguments.output))
+            )
             summary = write_countdown_thompson_diagnostic_summary(
                 arguments.analyze,
                 arguments.bundle,
                 arguments.authorization_file,
                 arguments.authorization_digest,
-                arguments.output,
+                requested_output,
                 repository_root=arguments.repository_root,
             )
             result = {
@@ -4361,7 +4519,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "passed; no inferential, superiority, or locked-evaluation "
                     "authority"
                 ),
-                "output_path": str(arguments.output.resolve()),
+                "output_path": str(requested_output),
                 "status": "PASS",
                 "summary_digest": summary["deterministic_digest"],
             }

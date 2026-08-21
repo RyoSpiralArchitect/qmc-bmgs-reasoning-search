@@ -2639,7 +2639,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             self.assertFalse((attempt / "invalid.json").exists())
             self.assertFalse((attempt / "not_run.json").exists())
 
-    def test_byte_identical_public_directory_replacement_is_ambiguous(
+    def test_byte_identical_public_directory_replacement_is_revoked_before_invalid(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2678,8 +2678,8 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 ),
             ):
                 with self.assertRaisesRegex(
-                    runner.DiagnosticPublicationStateAmbiguousError,
-                    "unproven directory identity",
+                    runner.DiagnosticInvalidRunError,
+                    "synthetic byte-identical directory replacement",
                 ):
                     runner._publish_run_artifact(
                         preflight,
@@ -2695,12 +2695,638 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 (output.stat().st_dev, output.stat().st_ino),
                 (stolen.stat().st_dev, stolen.stat().st_ino),
             )
+            for artifact in (output, stolen):
+                self.assertFalse((artifact / "commit.json").exists())
+                revoked = [
+                    path
+                    for path in artifact.iterdir()
+                    if path.name.startswith(".commit.json.revoked-")
+                ]
+                self.assertEqual(len(revoked), 1)
+                self.assertEqual(
+                    json.loads(revoked[0].read_bytes())["status"],
+                    "COMMITTED",
+                )
             self.assertEqual(
-                {name: (output / name).read_bytes() for name in runner.ARTIFACT_FILENAMES},
-                {name: (stolen / name).read_bytes() for name in runner.ARTIFACT_FILENAMES},
+                (output / "manifest.json").read_bytes(),
+                (stolen / "manifest.json").read_bytes(),
             )
+            self.assertEqual(
+                (output / "records.jsonl").read_bytes(),
+                (stolen / "records.jsonl").read_bytes(),
+            )
+            self.assertTrue((attempt / "invalid.json").exists())
+            self.assertFalse((attempt / "not_run.json").exists())
+
+    def test_post_started_output_parent_replacement_is_publication_ambiguous(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            container = Path(temporary)
+            authorized_parent = container / "authorized"
+            replacement_parent = container / "replacement"
+            displaced_parent = container / "displaced"
+            authorized_parent.mkdir()
+            replacement_parent.mkdir()
+            output = authorized_parent / "artifact"
+            replacement_output = replacement_parent / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_write = runner._write_canonical_file_noreplace_at
+            parent_replaced = False
+
+            def commit_then_replace_parent(
+                directory_fd: int,
+                filename: str,
+                payload: dict[str, object],
+            ) -> tuple[int, int]:
+                nonlocal parent_replaced
+                identity = original_write(directory_fd, filename, payload)
+                if filename == "commit.json":
+                    replacement_output.mkdir()
+                    for member in runner.ARTIFACT_FILENAMES:
+                        (replacement_output / member).write_bytes(
+                            (output / member).read_bytes()
+                        )
+                    authorized_parent.rename(displaced_parent)
+                    replacement_parent.rename(authorized_parent)
+                    parent_replaced = True
+                    raise OSError("synthetic output parent replacement")
+                return identity
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_write_canonical_file_noreplace_at",
+                    side_effect=commit_then_replace_parent,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "output parent identity drifted after STARTED",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=container,
+                    )
+
+            attempt = displaced_parent / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue(parent_replaced)
+            self.assertTrue((attempt / "started.json").is_file())
+            self.assertTrue((attempt / "ready_to_commit.json").is_file())
             self.assertFalse((attempt / "invalid.json").exists())
             self.assertFalse((attempt / "not_run.json").exists())
+            for committed in (output, displaced_parent / "artifact"):
+                self.assertEqual(
+                    {path.name for path in committed.iterdir()},
+                    set(runner.ARTIFACT_FILENAMES),
+                )
+                self.assertEqual(
+                    json.loads((committed / "commit.json").read_bytes())["status"],
+                    "COMMITTED",
+                )
+
+    def test_parent_swap_after_final_success_observation_is_ambiguous(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            container = Path(temporary)
+            authorized_parent = container / "authorized"
+            replacement_parent = container / "replacement"
+            displaced_parent = container / "displaced"
+            authorized_parent.mkdir()
+            replacement_parent.mkdir()
+            (replacement_parent / "foreign.txt").write_text(
+                "preserve me",
+                encoding="utf-8",
+            )
+            output = authorized_parent / "artifact"
+            replacement_output = replacement_parent / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_matches = runner._published_artifact_matches
+            parent_swapped = False
+
+            def swap_parent_after_final_match(
+                *args: object,
+                **kwargs: object,
+            ) -> bool:
+                nonlocal parent_swapped
+                matches = original_matches(*args, **kwargs)
+                if (
+                    matches
+                    and kwargs.get("commit_receipt") is not None
+                    and not parent_swapped
+                ):
+                    replacement_output.mkdir()
+                    for member in runner.ARTIFACT_FILENAMES:
+                        (replacement_output / member).write_bytes(
+                            (output / member).read_bytes()
+                        )
+                    authorized_parent.rename(displaced_parent)
+                    replacement_parent.rename(authorized_parent)
+                    parent_swapped = True
+                return matches
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_published_artifact_matches",
+                    side_effect=swap_parent_after_final_match,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "output parent identity drifted after STARTED",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=container,
+                    )
+
+            attempt = displaced_parent / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue(parent_swapped)
+            self.assertFalse((attempt / "invalid.json").exists())
+            self.assertFalse((attempt / "not_run.json").exists())
+            self.assertEqual(
+                (authorized_parent / "foreign.txt").read_text(encoding="utf-8"),
+                "preserve me",
+            )
+            for committed in (output, displaced_parent / "artifact"):
+                self.assertEqual(
+                    {path.name for path in committed.iterdir()},
+                    set(runner.ARTIFACT_FILENAMES),
+                )
+
+    def test_parent_swap_after_recovery_commit_observation_is_ambiguous(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            container = Path(temporary)
+            authorized_parent = container / "authorized"
+            replacement_parent = container / "replacement"
+            displaced_parent = container / "displaced"
+            authorized_parent.mkdir()
+            replacement_parent.mkdir()
+            (replacement_parent / "foreign.txt").write_text(
+                "preserve me",
+                encoding="utf-8",
+            )
+            output = authorized_parent / "artifact"
+            replacement_output = replacement_parent / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_file_write = runner._write_canonical_file_noreplace_at
+            original_matches = runner._published_artifact_matches
+            commit_interrupted = False
+            parent_swapped = False
+
+            def interrupt_after_commit(
+                directory_fd: int,
+                filename: str,
+                payload: dict[str, object],
+            ) -> tuple[int, int]:
+                nonlocal commit_interrupted
+                identity = original_file_write(directory_fd, filename, payload)
+                if filename == "commit.json" and not commit_interrupted:
+                    commit_interrupted = True
+                    raise OSError("synthetic post-commit recovery")
+                return identity
+
+            def swap_parent_after_recovery_match(
+                *args: object,
+                **kwargs: object,
+            ) -> bool:
+                nonlocal parent_swapped
+                matches = original_matches(*args, **kwargs)
+                if (
+                    commit_interrupted
+                    and matches
+                    and kwargs.get("commit_receipt") is not None
+                    and not parent_swapped
+                ):
+                    replacement_output.mkdir()
+                    for member in runner.ARTIFACT_FILENAMES:
+                        (replacement_output / member).write_bytes(
+                            (output / member).read_bytes()
+                        )
+                    authorized_parent.rename(displaced_parent)
+                    replacement_parent.rename(authorized_parent)
+                    parent_swapped = True
+                return matches
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_write_canonical_file_noreplace_at",
+                    side_effect=interrupt_after_commit,
+                ),
+                patch.object(
+                    runner,
+                    "_published_artifact_matches",
+                    side_effect=swap_parent_after_recovery_match,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "output parent identity drifted after STARTED",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=container,
+                    )
+
+            attempt = displaced_parent / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue(commit_interrupted)
+            self.assertTrue(parent_swapped)
+            self.assertFalse((attempt / "invalid.json").exists())
+            self.assertFalse((attempt / "not_run.json").exists())
+            self.assertEqual(
+                (authorized_parent / "foreign.txt").read_text(encoding="utf-8"),
+                "preserve me",
+            )
+            for committed in (output, displaced_parent / "artifact"):
+                self.assertEqual(
+                    {path.name for path in committed.iterdir()},
+                    set(runner.ARTIFACT_FILENAMES),
+                )
+
+    def test_commit_published_by_invalid_hook_is_reconciled_and_revoked(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_file_write = runner._write_canonical_file_noreplace_at
+            original_attempt_write = runner._write_attempt_receipt
+            commit_write_failed = False
+            late_commit_published = False
+
+            def fail_initial_commit_write(
+                directory_fd: int,
+                filename: str,
+                payload: dict[str, object],
+            ) -> tuple[int, int]:
+                nonlocal commit_write_failed
+                if filename == "commit.json" and not commit_write_failed:
+                    commit_write_failed = True
+                    raise OSError("synthetic initial commit publication failure")
+                return original_file_write(directory_fd, filename, payload)
+
+            def publish_commit_after_invalid(
+                attempt: runner._Attempt,
+                filename: str,
+                **kwargs: object,
+            ) -> dict[str, object]:
+                nonlocal late_commit_published
+                receipt = original_attempt_write(attempt, filename, **kwargs)
+                if filename == "invalid.json" and not late_commit_published:
+                    manifest_payload = json.loads(
+                        (output / "manifest.json").read_bytes()
+                    )
+                    started_payload = json.loads(
+                        (attempt.directory / "started.json").read_bytes()
+                    )
+                    commit_payload = runner._with_digest(
+                        {
+                            "artifact_id": authorization["artifact_id"],
+                            "attempt_started_receipt_digest": started_payload[
+                                "deterministic_digest"
+                            ],
+                            "execution_authorization_digest": authorization[
+                                "deterministic_digest"
+                            ],
+                            "run_manifest_digest": manifest_payload[
+                                "deterministic_digest"
+                            ],
+                            "schema_version": runner.ARTIFACT_COMMIT_SCHEMA_VERSION,
+                            "status": "COMMITTED",
+                        }
+                    )
+                    flags = runner.os.O_RDONLY | getattr(
+                        runner.os,
+                        "O_DIRECTORY",
+                        0,
+                    )
+                    flags |= getattr(runner.os, "O_NOFOLLOW", 0)
+                    output_fd = runner.os.open(output, flags)
+                    try:
+                        original_file_write(
+                            output_fd,
+                            "commit.json",
+                            commit_payload,
+                        )
+                    finally:
+                        runner.os.close(output_fd)
+                    late_commit_published = True
+                return receipt
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_write_canonical_file_noreplace_at",
+                    side_effect=fail_initial_commit_write,
+                ),
+                patch.object(
+                    runner,
+                    "_write_attempt_receipt",
+                    side_effect=publish_commit_after_invalid,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticInvalidRunError,
+                    "synthetic initial commit publication failure",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue(commit_write_failed)
+            self.assertTrue(late_commit_published)
+            self.assertTrue((attempt / "invalid.json").is_file())
+            self.assertFalse((attempt / "not_run.json").exists())
+            self.assertFalse((output / "commit.json").exists())
+            self.assertTrue((output / "manifest.json").is_file())
+            self.assertTrue((output / "records.jsonl").is_file())
+            revoked = [
+                path
+                for path in output.iterdir()
+                if path.name.startswith(".commit.json.revoked-")
+            ]
+            self.assertEqual(len(revoked), 1)
+            self.assertEqual(json.loads(revoked[0].read_bytes())["status"], "COMMITTED")
+            self.assertNotEqual(
+                {path.name for path in output.iterdir()},
+                set(runner.ARTIFACT_FILENAMES),
+            )
+
+    def test_post_rename_failure_has_commit_context_before_invalid_hook(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            foreign = root / "foreign.txt"
+            foreign.write_text("preserve me", encoding="utf-8")
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_rename = runner._rename_noreplace_at
+            original_fsync = runner.os.fsync
+            original_file_write = runner._write_canonical_file_noreplace_at
+            original_attempt_write = runner._write_attempt_receipt
+            source_fd = -1
+            rename_complete = False
+            source_barrier_failed = False
+            late_commit_published = False
+
+            def record_artifact_rename(
+                source_directory_fd: int,
+                source_name: str,
+                destination_directory_fd: int,
+                destination_name: str,
+            ) -> None:
+                nonlocal rename_complete, source_fd
+                original_rename(
+                    source_directory_fd,
+                    source_name,
+                    destination_directory_fd,
+                    destination_name,
+                )
+                if destination_name == output.name:
+                    self.assertEqual(source_name, "staging")
+                    source_fd = source_directory_fd
+                    rename_complete = True
+
+            def fail_first_post_rename_source_barrier(descriptor: int) -> None:
+                nonlocal source_barrier_failed
+                if (
+                    rename_complete
+                    and descriptor == source_fd
+                    and not source_barrier_failed
+                ):
+                    source_barrier_failed = True
+                    raise OSError("synthetic post-rename commit-context failure")
+                original_fsync(descriptor)
+
+            def publish_commit_after_invalid(
+                attempt: runner._Attempt,
+                filename: str,
+                **kwargs: object,
+            ) -> dict[str, object]:
+                nonlocal late_commit_published
+                receipt = original_attempt_write(attempt, filename, **kwargs)
+                if filename == "invalid.json" and not late_commit_published:
+                    manifest_payload = json.loads(
+                        (output / "manifest.json").read_bytes()
+                    )
+                    started_payload = json.loads(
+                        (attempt.directory / "started.json").read_bytes()
+                    )
+                    commit_payload = runner._with_digest(
+                        {
+                            "artifact_id": authorization["artifact_id"],
+                            "attempt_started_receipt_digest": started_payload[
+                                "deterministic_digest"
+                            ],
+                            "execution_authorization_digest": authorization[
+                                "deterministic_digest"
+                            ],
+                            "run_manifest_digest": manifest_payload[
+                                "deterministic_digest"
+                            ],
+                            "schema_version": runner.ARTIFACT_COMMIT_SCHEMA_VERSION,
+                            "status": "COMMITTED",
+                        }
+                    )
+                    flags = runner.os.O_RDONLY | getattr(
+                        runner.os,
+                        "O_DIRECTORY",
+                        0,
+                    )
+                    flags |= getattr(runner.os, "O_NOFOLLOW", 0)
+                    output_fd = runner.os.open(output, flags)
+                    try:
+                        original_file_write(
+                            output_fd,
+                            "commit.json",
+                            commit_payload,
+                        )
+                    finally:
+                        runner.os.close(output_fd)
+                    late_commit_published = True
+                return receipt
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_rename_noreplace_at",
+                    side_effect=record_artifact_rename,
+                ),
+                patch.object(
+                    runner.os,
+                    "fsync",
+                    side_effect=fail_first_post_rename_source_barrier,
+                ),
+                patch.object(
+                    runner,
+                    "_write_attempt_receipt",
+                    side_effect=publish_commit_after_invalid,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticInvalidRunError,
+                    "synthetic post-rename commit-context failure",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue(rename_complete)
+            self.assertTrue(source_barrier_failed)
+            self.assertTrue(late_commit_published)
+            self.assertTrue((attempt / "invalid.json").is_file())
+            self.assertFalse((attempt / "not_run.json").exists())
+            self.assertFalse((output / "commit.json").exists())
+            revoked = [
+                path
+                for path in output.iterdir()
+                if path.name.startswith(".commit.json.revoked-")
+            ]
+            self.assertEqual(len(revoked), 1)
+            self.assertEqual(json.loads(revoked[0].read_bytes())["status"], "COMMITTED")
+            self.assertEqual(foreign.read_text(encoding="utf-8"), "preserve me")
+            self.assertNotEqual(
+                {path.name for path in output.iterdir()},
+                set(runner.ARTIFACT_FILENAMES),
+            )
+
+    def test_parent_swap_after_final_recovery_absence_is_ambiguous(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            container = Path(temporary)
+            authorized_parent = container / "authorized"
+            replacement_parent = container / "replacement"
+            displaced_parent = container / "displaced"
+            authorized_parent.mkdir()
+            replacement_parent.mkdir()
+            replacement_output = replacement_parent / "artifact"
+            replacement_output.mkdir()
+            (replacement_output / "foreign.txt").write_text(
+                "preserve me",
+                encoding="utf-8",
+            )
+            output = authorized_parent / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_file_write = runner._write_canonical_file_noreplace_at
+            original_content_identity = runner._published_artifact_content_identity
+            commit_write_failed = False
+            invalid_absence_observations = 0
+            parent_swapped = False
+
+            def fail_initial_commit_write(
+                directory_fd: int,
+                filename: str,
+                payload: dict[str, object],
+            ) -> tuple[int, int]:
+                nonlocal commit_write_failed
+                if filename == "commit.json" and not commit_write_failed:
+                    commit_write_failed = True
+                    raise OSError("synthetic commit publication failure")
+                return original_file_write(directory_fd, filename, payload)
+
+            def swap_parent_after_final_absence(
+                *args: object,
+                **kwargs: object,
+            ) -> tuple[int, int] | None:
+                nonlocal invalid_absence_observations, parent_swapped
+                identity = original_content_identity(*args, **kwargs)
+                attempt = authorized_parent / (
+                    f".artifact.attempt-{authorization['deterministic_digest']}"
+                )
+                if identity is None and (attempt / "invalid.json").is_file():
+                    invalid_absence_observations += 1
+                    if invalid_absence_observations == 2 and not parent_swapped:
+                        authorized_parent.rename(displaced_parent)
+                        replacement_parent.rename(authorized_parent)
+                        parent_swapped = True
+                return identity
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_write_canonical_file_noreplace_at",
+                    side_effect=fail_initial_commit_write,
+                ),
+                patch.object(
+                    runner,
+                    "_published_artifact_content_identity",
+                    side_effect=swap_parent_after_final_absence,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "output parent identity drifted after STARTED",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=container,
+                    )
+
+            attempt = displaced_parent / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue(commit_write_failed)
+            self.assertEqual(invalid_absence_observations, 2)
+            self.assertTrue(parent_swapped)
+            self.assertTrue((attempt / "invalid.json").is_file())
+            self.assertFalse((attempt / "not_run.json").exists())
+            self.assertEqual(
+                (output / "foreign.txt").read_text(encoding="utf-8"),
+                "preserve me",
+            )
+            self.assertFalse((displaced_parent / "artifact" / "commit.json").exists())
 
     def test_persistent_artifact_parent_sync_failure_revokes_commit_as_invalid(
         self,
@@ -3095,9 +3721,11 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         reviewed_authorization_revision=_AUTHORIZATION_REVISION,
                         repository_root=root,
                     )
-            self.assertEqual(len(synthetic_entries), 1)
-            self.assertEqual(synthetic_entries[0].next_calls, 1)
-            self.assertTrue(synthetic_entries[0].closed)
+            self.assertGreaterEqual(len(synthetic_entries), 1)
+            self.assertTrue(
+                all(entries.next_calls == 1 for entries in synthetic_entries)
+            )
+            self.assertTrue(all(entries.closed for entries in synthetic_entries))
             attempt = root / (
                 f".artifact.attempt-{authorization['deterministic_digest']}"
             )
@@ -3362,6 +3990,256 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 {"invalid.json", "pre_outcome.json", "staging", "started.json"},
             )
             self.assertFalse((attempt / "not_run.json").exists())
+
+    def test_started_failure_reason_is_frozen_before_terminal_reconciliation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_write = runner._write_attempt_receipt
+
+            class StateMutatingError(OSError):
+                def __init__(self) -> None:
+                    super().__init__("synthetic STARTED write failure")
+                    self.attempt: runner._Attempt | None = None
+                    self.str_calls = 0
+
+                def __str__(self) -> str:
+                    self.str_calls += 1
+                    if self.str_calls == 2:
+                        if self.attempt is None:
+                            raise AssertionError("attempt was not captured")
+                        original_write(
+                            self.attempt,
+                            "started.json",
+                            phase="STARTED",
+                            status="PENDING",
+                        )
+                    return "synthetic STARTED write failure"
+
+            injected_error = StateMutatingError()
+            started_write_failed = False
+
+            def fail_initial_started(
+                attempt: runner._Attempt,
+                filename: str,
+                **kwargs: object,
+            ) -> dict[str, object]:
+                nonlocal started_write_failed
+                if filename == "started.json" and not started_write_failed:
+                    started_write_failed = True
+                    injected_error.attempt = attempt
+                    raise injected_error
+                return original_write(attempt, filename, **kwargs)
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_write_attempt_receipt",
+                    side_effect=fail_initial_started,
+                ),
+                patch.object(
+                    runner,
+                    "_resolve_components",
+                    side_effect=AssertionError("sealed task must not be resolved"),
+                ) as resolve_components,
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticNotRunError,
+                    "synthetic STARTED write failure",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue(started_write_failed)
+            self.assertEqual(injected_error.str_calls, 1)
+            self.assertTrue((attempt / "not_run.json").is_file())
+            self.assertFalse((attempt / "started.json").exists())
+            self.assertFalse((attempt / "invalid.json").exists())
+            resolve_components.assert_not_called()
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_resolve_components",
+                    side_effect=AssertionError("spent attempt must not retry"),
+                ) as retry_components,
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticNotRunError,
+                    "durable attempt marker",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+            retry_components.assert_not_called()
+
+    def test_started_appearing_during_not_run_write_reconciles_to_invalid(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_write = runner._write_attempt_receipt
+            started_write_failed = False
+            late_started_written = False
+
+            def inject_late_started(
+                attempt: runner._Attempt,
+                filename: str,
+                **kwargs: object,
+            ) -> dict[str, object]:
+                nonlocal late_started_written, started_write_failed
+                if filename == "started.json" and not started_write_failed:
+                    started_write_failed = True
+                    raise OSError("synthetic initial STARTED write failure")
+                if filename == "not_run.json" and not late_started_written:
+                    original_write(
+                        attempt,
+                        "started.json",
+                        phase="STARTED",
+                        status="PENDING",
+                    )
+                    late_started_written = True
+                return original_write(attempt, filename, **kwargs)
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_write_attempt_receipt",
+                    side_effect=inject_late_started,
+                ),
+                patch.object(
+                    runner,
+                    "_resolve_components",
+                    side_effect=AssertionError("sealed task must not be resolved"),
+                ) as resolve_components,
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticInvalidRunError,
+                    "synthetic initial STARTED write failure",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue(started_write_failed)
+            self.assertTrue(late_started_written)
+            self.assertTrue((attempt / "started.json").is_file())
+            self.assertTrue((attempt / "not_run.json").is_file())
+            self.assertTrue((attempt / "invalid.json").is_file())
+            resolve_components.assert_not_called()
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_resolve_components",
+                    side_effect=AssertionError("spent attempt must not retry"),
+                ) as retry_components,
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticNotRunError,
+                    "durable attempt marker",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+            retry_components.assert_not_called()
+
+    def test_parent_drift_after_typed_started_transition_is_ambiguous(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            container = Path(temporary)
+            authorized_parent = container / "authorized"
+            replacement_parent = container / "replacement"
+            displaced_parent = container / "displaced"
+            authorized_parent.mkdir()
+            replacement_parent.mkdir()
+            output = authorized_parent / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_transition = runner._transition_attempt_to_started
+
+            def terminal_then_replace_parent(
+                attempt: runner._Attempt,
+            ) -> dict[str, object]:
+                original_transition(attempt)
+                runner._write_attempt_receipt(
+                    attempt,
+                    "invalid.json",
+                    phase="STARTED",
+                    status="INVALID",
+                    reason="synthetic typed transition failure",
+                )
+                authorized_parent.rename(displaced_parent)
+                replacement_parent.rename(authorized_parent)
+                raise runner.DiagnosticInvalidRunError(
+                    "synthetic typed transition failure"
+                )
+
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_transition_attempt_to_started",
+                    side_effect=terminal_then_replace_parent,
+                ),
+                patch.object(
+                    runner,
+                    "_resolve_components",
+                    side_effect=AssertionError("sealed task must not be resolved"),
+                ) as resolve_components,
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "output parent identity drifted after STARTED",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=container,
+                    )
+
+            attempt = displaced_parent / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue((attempt / "started.json").is_file())
+            self.assertTrue((attempt / "invalid.json").is_file())
+            self.assertFalse((attempt / "not_run.json").exists())
+            resolve_components.assert_not_called()
 
     def test_started_receipt_observation_failure_is_publication_ambiguous(
         self,

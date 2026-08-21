@@ -1169,6 +1169,101 @@ def _published_artifact_content_identity(
     return identity
 
 
+def _revoke_public_exact_committed_artifact(
+    parent_fd: int,
+    output_name: str,
+    run_manifest: Mapping[str, Any],
+    *,
+    records_byte_count: int,
+    records_sha256: str,
+    commit_receipt: Mapping[str, Any],
+) -> bool:
+    """Tombstone only commit.json from one exact public three-file artifact."""
+
+    public_identity = _published_artifact_content_identity(
+        parent_fd,
+        output_name,
+        run_manifest,
+        records_byte_count=records_byte_count,
+        records_sha256=records_sha256,
+        commit_receipt=commit_receipt,
+    )
+    if public_identity is None:
+        return False
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    output_fd = -1
+    try:
+        output_fd = os.open(output_name, flags, dir_fd=parent_fd)
+        opened = os.fstat(output_fd)
+        if (opened.st_dev, opened.st_ino) != public_identity:
+            raise DiagnosticPublicationStateAmbiguousError(
+                "exact public artifact changed before commit revocation"
+            )
+        if not _published_artifact_matches(
+            parent_fd,
+            output_name,
+            public_identity,
+            run_manifest,
+            records_byte_count=records_byte_count,
+            records_sha256=records_sha256,
+            commit_receipt=commit_receipt,
+        ):
+            raise DiagnosticPublicationStateAmbiguousError(
+                "exact public artifact changed before commit revocation"
+            )
+        commit_identity = _exact_regular_file_identity_at(
+            output_fd,
+            "commit.json",
+            _canonical_bytes(commit_receipt),
+            label="artifact commit",
+        )
+        if commit_identity is None:
+            raise DiagnosticPublicationStateAmbiguousError(
+                "exact public artifact commit disappeared before revocation"
+            )
+        tombstone = _quarantine_exact_file_at(
+            output_fd,
+            "commit.json",
+            _canonical_bytes(commit_receipt),
+            expected_identity=commit_identity,
+            label="artifact commit",
+        )
+        if tombstone is None:
+            raise DiagnosticPublicationStateAmbiguousError(
+                "exact public artifact commit revocation is unproven"
+            )
+        return True
+    except DiagnosticPublicationStateAmbiguousError:
+        raise
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "exact public artifact commit revocation failed"
+        ) from error
+    finally:
+        _close_descriptor_best_effort(output_fd)
+
+
+def _assert_started_output_parent_identity(
+    parent: Path,
+    parent_fd: int,
+    parent_stat: os.stat_result,
+) -> None:
+    """Keep lexical output-parent drift typed after STARTED."""
+
+    try:
+        _assert_directory_path_identity(
+            parent,
+            parent_fd,
+            parent_stat,
+            "run output parent",
+        )
+    except BaseException as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "run output parent identity drifted after STARTED"
+        ) from error
+
+
 def _retry_committed_artifact_durability(
     *,
     parent: Path,
@@ -1185,40 +1280,47 @@ def _retry_committed_artifact_durability(
 
     output_fd = -1
     try:
-        _assert_directory_path_identity(
+        _assert_started_output_parent_identity(
             parent,
             parent_fd,
             parent_stat,
-            "run output parent",
         )
-        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        output_fd = os.open(output_name, flags, dir_fd=parent_fd)
-        observed = os.fstat(output_fd)
-        if (observed.st_dev, observed.st_ino) != staging_identity:
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            output_fd = os.open(output_name, flags, dir_fd=parent_fd)
+            observed = os.fstat(output_fd)
+            if (observed.st_dev, observed.st_ino) != staging_identity:
+                return False
+            os.fsync(output_fd)
+            os.fsync(parent_fd)
+        except BaseException:
             return False
-        os.fsync(output_fd)
-        os.fsync(parent_fd)
-        _assert_directory_path_identity(
+        _assert_started_output_parent_identity(
             parent,
             parent_fd,
             parent_stat,
-            "run output parent",
         )
-    except BaseException:
-        return False
+        commit_matches = _published_artifact_matches(
+            parent_fd,
+            output_name,
+            staging_identity,
+            run_manifest,
+            records_byte_count=records_byte_count,
+            records_sha256=records_sha256,
+            commit_receipt=commit_receipt,
+        )
+        if not commit_matches:
+            return False
+        _assert_started_output_parent_identity(
+            parent,
+            parent_fd,
+            parent_stat,
+        )
+        return True
     finally:
         if output_fd >= 0:
             _close_descriptor_best_effort(output_fd)
-    return _published_artifact_matches(
-        parent_fd,
-        output_name,
-        staging_identity,
-        run_manifest,
-        records_byte_count=records_byte_count,
-        records_sha256=records_sha256,
-        commit_receipt=commit_receipt,
-    )
 
 
 def _published_exact_artifact_commit_identity(
@@ -2848,6 +2950,7 @@ def _transition_attempt_to_started(attempt: _Attempt) -> dict[str, Any]:
             status="PENDING",
         )
     except BaseException as error:
+        reason = str(error)
         try:
             os.fsync(attempt.directory_fd)
         except BaseException:
@@ -2900,26 +3003,51 @@ def _transition_attempt_to_started(attempt: _Attempt) -> dict[str, Any]:
                     "invalid.json",
                     phase="STARTED",
                     status="INVALID",
-                    reason=str(error),
+                    reason=reason,
                 )
             except BaseException as terminal_error:
                 raise DiagnosticPublicationStateAmbiguousError(
                     "INVALID receipt durability is unproven after STARTED"
                 ) from terminal_error
-            raise DiagnosticInvalidRunError(str(error)) from error
+            raise DiagnosticInvalidRunError(reason) from error
         try:
             _write_attempt_receipt(
                 attempt,
                 "not_run.json",
                 phase="PRE_OUTCOME",
                 status="NOT_RUN",
-                reason=str(error),
+                reason=reason,
             )
         except BaseException as terminal_error:
             raise DiagnosticPublicationStateAmbiguousError(
                 "NOT_RUN receipt durability is unproven before STARTED"
             ) from terminal_error
-        raise DiagnosticNotRunError(str(error)) from error
+        try:
+            os.fsync(attempt.directory_fd)
+            started_after_not_run = _attempt_receipt_matches(
+                attempt,
+                "started.json",
+                expected,
+            )
+        except BaseException as reconciliation_error:
+            raise DiagnosticPublicationStateAmbiguousError(
+                "STARTED state after NOT_RUN publication is unproven"
+            ) from reconciliation_error
+        if started_after_not_run:
+            try:
+                _write_attempt_receipt(
+                    attempt,
+                    "invalid.json",
+                    phase="STARTED",
+                    status="INVALID",
+                    reason=reason,
+                )
+            except BaseException as terminal_error:
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "INVALID receipt durability is unproven after late STARTED"
+                ) from terminal_error
+            raise DiagnosticInvalidRunError(reason) from error
+        raise DiagnosticNotRunError(reason) from error
     return expected
 
 
@@ -3337,13 +3465,14 @@ def _publish_run_artifact_locked(
         )
         os.fsync(attempt.directory_fd)
     except BaseException as error:
+        reason = str(error)
         try:
             _write_attempt_receipt(
                 attempt,
                 "not_run.json",
                 phase="PRE_OUTCOME",
                 status="NOT_RUN",
-                reason=str(error),
+                reason=reason,
             )
         except BaseException as terminal_error:
             _close_descriptor_best_effort(staging_fd)
@@ -3353,7 +3482,7 @@ def _publish_run_artifact_locked(
             ) from terminal_error
         _close_descriptor_best_effort(staging_fd)
         _close_descriptor_best_effort(attempt.directory_fd)
-        raise DiagnosticNotRunError(str(error)) from error
+        raise DiagnosticNotRunError(reason) from error
 
     expected_started_receipt = _attempt_receipt(
         attempt,
@@ -3362,15 +3491,23 @@ def _publish_run_artifact_locked(
     )
     try:
         started_receipt = _transition_attempt_to_started(attempt)
-    except (
-        DiagnosticNotRunError,
-        DiagnosticInvalidRunError,
-        DiagnosticPublicationStateAmbiguousError,
-    ):
+    except DiagnosticInvalidRunError:
+        try:
+            _assert_started_output_parent_identity(
+                output.parent,
+                parent_fd,
+                parent_stat,
+            )
+        finally:
+            _close_descriptor_best_effort(staging_fd)
+            _close_descriptor_best_effort(attempt.directory_fd)
+        raise
+    except (DiagnosticNotRunError, DiagnosticPublicationStateAmbiguousError):
         _close_descriptor_best_effort(staging_fd)
         _close_descriptor_best_effort(attempt.directory_fd)
         raise
     except BaseException as error:
+        reason = str(error)
         try:
             os.fsync(attempt.directory_fd)
             started_is_durable = _attempt_receipt_matches(
@@ -3391,12 +3528,22 @@ def _publish_run_artifact_locked(
                 "STARTED transition return state is unproven"
             ) from error
         try:
+            _assert_started_output_parent_identity(
+                output.parent,
+                parent_fd,
+                parent_stat,
+            )
+        except DiagnosticPublicationStateAmbiguousError:
+            _close_descriptor_best_effort(staging_fd)
+            _close_descriptor_best_effort(attempt.directory_fd)
+            raise
+        try:
             _write_attempt_receipt(
                 attempt,
                 "invalid.json",
                 phase="STARTED",
                 status="INVALID",
-                reason=str(error),
+                reason=reason,
             )
         except BaseException as terminal_error:
             _close_descriptor_best_effort(staging_fd)
@@ -3404,9 +3551,19 @@ def _publish_run_artifact_locked(
             raise DiagnosticPublicationStateAmbiguousError(
                 "INVALID receipt durability is unproven after STARTED return"
             ) from terminal_error
+        try:
+            _assert_started_output_parent_identity(
+                output.parent,
+                parent_fd,
+                parent_stat,
+            )
+        except DiagnosticPublicationStateAmbiguousError:
+            _close_descriptor_best_effort(staging_fd)
+            _close_descriptor_best_effort(attempt.directory_fd)
+            raise
         _close_descriptor_best_effort(staging_fd)
         _close_descriptor_best_effort(attempt.directory_fd)
-        raise DiagnosticInvalidRunError(str(error)) from error
+        raise DiagnosticInvalidRunError(reason) from error
 
     try:
         payloads = preflight.bundle.payloads  # type: ignore[attr-defined]
@@ -3513,6 +3670,20 @@ def _publish_run_artifact_locked(
                 },
             }
         )
+        commit_receipt = _with_digest(
+            {
+                "artifact_id": authorization["artifact_id"],
+                "attempt_started_receipt_digest": started_receipt[
+                    "deterministic_digest"
+                ],
+                "execution_authorization_digest": authorization[
+                    "deterministic_digest"
+                ],
+                "run_manifest_digest": run_manifest["deterministic_digest"],
+                "schema_version": ARTIFACT_COMMIT_SCHEMA_VERSION,
+                "status": "COMMITTED",
+            }
+        )
         manifest_descriptor = os.open(
             "manifest.json",
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
@@ -3580,18 +3751,6 @@ def _publish_run_artifact_locked(
             parent_stat,
             "run output parent",
         )
-        commit_receipt = _with_digest(
-            {
-                "artifact_id": authorization["artifact_id"],
-                "attempt_started_receipt_digest": started_receipt[
-                    "deterministic_digest"
-                ],
-                "execution_authorization_digest": authorization["deterministic_digest"],
-                "run_manifest_digest": run_manifest["deterministic_digest"],
-                "schema_version": ARTIFACT_COMMIT_SCHEMA_VERSION,
-                "status": "COMMITTED",
-            }
-        )
         output_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         output_flags |= getattr(os, "O_NOFOLLOW", 0)
         output_fd = os.open(output.name, output_flags, dir_fd=parent_fd)
@@ -3625,8 +3784,14 @@ def _publish_run_artifact_locked(
             raise DiagnosticRunnerError(
                 "published artifact changed before commit return"
             )
+        _assert_started_output_parent_identity(
+            output.parent,
+            parent_fd,
+            parent_stat,
+        )
         return run_manifest, commit_receipt
     except BaseException as error:
+        reason = str(error)
         pinned_commit_identity = None
         public_commit_identity = None
         commit_observation_error: BaseException | None = None
@@ -3677,27 +3842,12 @@ def _publish_run_artifact_locked(
                     records_sha256=records_hasher.hexdigest(),
                     commit_receipt=commit_receipt,
                 )
+            except DiagnosticPublicationStateAmbiguousError:
+                raise
             except BaseException:
                 commit_is_durable = False
             if commit_is_durable:
                 return run_manifest, commit_receipt
-
-            public_content_identity = _published_artifact_content_identity(
-                parent_fd,
-                output.name,
-                run_manifest,
-                records_byte_count=records_byte_count,
-                records_sha256=records_hasher.hexdigest(),
-                commit_receipt=commit_receipt,
-            )
-            if public_content_identity is not None and (
-                not commit_identity_observed
-                or public_content_identity != staging_identity
-            ):
-                raise DiagnosticPublicationStateAmbiguousError(
-                    "an exact committed artifact remains public through an "
-                    "unproven directory identity"
-                ) from error
 
         if commit_identity_observed:
             try:
@@ -3749,36 +3899,114 @@ def _publish_run_artifact_locked(
                 pinned_commit_identity is not None
                 or public_commit_identity is not None
             ):
-                raise DiagnosticPublicationStateAmbiguousError(
-                    "artifact commit appeared during durable absence proof"
-                ) from error
-
-        if commit_context_exists:
-            remaining_public_content = _published_artifact_content_identity(
-                parent_fd,
-                output.name,
-                run_manifest,
-                records_byte_count=records_byte_count,
-                records_sha256=records_hasher.hexdigest(),
-                commit_receipt=commit_receipt,
-            )
-            if remaining_public_content is not None:
-                raise DiagnosticPublicationStateAmbiguousError(
-                    "an exact committed artifact remains public after recovery"
-                ) from error
+                commit_identity_observed = True
+        _assert_started_output_parent_identity(
+            output.parent,
+            parent_fd,
+            parent_stat,
+        )
         try:
             _write_attempt_receipt(
                 attempt,
                 "invalid.json",
                 phase="STARTED",
                 status="INVALID",
-                reason=str(error),
+                reason=reason,
             )
         except BaseException as terminal_error:
             raise DiagnosticPublicationStateAmbiguousError(
                 "INVALID receipt durability is unproven"
             ) from terminal_error
-        raise DiagnosticInvalidRunError(str(error)) from error
+        _assert_started_output_parent_identity(
+            output.parent,
+            parent_fd,
+            parent_stat,
+        )
+        if commit_context_exists:
+            try:
+                if output_fd >= 0:
+                    pinned_commit_identity = (
+                        _pinned_exact_artifact_commit_identity(
+                            output_fd,
+                            staging_identity,
+                            commit_receipt,
+                        )
+                    )
+                    if pinned_commit_identity is not None and (
+                        not _revoke_exact_artifact_commit_at(
+                            output_fd,
+                            staging_identity,
+                            commit_receipt,
+                        )
+                    ):
+                        raise DiagnosticPublicationStateAmbiguousError(
+                            "pinned artifact commit revocation is unproven"
+                        )
+                _revoke_public_exact_committed_artifact(
+                    parent_fd,
+                    output.name,
+                    run_manifest,
+                    records_byte_count=records_byte_count,
+                    records_sha256=records_hasher.hexdigest(),
+                    commit_receipt=commit_receipt,
+                )
+                try:
+                    os.fsync(parent_fd)
+                except BaseException:
+                    # Member revocation is barriered by the artifact directory.
+                    # A persistent parent barrier failure retains INVALID only
+                    # while the lexical parent still names the pinned directory.
+                    _assert_started_output_parent_identity(
+                        output.parent,
+                        parent_fd,
+                        parent_stat,
+                    )
+            except DiagnosticPublicationStateAmbiguousError:
+                raise
+            except BaseException as reconciliation_error:
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "final artifact commit reconciliation failed"
+                ) from reconciliation_error
+        _assert_started_output_parent_identity(
+            output.parent,
+            parent_fd,
+            parent_stat,
+        )
+        if commit_context_exists:
+            try:
+                if output_fd >= 0 and not _durably_prove_file_not_exact_at(
+                    output_fd,
+                    "commit.json",
+                    _canonical_bytes(commit_receipt),
+                    label="pinned artifact commit",
+                ):
+                    raise DiagnosticPublicationStateAmbiguousError(
+                        "pinned artifact commit remained after final reconciliation"
+                    )
+                remaining_public_content = _published_artifact_content_identity(
+                    parent_fd,
+                    output.name,
+                    run_manifest,
+                    records_byte_count=records_byte_count,
+                    records_sha256=records_hasher.hexdigest(),
+                    commit_receipt=commit_receipt,
+                )
+            except DiagnosticPublicationStateAmbiguousError:
+                raise
+            except BaseException as reconciliation_error:
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "final artifact commit absence is unproven"
+                ) from reconciliation_error
+            if remaining_public_content is not None:
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "an exact committed artifact remains public after INVALID"
+                ) from error
+        _assert_started_output_parent_identity(
+            output.parent,
+            parent_fd,
+            parent_stat,
+        )
+        raise DiagnosticInvalidRunError(reason) from error
     finally:
         _close_descriptor_best_effort(output_fd)
         _close_descriptor_best_effort(staging_fd)

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Callable
 from unittest.mock import patch
 
 from qmc_bmgs.benchmarks.countdown import CountdownTask
@@ -97,6 +98,96 @@ def _write_synthetic_artifact_members(
     for filename, payload in snapshot.items():
         (directory / filename).write_bytes(payload)
     return analysis._artifact_snapshot_receipt(snapshot)
+
+
+def _write_synthetic_committed_attempt(
+    historical_artifact: Path,
+) -> tuple[dict[str, object], Path, analysis._AttemptStateReceipt]:
+    authorization_digest = "a" * 64
+    artifact_id = historical_artifact.name
+    marker = f".{artifact_id}.attempt-{authorization_digest}"
+    attempt = historical_artifact.parent / marker
+    staging = attempt / "staging"
+    started_core: dict[str, object] = {
+        "artifact_id": artifact_id,
+        "authorization_digest": authorization_digest,
+        "authorized_output_path": str(historical_artifact),
+        "diagnostic_seal_digest": "b" * 64,
+        "execution_head_revision": "c" * 40,
+        "phase": "STARTED",
+        "reviewed_authorization_revision": "d" * 40,
+        "runner_build_digest": "e" * 64,
+        "schema_version": (
+            "qmc-bmgs-countdown-thompson-diagnostic-attempt-marker/v1"
+        ),
+        "search_build_digest": "f" * 64,
+        "staging_path": str(staging),
+        "status": "PENDING",
+    }
+    started = {
+        **started_core,
+        "deterministic_digest": analysis._stdlib_sha256_json(started_core),
+    }
+    manifest: dict[str, object] = {
+        "artifact_id": artifact_id,
+        "attempt_marker_basename": marker,
+        "attempt_started_receipt": started,
+        "attempt_started_receipt_digest": started["deterministic_digest"],
+        "authorized_output_path": str(historical_artifact),
+        "deterministic_digest": "1" * 64,
+        "execution_authorization_digest": authorization_digest,
+    }
+    payloads = analysis._expected_committed_attempt_payloads(manifest)
+    attempt.mkdir(parents=True, exist_ok=True)
+    snapshot: dict[str, bytes] = {}
+    for filename in analysis._COMMITTED_ATTEMPT_FILENAMES:
+        raw = analysis._canonical_bytes(payloads[filename])
+        (attempt / filename).write_bytes(raw)
+        snapshot[filename] = raw
+    receipt = tuple(
+        (filename, len(snapshot[filename]), analysis._sha256_bytes(snapshot[filename]))
+        for filename in analysis._COMMITTED_ATTEMPT_FILENAMES
+    )
+    return manifest, attempt, receipt
+
+
+def _synthetic_validated_authority(
+    historical_artifact: Path,
+    artifact_receipt: analysis._ArtifactReceipt = (),
+) -> SimpleNamespace:
+    manifest, attempt, attempt_receipt = _write_synthetic_committed_attempt(
+        historical_artifact
+    )
+    attempt_authority = analysis._pin_protected_roots((attempt,))[0]
+    return SimpleNamespace(
+        manifest=manifest,
+        artifact_receipt=artifact_receipt,
+        historical_attempt_path=attempt,
+        attempt_state_receipt=attempt_receipt,
+        historical_attempt_authority=attempt_authority,
+    )
+
+
+def _owned_synthetic_validation(
+    validated: SimpleNamespace,
+) -> Callable[..., SimpleNamespace]:
+    enrolled = False
+
+    def validate(*_args: object, **kwargs: object) -> SimpleNamespace:
+        nonlocal enrolled
+        owner = kwargs.get("attempt_authority_owner")
+        if not isinstance(owner, analysis.ExitStack):
+            raise AssertionError("synthetic retained attempt requires an owner")
+        if enrolled:
+            raise AssertionError("synthetic attempt authority was enrolled twice")
+        owner.callback(
+            analysis._close_pinned_protected_roots,
+            (validated.historical_attempt_authority,),
+        )
+        enrolled = True
+        return validated
+
+    return validate
 
 
 def _mutate_file_preserving_size(path: Path) -> None:
@@ -1156,6 +1247,210 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             finally:
                 analysis._close_pinned_protected_roots(pinned)
 
+    def test_committed_attempt_namespace_and_member_boundaries_fail_closed(
+        self,
+    ) -> None:
+        cases = (
+            ("directory_symlink", "stable non-symlink directory"),
+            ("member_symlink", "member is not regular"),
+            ("member_fifo", "member is not regular"),
+            ("oversize", "v1 byte cap"),
+            ("extra_terminal", "directory closure drifted"),
+            ("missing_receipt", "directory closure drifted"),
+        )
+        for case, message in cases:
+            if case == "member_fifo" and not hasattr(os, "mkfifo"):
+                continue
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                historical = root / "artifact"
+                historical.mkdir()
+                manifest, attempt, _receipt = _write_synthetic_committed_attempt(
+                    historical
+                )
+                if case == "directory_symlink":
+                    displaced = root / "displaced-attempt"
+                    attempt.rename(displaced)
+                    attempt.symlink_to(displaced, target_is_directory=True)
+                elif case == "member_symlink":
+                    member = attempt / "started.json"
+                    target = root / "foreign-started.json"
+                    target.write_bytes(member.read_bytes())
+                    member.unlink()
+                    member.symlink_to(target)
+                elif case == "member_fifo":
+                    member = attempt / "started.json"
+                    member.unlink()
+                    os.mkfifo(member)
+                elif case == "oversize":
+                    with (attempt / "ready_to_commit.json").open("r+b") as handle:
+                        handle.truncate(analysis._ATTEMPT_RECEIPT_BYTE_CAP_V1 + 1)
+                elif case == "extra_terminal":
+                    (attempt / "invalid.json").write_bytes(b"{}\n")
+                else:
+                    (attempt / "ready_to_commit.json").unlink()
+
+                started = time.monotonic()
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    message,
+                ):
+                    analysis._read_historical_attempt_state(attempt, manifest)
+                if case == "member_fifo":
+                    self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_committed_attempt_growth_is_bounded_and_rejected(self) -> None:
+        original_read = analysis.os.read
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            historical = root / "artifact"
+            historical.mkdir()
+            manifest, attempt, _receipt = _write_synthetic_committed_attempt(
+                historical
+            )
+            target = attempt / "started.json"
+            target_stat = target.stat()
+            target_identity = (target_stat.st_dev, target_stat.st_ino)
+            grew = False
+
+            def grow_after_target_read(descriptor: int, byte_count: int) -> bytes:
+                nonlocal grew
+                chunk = original_read(descriptor, byte_count)
+                opened = analysis.os.fstat(descriptor)
+                if (
+                    not grew
+                    and chunk
+                    and (opened.st_dev, opened.st_ino) == target_identity
+                ):
+                    with target.open("ab") as handle:
+                        handle.write(b"x")
+                    grew = True
+                return chunk
+
+            with (
+                patch.object(
+                    analysis.os,
+                    "read",
+                    side_effect=grow_after_target_read,
+                ),
+                self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "grew beyond its declared byte size",
+                ),
+            ):
+                analysis._read_historical_attempt_state(attempt, manifest)
+            self.assertTrue(grew)
+
+    def test_deeply_nested_attempt_receipt_is_typed_invalid_without_parsing(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            historical = root / "artifact"
+            historical.mkdir()
+            manifest, attempt, _receipt = _write_synthetic_committed_attempt(
+                historical
+            )
+            nesting = 10_000
+            malicious = (
+                b'{"unexpected":'
+                + (b"[" * nesting)
+                + b"0"
+                + (b"]" * nesting)
+                + b"}\n"
+            )
+            self.assertLess(
+                len(malicious),
+                analysis._ATTEMPT_RECEIPT_BYTE_CAP_V1,
+            )
+            (attempt / "pre_outcome.json").write_bytes(malicious)
+
+            with self.assertRaises(
+                analysis.DiagnosticAnalysisError,
+            ) as raised:
+                analysis._read_historical_attempt_state(attempt, manifest)
+            self.assertIs(type(raised.exception), analysis.DiagnosticAnalysisError)
+            self.assertIn(
+                "receipt does not close: pre_outcome.json",
+                str(raised.exception),
+            )
+
+    def test_committed_attempt_receipts_are_derived_from_embedded_started(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            historical = root / "artifact"
+            historical.mkdir()
+            manifest, attempt, _receipt = _write_synthetic_committed_attempt(
+                historical
+            )
+            ready_path = attempt / "ready_to_commit.json"
+            ready = analysis._strict_json_object(
+                ready_path.read_bytes(),
+                "synthetic ready receipt",
+            )
+            ready["run_manifest_digest"] = "9" * 64
+            ready_core = {
+                key: value
+                for key, value in ready.items()
+                if key != "deterministic_digest"
+            }
+            ready["deterministic_digest"] = analysis._stdlib_sha256_json(ready_core)
+            ready_path.write_bytes(analysis._canonical_bytes(ready))
+
+            with self.assertRaisesRegex(
+                analysis.DiagnosticAnalysisError,
+                "receipt does not close: ready_to_commit.json",
+            ):
+                analysis._read_historical_attempt_state(attempt, manifest)
+
+    def test_public_analyze_rejects_attempt_terminal_injected_during_build(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            historical = root / "historical-artifact"
+            historical.mkdir()
+            validated = _synthetic_validated_authority(historical)
+            attempt = validated.historical_attempt_path
+            attempt_descriptor = validated.historical_attempt_authority.descriptor
+            injected = False
+
+            def build_then_inject(_validated: object) -> dict[str, str]:
+                nonlocal injected
+                (attempt / "invalid.json").write_bytes(b"{}\n")
+                injected = True
+                return {"schema_version": "synthetic/v1", "status": "PASS"}
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    side_effect=_owned_synthetic_validation(validated),
+                ) as validate,
+                patch.object(
+                    analysis,
+                    "_build_summary",
+                    side_effect=build_then_inject,
+                ),
+                self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "attempt directory closure drifted",
+                ),
+            ):
+                analysis.analyze_countdown_thompson_diagnostic_artifact(
+                    root / "artifact",
+                    root / "bundle",
+                    root / "authorization.json",
+                    "0" * 64,
+                    repository_root=root,
+                )
+            self.assertTrue(injected)
+            validate.assert_called_once()
+            with self.assertRaises(OSError):
+                os.fstat(attempt_descriptor)
+
     def _exercise_final_receipt_pass_replacement(self, target_label: str) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1203,9 +1498,11 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 patch.object(
                     analysis,
                     "_validate_artifact",
-                    return_value=SimpleNamespace(
-                        manifest={"authorized_output_path": str(historical)},
-                        artifact_receipt=artifact_receipt,
+                    side_effect=_owned_synthetic_validation(
+                        _synthetic_validated_authority(
+                            historical,
+                            artifact_receipt,
+                        )
                     ),
                 ),
                 patch.object(analysis, "_build_summary", return_value=summary),
@@ -1429,6 +1726,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             output = safe / "out" / "summary.json"
             swapped = False
             protected_revalidation_count = 0
+            validated = _synthetic_validated_authority(protected.resolve())
 
             def swap_before_revalidation(path: Path, label: str):
                 nonlocal protected_revalidation_count, swapped
@@ -1450,9 +1748,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 patch.object(
                     analysis,
                     "_validate_artifact",
-                    return_value=SimpleNamespace(
-                        manifest={"authorized_output_path": str(protected.resolve())}
-                    ),
+                    side_effect=_owned_synthetic_validation(validated),
                 ) as validate,
                 patch.object(
                     analysis,
@@ -1496,15 +1792,13 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             bundle = root / "bundle"
             bundle.mkdir()
             output = historical / "summary.json"
-            validated = SimpleNamespace(
-                manifest={"authorized_output_path": str(historical.resolve())}
-            )
+            validated = _synthetic_validated_authority(historical.resolve())
 
             with (
                 patch.object(
                     analysis,
                     "_validate_artifact",
-                    return_value=validated,
+                    side_effect=_owned_synthetic_validation(validated),
                 ) as validate,
                 patch.object(
                     analysis,
@@ -1548,14 +1842,13 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             publication_parent = root / "publication-parent"
             publication_parent.mkdir()
             output = publication_parent / "summary.json"
+            validated = _synthetic_validated_authority(historical)
 
             with (
                 patch.object(
                     analysis,
                     "_validate_artifact",
-                    return_value=SimpleNamespace(
-                        manifest={"authorized_output_path": str(historical)}
-                    ),
+                    side_effect=_owned_synthetic_validation(validated),
                 ) as validate,
                 patch.object(
                     analysis,
@@ -1613,9 +1906,11 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                     patch.object(
                         analysis,
                         "_validate_artifact",
-                        return_value=SimpleNamespace(
-                            manifest={"authorized_output_path": str(historical)},
-                            artifact_receipt=artifact_receipt,
+                        side_effect=_owned_synthetic_validation(
+                            _synthetic_validated_authority(
+                                historical,
+                                artifact_receipt,
+                            )
                         ),
                     ) as validate,
                     patch.object(
@@ -1677,9 +1972,11 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 patch.object(
                     analysis,
                     "_validate_artifact",
-                    return_value=SimpleNamespace(
-                        manifest={"authorized_output_path": str(historical)},
-                        artifact_receipt=artifact_receipt,
+                    side_effect=_owned_synthetic_validation(
+                        _synthetic_validated_authority(
+                            historical,
+                            artifact_receipt,
+                        )
                     ),
                 ),
                 patch.object(
@@ -1698,6 +1995,389 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 )
             self.assertEqual(observed, summary)
             self.assertEqual(output.read_bytes(), analysis._canonical_bytes(summary))
+
+    def test_byte_identical_attempt_directory_replacement_after_validation_is_rejected(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "relocated-artifact"
+            artifact_receipt = _write_synthetic_artifact_members(
+                artifact,
+                b"identical-artifact",
+            )
+            historical = root / "historical-artifact"
+            self.assertEqual(
+                _write_synthetic_artifact_members(
+                    historical,
+                    b"identical-artifact",
+                ),
+                artifact_receipt,
+            )
+            validated = _synthetic_validated_authority(
+                historical,
+                artifact_receipt,
+            )
+            attempt = validated.historical_attempt_path
+            displaced = root / "displaced-attempt"
+            bundle = root / "bundle"
+            bundle.mkdir()
+            publication_parent = root / "publication-parent"
+            publication_parent.mkdir()
+            output = publication_parent / "summary.json"
+            replaced = False
+
+            def replace_with_byte_identical_attempt(_validated: object) -> dict[str, str]:
+                nonlocal replaced
+                attempt.rename(displaced)
+                attempt.mkdir()
+                for filename in analysis._COMMITTED_ATTEMPT_FILENAMES:
+                    (attempt / filename).write_bytes(
+                        (displaced / filename).read_bytes()
+                    )
+                replaced = True
+                return {"schema_version": "synthetic/v1", "status": "PASS"}
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    side_effect=_owned_synthetic_validation(validated),
+                ),
+                patch.object(
+                    analysis,
+                    "_build_summary",
+                    side_effect=replace_with_byte_identical_attempt,
+                ),
+                patch.object(analysis, "_atomic_write_no_replace") as atomic_write,
+            ):
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "path identity changed",
+                ):
+                    analysis.write_countdown_thompson_diagnostic_summary(
+                        artifact,
+                        bundle,
+                        root / "authorization.json",
+                        "0" * 64,
+                        output,
+                        repository_root=root,
+                    )
+            self.assertTrue(replaced)
+            self.assertEqual(
+                tuple((attempt / name).read_bytes() for name in analysis._COMMITTED_ATTEMPT_FILENAMES),
+                tuple((displaced / name).read_bytes() for name in analysis._COMMITTED_ATTEMPT_FILENAMES),
+            )
+            atomic_write.assert_not_called()
+            self.assertFalse(output.exists())
+
+    def test_attempt_terminal_injection_before_publication_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "relocated-artifact"
+            artifact_receipt = _write_synthetic_artifact_members(
+                artifact,
+                b"identical-artifact",
+            )
+            historical = root / "historical-artifact"
+            self.assertEqual(
+                _write_synthetic_artifact_members(
+                    historical,
+                    b"identical-artifact",
+                ),
+                artifact_receipt,
+            )
+            validated = _synthetic_validated_authority(
+                historical,
+                artifact_receipt,
+            )
+            attempt = validated.historical_attempt_path
+            bundle = root / "bundle"
+            bundle.mkdir()
+            publication_parent = root / "publication-parent"
+            publication_parent.mkdir()
+            output = publication_parent / "summary.json"
+            original_read_attempt = analysis._read_attempt_state_receipt_from_descriptor
+            injected = False
+
+            def inject_terminal_before_attempt_receipt(*args: object, **kwargs: object):
+                nonlocal injected
+                if not injected:
+                    (attempt / "invalid.json").write_bytes(b"{}\n")
+                    injected = True
+                return original_read_attempt(*args, **kwargs)
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    side_effect=_owned_synthetic_validation(validated),
+                ),
+                patch.object(
+                    analysis,
+                    "_build_summary",
+                    return_value={"schema_version": "synthetic/v1", "status": "PASS"},
+                ),
+                patch.object(
+                    analysis,
+                    "_read_attempt_state_receipt_from_descriptor",
+                    side_effect=inject_terminal_before_attempt_receipt,
+                ),
+                patch.object(analysis, "_atomic_write_no_replace") as atomic_write,
+            ):
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "attempt directory closure drifted",
+                ):
+                    analysis.write_countdown_thompson_diagnostic_summary(
+                        artifact,
+                        bundle,
+                        root / "authorization.json",
+                        "0" * 64,
+                        output,
+                        repository_root=root,
+                    )
+            self.assertTrue(injected)
+            atomic_write.assert_not_called()
+            self.assertFalse(output.exists())
+
+    def test_post_durability_attempt_injection_after_receipt_read_is_revoked(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "relocated-artifact"
+            artifact_receipt = _write_synthetic_artifact_members(
+                artifact,
+                b"identical-artifact",
+            )
+            historical = root / "historical-artifact"
+            self.assertEqual(
+                _write_synthetic_artifact_members(
+                    historical,
+                    b"identical-artifact",
+                ),
+                artifact_receipt,
+            )
+            validated = _synthetic_validated_authority(
+                historical,
+                artifact_receipt,
+            )
+            attempt = validated.historical_attempt_path
+            bundle = root / "bundle"
+            bundle.mkdir()
+            publication_parent = root / "publication-parent"
+            publication_parent.mkdir()
+            output = publication_parent / "summary.json"
+            summary = {"schema_version": "synthetic/v1", "status": "PASS"}
+            original_read_attempt = (
+                analysis._read_attempt_state_receipt_from_descriptor
+            )
+            injected = False
+
+            def inject_after_durable_receipt_read(
+                *args: object,
+                **kwargs: object,
+            ) -> analysis._AttemptStateReceipt:
+                nonlocal injected
+                receipt = original_read_attempt(*args, **kwargs)
+                if output.exists() and not injected:
+                    (attempt / "invalid.json").write_bytes(b"{}\n")
+                    injected = True
+                return receipt
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    side_effect=_owned_synthetic_validation(validated),
+                ),
+                patch.object(analysis, "_build_summary", return_value=summary),
+                patch.object(
+                    analysis,
+                    "_read_attempt_state_receipt_from_descriptor",
+                    side_effect=inject_after_durable_receipt_read,
+                ),
+                self.assertRaises(analysis.DiagnosticAnalysisError) as raised,
+            ):
+                analysis.write_countdown_thompson_diagnostic_summary(
+                    artifact,
+                    bundle,
+                    root / "authorization.json",
+                    "0" * 64,
+                    output,
+                    repository_root=root,
+                )
+            self.assertIs(type(raised.exception), analysis.DiagnosticAnalysisError)
+            self.assertIn(
+                "mandatory summary post-durability check failed",
+                str(raised.exception),
+            )
+            self.assertTrue(injected)
+            self.assertFalse(output.exists())
+            quarantines = tuple(
+                path
+                for path in publication_parent.iterdir()
+                if path.name.startswith(".summary.json.rollback-")
+            )
+            self.assertEqual(len(quarantines), 1)
+            self.assertEqual(
+                quarantines[0].read_bytes(),
+                analysis._canonical_bytes(summary),
+            )
+
+    def test_final_summary_proof_is_followed_by_attempt_authority_recheck(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "relocated-artifact"
+            artifact_receipt = _write_synthetic_artifact_members(
+                artifact,
+                b"identical-artifact",
+            )
+            historical = root / "historical-artifact"
+            self.assertEqual(
+                _write_synthetic_artifact_members(
+                    historical,
+                    b"identical-artifact",
+                ),
+                artifact_receipt,
+            )
+            validated = _synthetic_validated_authority(
+                historical,
+                artifact_receipt,
+            )
+            attempt = validated.historical_attempt_path
+            bundle = root / "bundle"
+            bundle.mkdir()
+            publication_parent = root / "publication-parent"
+            publication_parent.mkdir()
+            output = publication_parent / "summary.json"
+            summary = {"schema_version": "synthetic/v1", "status": "PASS"}
+            original_summary_exact = analysis._summary_publication_is_exact
+            exact_observations = 0
+            injected = False
+
+            def inject_after_final_summary_proof(*args: object) -> bool:
+                nonlocal exact_observations, injected
+                exact = original_summary_exact(*args)
+                if output.exists():
+                    exact_observations += 1
+                    if exact_observations == 3:
+                        (attempt / "invalid.json").write_bytes(b"{}\n")
+                        injected = True
+                return exact
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    side_effect=_owned_synthetic_validation(validated),
+                ),
+                patch.object(analysis, "_build_summary", return_value=summary),
+                patch.object(
+                    analysis,
+                    "_summary_publication_is_exact",
+                    side_effect=inject_after_final_summary_proof,
+                ),
+                self.assertRaises(analysis.DiagnosticAnalysisError) as raised,
+            ):
+                analysis.write_countdown_thompson_diagnostic_summary(
+                    artifact,
+                    bundle,
+                    root / "authorization.json",
+                    "0" * 64,
+                    output,
+                    repository_root=root,
+                )
+            self.assertIs(type(raised.exception), analysis.DiagnosticAnalysisError)
+            self.assertTrue(injected)
+            self.assertGreaterEqual(exact_observations, 3)
+            self.assertFalse(output.exists())
+
+    def test_post_barrier_attempt_terminal_drift_revokes_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "relocated-artifact"
+            artifact_receipt = _write_synthetic_artifact_members(
+                artifact,
+                b"identical-artifact",
+            )
+            historical = root / "historical-artifact"
+            self.assertEqual(
+                _write_synthetic_artifact_members(
+                    historical,
+                    b"identical-artifact",
+                ),
+                artifact_receipt,
+            )
+            validated = _synthetic_validated_authority(
+                historical,
+                artifact_receipt,
+            )
+            attempt = validated.historical_attempt_path
+            bundle = root / "bundle"
+            bundle.mkdir()
+            publication_parent = root / "publication-parent"
+            publication_parent.mkdir()
+            parent_identity = (
+                publication_parent.stat().st_dev,
+                publication_parent.stat().st_ino,
+            )
+            output = publication_parent / "summary.json"
+            summary = {"schema_version": "synthetic/v1", "status": "PASS"}
+            summary_bytes = analysis._canonical_bytes(summary)
+            original_fsync = analysis.os.fsync
+            parent_sync_count = 0
+            injected = False
+
+            def inject_terminal_after_summary_barrier(descriptor: int) -> None:
+                nonlocal injected, parent_sync_count
+                opened = analysis.os.fstat(descriptor)
+                original_fsync(descriptor)
+                if (opened.st_dev, opened.st_ino) == parent_identity:
+                    parent_sync_count += 1
+                    if parent_sync_count == 1:
+                        (attempt / "invalid.json").write_bytes(b"{}\n")
+                        injected = True
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    side_effect=_owned_synthetic_validation(validated),
+                ),
+                patch.object(analysis, "_build_summary", return_value=summary),
+                patch.object(
+                    analysis.os,
+                    "fsync",
+                    side_effect=inject_terminal_after_summary_barrier,
+                ),
+            ):
+                with self.assertRaises(
+                    analysis.DiagnosticAnalysisError,
+                ) as raised:
+                    analysis.write_countdown_thompson_diagnostic_summary(
+                        artifact,
+                        bundle,
+                        root / "authorization.json",
+                        "0" * 64,
+                        output,
+                        repository_root=root,
+                    )
+            self.assertIs(type(raised.exception), analysis.DiagnosticAnalysisError)
+            self.assertIn("directory closure drifted", str(raised.exception))
+            self.assertTrue(injected)
+            self.assertEqual(parent_sync_count, 2)
+            self.assertFalse(output.exists())
+            quarantines = tuple(
+                path
+                for path in publication_parent.iterdir()
+                if path.name.startswith(".summary.json.rollback-")
+            )
+            self.assertEqual(len(quarantines), 1)
+            self.assertEqual(quarantines[0].read_bytes(), summary_bytes)
 
     def _exercise_post_barrier_artifact_receipt_drift(
         self,
@@ -1762,9 +2442,11 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 patch.object(
                     analysis,
                     "_validate_artifact",
-                    return_value=SimpleNamespace(
-                        manifest={"authorized_output_path": str(historical)},
-                        artifact_receipt=artifact_receipt,
+                    side_effect=_owned_synthetic_validation(
+                        _synthetic_validated_authority(
+                            historical,
+                            artifact_receipt,
+                        )
                     ),
                 ),
                 patch.object(analysis, "_build_summary", return_value=summary),
@@ -1872,8 +2554,10 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 protected_roots: tuple[analysis._PinnedProtectedRoot, ...],
                 post_durability_check: object,
             ) -> None:
-                self.assertEqual(len(protected_roots), 3)
-                artifact_pin, _bundle_pin, historical_pin = protected_roots
+                self.assertEqual(len(protected_roots), 4)
+                artifact_pin, _bundle_pin, attempt_pin, historical_pin = (
+                    protected_roots
+                )
                 self.assertEqual(artifact_pin.identity, historical_pin.identity)
                 self.assertNotEqual(
                     artifact_pin.descriptor,
@@ -1881,6 +2565,10 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 )
                 self.assertEqual(artifact_pin.authority_path, artifact)
                 self.assertEqual(historical_pin.authority_path, artifact)
+                self.assertEqual(
+                    attempt_pin.authority_path.parent,
+                    artifact.parent,
+                )
                 self.assertTrue(callable(post_durability_check))
                 analysis._assert_pinned_protected_roots(protected_roots)
 
@@ -1888,9 +2576,11 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 patch.object(
                     analysis,
                     "_validate_artifact",
-                    return_value=SimpleNamespace(
-                        manifest={"authorized_output_path": str(artifact)},
-                        artifact_receipt=artifact_receipt,
+                    side_effect=_owned_synthetic_validation(
+                        _synthetic_validated_authority(
+                            artifact,
+                            artifact_receipt,
+                        )
                     ),
                 ),
                 patch.object(
@@ -1931,6 +2621,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             relocated_parent = historical / publication_parent.name
             output = publication_parent / "summary.json"
             raced = False
+            validated = _synthetic_validated_authority(historical)
 
             def report_absent_then_pivot(
                 path: Path,
@@ -1954,9 +2645,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 patch.object(
                     analysis,
                     "_validate_artifact",
-                    return_value=SimpleNamespace(
-                        manifest={"authorized_output_path": str(historical)}
-                    ),
+                    side_effect=_owned_synthetic_validation(validated),
                 ) as validate,
                 patch.object(
                     analysis,

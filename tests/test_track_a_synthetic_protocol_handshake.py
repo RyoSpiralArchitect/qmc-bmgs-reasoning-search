@@ -411,6 +411,31 @@ def _reseal_manifest_and_commit(
     _write_object(commit_path, commit)
 
 
+def _terminal_attempt_receipt(
+    manifest: dict[str, object],
+    *,
+    status: str,
+) -> dict[str, object]:
+    started = manifest["attempt_started_receipt"]
+    if type(started) is not dict:
+        raise AssertionError("STARTED receipt must be an object")
+    core = {
+        key: value
+        for key, value in started.items()
+        if key not in {"deterministic_digest", "phase", "status"}
+    }
+    terminal_core = {
+        **core,
+        "phase": "STARTED" if status == "INVALID" else "PRE_OUTCOME",
+        "reason": "synthetic conflicting terminal receipt",
+        "status": status,
+    }
+    return {
+        **terminal_core,
+        "deterministic_digest": sha256_json(terminal_core),
+    }
+
+
 class CountdownThompsonDiagnosticProtocolHandshakeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.repository_root = Path(__file__).resolve().parents[1]
@@ -455,6 +480,86 @@ class CountdownThompsonDiagnosticProtocolHandshakeTests(unittest.TestCase):
                 commit["schema_version"],
                 runner.ARTIFACT_COMMIT_SCHEMA_VERSION,
             )
+            attempt = fixture.artifact.parent / str(
+                fixture.published_manifest["attempt_marker_basename"]
+            )
+            self.assertEqual(
+                {path.name for path in attempt.iterdir()},
+                set(analysis._COMMITTED_ATTEMPT_FILENAMES),
+            )
+            self.assertEqual(validated.historical_attempt_path, attempt.resolve())
+            self.assertEqual(
+                analysis._validated_attempt_state_receipt(
+                    validated.attempt_state_receipt,
+                    "synthetic validated attempt",
+                ),
+                validated.attempt_state_receipt,
+            )
+
+    def test_analyzer_final_attempt_receipt_hook_cannot_hide_terminal_drift(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="qmc-bmgs-synthetic-final-attempt-drift-"
+        ) as temporary:
+            fixture = _publish_fixture(self.repository_root, Path(temporary))
+            attempt = fixture.artifact.parent / str(
+                fixture.published_manifest["attempt_marker_basename"]
+            )
+            original_read = analysis._read_attempt_state_receipt_from_descriptor
+            injected = False
+
+            def inject_after_receipt_read(
+                *args: object,
+                **kwargs: object,
+            ) -> analysis._AttemptStateReceipt:
+                nonlocal injected
+                receipt = original_read(*args, **kwargs)
+                if not injected:
+                    (attempt / "invalid.json").write_bytes(b"{}\n")
+                    injected = True
+                return receipt
+
+            with (
+                patch.object(
+                    analysis,
+                    "_read_attempt_state_receipt_from_descriptor",
+                    side_effect=inject_after_receipt_read,
+                ),
+                self.assertRaises(
+                    analysis.DiagnosticAnalysisError,
+                ) as raised,
+            ):
+                _analyze_fixture(fixture, self.repository_root)
+            self.assertIs(type(raised.exception), analysis.DiagnosticAnalysisError)
+            self.assertIn("directory closure drifted", str(raised.exception))
+            self.assertTrue(injected)
+
+    def test_conflicting_terminal_attempt_receipt_rejects_committed_artifact(
+        self,
+    ) -> None:
+        for filename, status in (
+            ("invalid.json", "INVALID"),
+            ("not_run.json", "NOT_RUN"),
+        ):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory(
+                prefix="qmc-bmgs-synthetic-attempt-conflict-"
+            ) as temporary:
+                fixture = _publish_fixture(self.repository_root, Path(temporary))
+                manifest = _read_object(fixture.artifact / "manifest.json")
+                attempt = fixture.artifact.parent / str(
+                    manifest["attempt_marker_basename"]
+                )
+                _write_object(
+                    attempt / filename,
+                    _terminal_attempt_receipt(manifest, status=status),
+                )
+
+                with self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "attempt directory closure drifted",
+                ):
+                    _analyze_fixture(fixture, self.repository_root)
 
     def test_reviewed_authorization_tamper_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory(

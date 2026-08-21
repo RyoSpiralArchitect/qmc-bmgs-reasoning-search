@@ -25,6 +25,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from contextlib import ExitStack
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -67,12 +68,19 @@ ARTIFACT_COMMIT_SCHEMA_VERSION = (
 SUMMARY_FILENAME = "summary.json"
 RUN_ARTIFACT_FILENAMES = ("commit.json", "manifest.json", "records.jsonl")
 _ArtifactReceipt = tuple[tuple[str, int, str], ...]
+_COMMITTED_ATTEMPT_FILENAMES = (
+    "pre_outcome.json",
+    "started.json",
+    "ready_to_commit.json",
+)
+_AttemptStateReceipt = tuple[tuple[str, int, str], ...]
 _RUN_ARTIFACT_MEMBER_BYTE_CAPS_V1 = (
     ("commit.json", 1 * 1024 * 1024),
     ("manifest.json", 8 * 1024 * 1024),
     ("records.jsonl", 256 * 1024 * 1024),
 )
 _ARTIFACT_READ_CHUNK_BYTES = 1024 * 1024
+_ATTEMPT_RECEIPT_BYTE_CAP_V1 = 8 * 1024 * 1024
 # The runner accepts reviewed authorization as a control file under the same
 # 8 MiB ceiling.  Keep that v1 compatibility boundary explicit here so an
 # unreviewed oversized file is rejected before provenance inspection.
@@ -1043,6 +1051,394 @@ def _strict_json_object(raw: bytes, label: str) -> dict[str, Any]:
     if _canonical_bytes(parsed) != raw:
         raise DiagnosticAnalysisError(f"{label} bytes are not canonical")
     return parsed
+
+
+def _validate_attempt_member_size(
+    filename: str,
+    value: object,
+    label: str,
+) -> int:
+    if filename not in _COMMITTED_ATTEMPT_FILENAMES:
+        raise DiagnosticAnalysisError(f"{label} has an unknown member: {filename}")
+    if type(value) is not int or value < 0:
+        raise DiagnosticAnalysisError(
+            f"{label} member byte size is not a plain non-negative integer: "
+            f"{filename}"
+        )
+    if value > _ATTEMPT_RECEIPT_BYTE_CAP_V1:
+        raise DiagnosticAnalysisError(
+            f"{label} member exceeds the v1 byte cap of "
+            f"{_ATTEMPT_RECEIPT_BYTE_CAP_V1}: {filename}"
+        )
+    return value
+
+
+def _assert_committed_attempt_directory_closure(
+    directory_fd: int,
+    label: str,
+) -> None:
+    expected = set(_COMMITTED_ATTEMPT_FILENAMES)
+    names: set[str] = set()
+    try:
+        opened = os.fstat(directory_fd)
+        if not stat.S_ISDIR(opened.st_mode):
+            raise DiagnosticAnalysisError(f"{label} must be a regular directory")
+        with os.scandir(directory_fd) as entries:
+            for entry in entries:
+                name = entry.name
+                if name not in expected or name in names:
+                    raise DiagnosticAnalysisError(
+                        f"{label} directory closure drifted"
+                    )
+                names.add(name)
+    except DiagnosticAnalysisError:
+        raise
+    except OSError as error:
+        raise DiagnosticAnalysisError(f"{label} could not be observed") from error
+    if names != expected:
+        raise DiagnosticAnalysisError(f"{label} directory closure drifted")
+
+
+def _read_attempt_state_once_from_descriptor(
+    directory_fd: int,
+    label: str,
+) -> tuple[dict[str, bytes], _AttemptStateReceipt]:
+    """Read one collective, bounded attempt-state snapshot from pinned fds."""
+
+    if (
+        os.name != "posix"
+        or not hasattr(os, "O_NOFOLLOW")
+        or not hasattr(os, "O_NONBLOCK")
+    ):
+        raise DiagnosticAnalysisError(
+            f"{label} validation requires POSIX descriptor-bound reads"
+        )
+    _assert_committed_attempt_directory_closure(directory_fd, label)
+    pinned_members: list[tuple[str, int, os.stat_result]] = []
+    try:
+        for filename in _COMMITTED_ATTEMPT_FILENAMES:
+            try:
+                named_before = os.stat(
+                    filename,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+            except OSError as error:
+                raise DiagnosticAnalysisError(
+                    f"{label} member could not be observed: {filename}"
+                ) from error
+            if not stat.S_ISREG(named_before.st_mode):
+                raise DiagnosticAnalysisError(
+                    f"{label} member is not regular: {filename}"
+                )
+            _validate_attempt_member_size(filename, named_before.st_size, label)
+            member_fd = -1
+            try:
+                member_fd = os.open(
+                    filename,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    dir_fd=directory_fd,
+                )
+                opened = os.fstat(member_fd)
+                if not stat.S_ISREG(opened.st_mode):
+                    raise DiagnosticAnalysisError(
+                        f"{label} member raced to a non-regular file: {filename}"
+                    )
+                _validate_attempt_member_size(filename, opened.st_size, label)
+                if _artifact_member_stable_state(
+                    opened
+                ) != _artifact_member_stable_state(named_before):
+                    raise DiagnosticAnalysisError(
+                        f"{label} member changed before descriptor acquisition: "
+                        f"{filename}"
+                    )
+                pinned_members.append((filename, member_fd, opened))
+                member_fd = -1
+            finally:
+                _close_descriptor_best_effort(member_fd)
+
+        snapshot: dict[str, bytes] = {}
+        receipt: list[tuple[str, int, str]] = []
+        for filename, member_fd, opened in pinned_members:
+            os.lseek(member_fd, 0, os.SEEK_SET)
+            remaining = opened.st_size
+            payload = bytearray()
+            while remaining:
+                chunk = os.read(
+                    member_fd,
+                    min(remaining, _ARTIFACT_READ_CHUNK_BYTES),
+                )
+                if not chunk:
+                    raise DiagnosticAnalysisError(
+                        f"{label} member ended before its declared byte size: "
+                        f"{filename}"
+                    )
+                payload.extend(chunk)
+                remaining -= len(chunk)
+            if os.read(member_fd, 1):
+                raise DiagnosticAnalysisError(
+                    f"{label} member grew beyond its declared byte size: {filename}"
+                )
+            after_read = os.fstat(member_fd)
+            if _artifact_member_stable_state(
+                after_read
+            ) != _artifact_member_stable_state(opened):
+                raise DiagnosticAnalysisError(
+                    f"{label} member changed during bounded read: {filename}"
+                )
+            raw = bytes(payload)
+            snapshot[filename] = raw
+            receipt.append((filename, opened.st_size, _sha256_bytes(raw)))
+
+        _assert_committed_attempt_directory_closure(directory_fd, label)
+        for filename, member_fd, opened in pinned_members:
+            try:
+                named_after = os.stat(
+                    filename,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+            except OSError as error:
+                raise DiagnosticAnalysisError(
+                    f"{label} member name could not be reobserved: {filename}"
+                ) from error
+            expected_state = _artifact_member_stable_state(opened)
+            if _artifact_member_stable_state(os.fstat(member_fd)) != expected_state:
+                raise DiagnosticAnalysisError(
+                    f"{label} member changed after bounded read: {filename}"
+                )
+            if (
+                not stat.S_ISREG(named_after.st_mode)
+                or _artifact_member_stable_state(named_after) != expected_state
+            ):
+                raise DiagnosticAnalysisError(
+                    f"{label} member name changed after bounded read: {filename}"
+                )
+        return snapshot, tuple(receipt)
+    except DiagnosticAnalysisError:
+        raise
+    except OSError as error:
+        raise DiagnosticAnalysisError(
+            f"{label} bounded receipt could not be completed"
+        ) from error
+    finally:
+        for _filename, member_fd, _opened in pinned_members:
+            _close_descriptor_best_effort(member_fd)
+
+
+def _validated_attempt_state_receipt(
+    value: object,
+    label: str,
+) -> _AttemptStateReceipt:
+    if type(value) is not tuple or len(value) != len(_COMMITTED_ATTEMPT_FILENAMES):
+        raise DiagnosticAnalysisError(f"{label} byte receipt is unavailable")
+    receipt: list[tuple[str, int, str]] = []
+    for expected_filename, member in zip(
+        _COMMITTED_ATTEMPT_FILENAMES,
+        value,
+        strict=True,
+    ):
+        if type(member) is not tuple or len(member) != 3:
+            raise DiagnosticAnalysisError(f"{label} byte receipt is invalid")
+        filename, byte_count, digest = member
+        if filename != expected_filename or not _is_sha256(digest):
+            raise DiagnosticAnalysisError(f"{label} byte receipt is invalid")
+        receipt.append(
+            (
+                filename,
+                _validate_attempt_member_size(filename, byte_count, label),
+                digest,
+            )
+        )
+    return tuple(receipt)
+
+
+def _read_attempt_state_receipt_from_descriptor(
+    directory_fd: int,
+    label: str,
+    expected_receipt: _AttemptStateReceipt,
+) -> _AttemptStateReceipt:
+    expected = _validated_attempt_state_receipt(expected_receipt, label)
+    _first_snapshot, first = _read_attempt_state_once_from_descriptor(
+        directory_fd,
+        label,
+    )
+    if first != expected:
+        raise DiagnosticAnalysisError(
+            f"{label} bytes differ from the validated committed attempt"
+        )
+    _second_snapshot, second = _read_attempt_state_once_from_descriptor(
+        directory_fd,
+        label,
+    )
+    if second != first:
+        raise DiagnosticAnalysisError(f"{label} changed during descriptor snapshot")
+    return first
+
+
+def _revalidate_attempt_authority_after_topology(
+    attempt_authority: _PinnedProtectedRoot,
+    expected_receipt: _AttemptStateReceipt,
+    protected_roots: Sequence[_PinnedProtectedRoot],
+    label: str,
+) -> _AttemptStateReceipt:
+    """End an authority proof with one direct namespace-and-byte observation."""
+
+    expected = _validated_attempt_state_receipt(expected_receipt, label)
+    _assert_pinned_protected_roots(protected_roots)
+    _read_attempt_state_receipt_from_descriptor(
+        attempt_authority.descriptor,
+        label,
+        expected,
+    )
+    _assert_pinned_protected_roots(protected_roots)
+    _final_snapshot, final_receipt = _read_attempt_state_once_from_descriptor(
+        attempt_authority.descriptor,
+        label,
+    )
+    if final_receipt != expected:
+        raise DiagnosticAnalysisError(
+            f"{label} bytes differ from the validated committed attempt"
+        )
+    return final_receipt
+
+
+def _historical_attempt_path(manifest: Mapping[str, Any]) -> Path:
+    authorized_output = manifest.get("authorized_output_path")
+    artifact_id = manifest.get("artifact_id")
+    authorization_digest = manifest.get("execution_authorization_digest")
+    marker = manifest.get("attempt_marker_basename")
+    if (
+        type(authorized_output) is not str
+        or not Path(authorized_output).is_absolute()
+        or type(artifact_id) is not str
+        or not artifact_id
+        or Path(authorized_output).name != artifact_id
+        or not _is_sha256(authorization_digest)
+        or type(marker) is not str
+    ):
+        raise DiagnosticAnalysisError(
+            "historical committed attempt path binding is invalid"
+        )
+    expected_marker = f".{artifact_id}.attempt-{authorization_digest}"
+    marker_path = Path(marker)
+    if (
+        marker != expected_marker
+        or marker in {"", ".", ".."}
+        or marker_path.is_absolute()
+        or marker_path.name != marker
+        or marker_path.parts != (marker,)
+    ):
+        raise DiagnosticAnalysisError(
+            "historical committed attempt marker is not one exact safe basename"
+        )
+    return Path(
+        os.path.abspath(
+            os.fspath(Path(authorized_output).parent / marker),
+        )
+    )
+
+
+def _expected_committed_attempt_payloads(
+    manifest: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    started = manifest.get("attempt_started_receipt")
+    if type(started) is not dict or set(started) != _ATTEMPT_STARTED_RECEIPT_FIELDS:
+        raise DiagnosticAnalysisError("embedded attempt STARTED receipt is invalid")
+    started_core = {
+        key: value for key, value in started.items() if key != "deterministic_digest"
+    }
+    if started.get("deterministic_digest") != _stdlib_sha256_json(started_core):
+        raise DiagnosticAnalysisError(
+            "embedded attempt STARTED receipt digest does not close"
+        )
+    common = {
+        key: value
+        for key, value in started.items()
+        if key not in {"deterministic_digest", "phase", "status"}
+    }
+    pre_outcome_core = {
+        **common,
+        "phase": "PRE_OUTCOME",
+        "status": "PENDING",
+    }
+    ready_core = {
+        **common,
+        "phase": "STARTED",
+        "run_manifest_digest": manifest.get("deterministic_digest"),
+        "status": "READY_TO_COMMIT",
+    }
+    return {
+        "pre_outcome.json": {
+            **pre_outcome_core,
+            "deterministic_digest": _stdlib_sha256_json(pre_outcome_core),
+        },
+        "started.json": dict(started),
+        "ready_to_commit.json": {
+            **ready_core,
+            "deterministic_digest": _stdlib_sha256_json(ready_core),
+        },
+    }
+
+
+def _validate_historical_attempt_state_from_descriptor(
+    directory_fd: int,
+    manifest: Mapping[str, Any],
+) -> _AttemptStateReceipt:
+    first_snapshot, first_receipt = _read_attempt_state_once_from_descriptor(
+        directory_fd,
+        "historical committed attempt",
+    )
+    expected_payloads = _expected_committed_attempt_payloads(manifest)
+    for filename in _COMMITTED_ATTEMPT_FILENAMES:
+        expected_raw = (
+            _stdlib_canonical_json(expected_payloads[filename]) + "\n"
+        ).encode("utf-8")
+        if first_snapshot[filename] != expected_raw:
+            raise DiagnosticAnalysisError(
+                f"historical committed attempt receipt does not close: {filename}"
+            )
+    second_snapshot, second_receipt = _read_attempt_state_once_from_descriptor(
+        directory_fd,
+        "historical committed attempt",
+    )
+    if second_snapshot != first_snapshot or second_receipt != first_receipt:
+        raise DiagnosticAnalysisError(
+            "historical committed attempt changed during validation"
+        )
+    return _validated_attempt_state_receipt(
+        first_receipt,
+        "historical committed attempt",
+    )
+
+
+def _read_historical_attempt_state(
+    path: Path,
+    manifest: Mapping[str, Any],
+) -> _AttemptStateReceipt:
+    expected_path = _historical_attempt_path(manifest)
+    candidate = Path(os.path.abspath(os.fspath(path)))
+    if candidate != expected_path:
+        raise DiagnosticAnalysisError(
+            "historical committed attempt path differs from the manifest"
+        )
+    try:
+        pinned = _pin_protected_roots((candidate,))
+    except DiagnosticAnalysisError as error:
+        raise DiagnosticAnalysisError(
+            "historical committed attempt must exist as a stable non-symlink "
+            "directory"
+        ) from error
+    try:
+        _assert_pinned_protected_roots(pinned)
+        receipt = _validate_historical_attempt_state_from_descriptor(
+            pinned[0].descriptor,
+            manifest,
+        )
+        _assert_pinned_protected_roots(pinned)
+        return receipt
+    finally:
+        _close_pinned_protected_roots(pinned)
 
 
 def _reviewed_authorization(
@@ -2254,6 +2650,9 @@ class _ValidatedRun:
     manifest: dict[str, Any]
     analyzer_build_digest: str
     artifact_receipt: _ArtifactReceipt = ()
+    historical_attempt_path: Path | None = None
+    attempt_state_receipt: _AttemptStateReceipt = ()
+    historical_attempt_authority: _PinnedProtectedRoot | None = None
 
 
 def _validate_artifact(
@@ -2263,6 +2662,39 @@ def _validate_artifact(
     authorization_digest: str,
     *,
     repository_root: Path,
+    attempt_authority_owner: ExitStack | None = None,
+) -> _ValidatedRun:
+    local_authority_cleanup = ExitStack()
+    authority_cleanup = (
+        attempt_authority_owner
+        if attempt_authority_owner is not None
+        else local_authority_cleanup
+    )
+    try:
+        return _validate_artifact_unmanaged(
+            artifact_dir,
+            bundle_dir,
+            authorization_path,
+            authorization_digest,
+            repository_root=repository_root,
+            retain_historical_attempt_authority=(
+                attempt_authority_owner is not None
+            ),
+            authority_cleanup=authority_cleanup,
+        )
+    finally:
+        local_authority_cleanup.close()
+
+
+def _validate_artifact_unmanaged(
+    artifact_dir: Path,
+    bundle_dir: Path,
+    authorization_path: Path,
+    authorization_digest: str,
+    *,
+    repository_root: Path,
+    retain_historical_attempt_authority: bool,
+    authority_cleanup: ExitStack,
 ) -> _ValidatedRun:
     """Validate every integrity gate before returning outcome-bearing rows."""
 
@@ -2311,6 +2743,26 @@ def _validate_artifact(
         authorization_raw=reviewed_authorization_raw,
         manifest=preflight_manifest,
     )
+    historical_attempt_path = _historical_attempt_path(preflight_manifest)
+    try:
+        historical_attempt_roots = _pin_protected_roots(
+            (historical_attempt_path,)
+        )
+    except DiagnosticAnalysisError as error:
+        raise DiagnosticAnalysisError(
+            "historical committed attempt must exist as a stable non-symlink "
+            "directory"
+        ) from error
+    authority_cleanup.callback(
+        _close_pinned_protected_roots,
+        historical_attempt_roots,
+    )
+    _assert_pinned_protected_roots(historical_attempt_roots)
+    attempt_state_receipt = _validate_historical_attempt_state_from_descriptor(
+        historical_attempt_roots[0].descriptor,
+        preflight_manifest,
+    )
+    _assert_pinned_protected_roots(historical_attempt_roots)
     try:
         bundle = verify_countdown_thompson_diagnostic_bundle(
             Path(bundle_dir),
@@ -2415,13 +2867,58 @@ def _validate_artifact(
         )
     if _read_artifact_snapshot(Path(artifact_dir)) != first_snapshot:
         raise DiagnosticAnalysisError("runner artifact changed during verification")
-    return _ValidatedRun(
+    _revalidate_attempt_authority_after_topology(
+        historical_attempt_roots[0],
+        attempt_state_receipt,
+        historical_attempt_roots,
+        "historical committed attempt",
+    )
+    retained_authority = (
+        historical_attempt_roots[0]
+        if retain_historical_attempt_authority
+        else None
+    )
+    validated = _ValidatedRun(
         bundle,
         validated_rows,
         manifest,
         analyzer_build_digest,
         _artifact_snapshot_receipt(first_snapshot),
+        historical_attempt_path,
+        attempt_state_receipt,
+        retained_authority,
     )
+    return validated
+
+
+def _validated_historical_attempt_authority(
+    validated: _ValidatedRun,
+) -> tuple[_PinnedProtectedRoot, _AttemptStateReceipt]:
+    attempt_authority = getattr(
+        validated,
+        "historical_attempt_authority",
+        None,
+    )
+    if type(attempt_authority) is not _PinnedProtectedRoot:
+        raise DiagnosticAnalysisError(
+            "validated historical committed attempt authority is unavailable"
+        )
+    attempt_path_value = getattr(validated, "historical_attempt_path", None)
+    expected_attempt_path = _historical_attempt_path(validated.manifest)
+    if (
+        not isinstance(attempt_path_value, Path)
+        or Path(os.path.abspath(os.fspath(attempt_path_value)))
+        != expected_attempt_path
+        or attempt_authority.authority_path != expected_attempt_path
+    ):
+        raise DiagnosticAnalysisError(
+            "validated historical committed attempt path is unavailable"
+        )
+    receipt = _validated_attempt_state_receipt(
+        getattr(validated, "attempt_state_receipt", ()),
+        "validated historical committed attempt",
+    )
+    return attempt_authority, receipt
 
 
 def _fraction_payload(value: Fraction) -> dict[str, int]:
@@ -3004,14 +3501,26 @@ def analyze_countdown_thompson_diagnostic_artifact(
 ) -> dict[str, Any]:
     """Validate every cell, then emit the preregistered engineering result."""
 
-    validated = _validate_artifact(
-        Path(artifact_dir),
-        Path(bundle_dir),
-        Path(authorization_path),
-        authorization_digest,
-        repository_root=repository_root,
-    )
-    return _build_summary(validated)
+    with ExitStack() as authority_cleanup:
+        validated = _validate_artifact(
+            Path(artifact_dir),
+            Path(bundle_dir),
+            Path(authorization_path),
+            authorization_digest,
+            repository_root=repository_root,
+            attempt_authority_owner=authority_cleanup,
+        )
+        attempt_authority, attempt_receipt = (
+            _validated_historical_attempt_authority(validated)
+        )
+        summary = _build_summary(validated)
+        _revalidate_attempt_authority_after_topology(
+            attempt_authority,
+            attempt_receipt,
+            (attempt_authority,),
+            "historical committed attempt",
+        )
+        return summary
 
 
 def _open_stable_directory_with_ancestry(
@@ -4068,6 +4577,19 @@ def _atomic_write_no_replace(
             "the destination must not be used as diagnostic evidence"
         ) from check_error
 
+    def run_mandatory_post_durability_check() -> None:
+        nonlocal post_durability_check_completed, post_durability_check_failed
+
+        if post_durability_check is None:
+            post_durability_check_completed = True
+            return
+        try:
+            post_durability_check()
+        except BaseException:
+            post_durability_check_failed = True
+            raise
+        post_durability_check_completed = True
+
     try:
         # These descriptors were acquired before validation.  Revalidate their
         # names before touching any attacker-pivotable destination path.
@@ -4196,13 +4718,6 @@ def _atomic_write_no_replace(
             raise DiagnosticAnalysisError(
                 "summary destination path or payload changed during publication"
             )
-        if post_durability_check is not None:
-            try:
-                post_durability_check()
-                post_durability_check_completed = True
-            except BaseException:
-                post_durability_check_failed = True
-                raise
         _assert_summary_publication_topology(
             parent_fd,
             pinned_protected_roots,
@@ -4218,6 +4733,13 @@ def _atomic_write_no_replace(
             raise DiagnosticAnalysisError(
                 "summary destination changed during final topology proof"
             )
+        run_mandatory_post_durability_check()
+        if not post_durability_check_completed:
+            raise DiagnosticAnalysisPublicationAmbiguousError(
+                "summary publication durability and rollback are ambiguous; "
+                "the destination must not be used as diagnostic evidence"
+            )
+        return
     except BaseException as error:
         if (
             rename_attempted
@@ -4241,53 +4763,16 @@ def _atomic_write_no_replace(
                 error,
             )
             if committed:
+                try:
+                    run_mandatory_post_durability_check()
+                except BaseException as recovery_error:
+                    raise_after_failed_post_durability_check(recovery_error)
                 if not post_durability_check_completed:
-                    if post_durability_check is None:
-                        raise DiagnosticAnalysisPublicationAmbiguousError(
-                            "summary publication durability and rollback are "
-                            "ambiguous; the destination must not be used as "
-                            "diagnostic evidence"
-                        ) from error
-                    try:
-                        post_durability_check()
-                        post_durability_check_completed = True
-                        _assert_summary_publication_topology(
-                            parent_fd,
-                            pinned_protected_roots,
-                            publication_may_exist=True,
-                        )
-                        if not _summary_publication_is_exact(
-                            destination,
-                            parent_fd,
-                            parent_identity,
-                            staged_identity,
-                            payload,
-                        ):
-                            raise DiagnosticAnalysisError(
-                                "summary destination changed during recovered "
-                                "post-durability proof"
-                            )
-                    except BaseException as recovery_error:
-                        if not post_durability_check_completed:
-                            raise_after_failed_post_durability_check(
-                                recovery_error
-                            )
-                        committed_after_check = _recover_summary_publication(
-                            destination,
-                            parent_fd,
-                            parent_identity,
-                            pinned_protected_roots,
-                            staging_name,
-                            file_descriptor,
-                            staged_identity,
-                            payload,
-                            publication_observed_exact,
-                            parent_barrier_completed,
-                            recovery_error,
-                        )
-                        if committed_after_check:
-                            return
-                        raise
+                    raise DiagnosticAnalysisPublicationAmbiguousError(
+                        "summary publication durability and rollback are "
+                        "ambiguous; the destination must not be used as "
+                        "diagnostic evidence"
+                    ) from error
                 return
         raise
     finally:
@@ -4315,10 +4800,14 @@ def write_countdown_thompson_diagnostic_summary(
     """Analyze fully, then atomically publish one canonical no-overwrite summary."""
 
     destination = Path(os.path.abspath(os.fspath(output_path)))
-    protected_roots = _pin_protected_roots(
-        (Path(artifact_dir), Path(bundle_dir)),
-    )
-    try:
+    with ExitStack() as authority_cleanup:
+        protected_roots = _pin_protected_roots(
+            (Path(artifact_dir), Path(bundle_dir)),
+        )
+        authority_cleanup.callback(
+            _close_pinned_protected_roots,
+            protected_roots,
+        )
         _assert_pinned_protected_roots(protected_roots)
         validated = _validate_artifact(
             Path(artifact_dir),
@@ -4326,7 +4815,14 @@ def write_countdown_thompson_diagnostic_summary(
             Path(authorization_path),
             authorization_digest,
             repository_root=repository_root,
+            attempt_authority_owner=authority_cleanup,
         )
+        _assert_pinned_protected_roots(protected_roots)
+        attempt_authority, validated_attempt_receipt = (
+            _validated_historical_attempt_authority(validated)
+        )
+        protected_roots = (*protected_roots, attempt_authority)
+        _assert_pinned_protected_roots(protected_roots)
         summary = _build_summary(validated)
         historical_value = validated.manifest.get("authorized_output_path")
         if (
@@ -4346,6 +4842,10 @@ def write_countdown_thompson_diagnostic_summary(
                 "historical authorized artifact path must exist as a stable "
                 "non-symlink directory for summary publication"
             ) from error
+        authority_cleanup.callback(
+            _close_pinned_protected_roots,
+            historical_roots,
+        )
         protected_roots = (*protected_roots, *historical_roots)
         historical_canonical = historical_roots[0].path
         if (
@@ -4355,6 +4855,7 @@ def write_countdown_thompson_diagnostic_summary(
             raise DiagnosticAnalysisError(
                 "summary destination cannot modify the historical authorized artifact"
             )
+        _assert_pinned_protected_roots(protected_roots)
         _assert_pinned_protected_roots(protected_roots)
         if any(
             destination == root.path or destination.is_relative_to(root.path)
@@ -4368,7 +4869,7 @@ def write_countdown_thompson_diagnostic_summary(
             "validated runner artifact",
         )
 
-        def revalidate_artifact_receipts() -> None:
+        def revalidate_authority_receipts() -> None:
             _assert_pinned_protected_roots(protected_roots)
             _read_artifact_receipt_from_descriptor(
                 historical_roots[0].descriptor,
@@ -4380,19 +4881,22 @@ def write_countdown_thompson_diagnostic_summary(
                 "relocated validated artifact",
                 validated_receipt,
             )
-            _assert_pinned_protected_roots(protected_roots)
+            _revalidate_attempt_authority_after_topology(
+                attempt_authority,
+                validated_attempt_receipt,
+                protected_roots,
+                "historical committed attempt",
+            )
 
-        revalidate_artifact_receipts()
+        revalidate_authority_receipts()
         _assert_pinned_protected_roots(protected_roots)
         _atomic_write_no_replace(
             destination,
             _canonical_bytes(summary),
             protected_roots=protected_roots,
-            post_durability_check=revalidate_artifact_receipts,
+            post_durability_check=revalidate_authority_receipts,
         )
         return summary
-    finally:
-        _close_pinned_protected_roots(protected_roots)
 
 
 def _self_test() -> dict[str, Any]:

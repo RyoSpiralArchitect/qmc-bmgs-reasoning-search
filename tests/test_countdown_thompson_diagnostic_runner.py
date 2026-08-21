@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
@@ -2347,6 +2348,142 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 self.assertEqual(manifest["attempt_phase"], "READY_TO_COMMIT")
                 self.assertTrue((output / "commit.json").is_file())
                 self.assertGreaterEqual(len(failed_closes), 1)
+
+    def test_commit_recovery_baseexceptions_never_relabel_ready_attempt_not_run(
+        self,
+    ) -> None:
+        for recovery_stage in (
+            "pinned_observation",
+            "public_observation",
+            "durability_retry",
+            "commit_revoke",
+        ):
+            for interruption in (KeyboardInterrupt, SystemExit):
+                with (
+                    self.subTest(
+                        recovery_stage=recovery_stage,
+                        interruption=interruption.__name__,
+                    ),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    root = Path(temporary)
+                    output = root / "artifact"
+                    preflight = _preflight(output)
+                    authorization = runner._authorization_payload(preflight)
+                    original_write = runner._write_canonical_file_noreplace_at
+
+                    def commit_then_interrupt(
+                        directory_fd: int,
+                        filename: str,
+                        payload: dict[str, object],
+                    ) -> tuple[int, int]:
+                        identity = original_write(directory_fd, filename, payload)
+                        if filename == "commit.json":
+                            raise OSError("post-commit publication interruption")
+                        return identity
+
+                    injected = interruption(f"synthetic {recovery_stage} interruption")
+                    expected_error: type[BaseException]
+                    if recovery_stage == "durability_retry":
+                        expected_error = runner.DiagnosticInvalidRunError
+                    else:
+                        expected_error = runner.DiagnosticPublicationStateAmbiguousError
+
+                    with ExitStack() as stack:
+                        stack.enter_context(
+                            patch.object(runner, "EXPECTED_CELL_COUNT", 1)
+                        )
+                        stack.enter_context(
+                            patch.object(runner, "_recheck_source_closure")
+                        )
+                        stack.enter_context(
+                            patch.object(
+                                runner,
+                                "_write_canonical_file_noreplace_at",
+                                side_effect=commit_then_interrupt,
+                            )
+                        )
+                        if recovery_stage == "pinned_observation":
+                            stack.enter_context(
+                                patch.object(
+                                    runner,
+                                    "_pinned_exact_artifact_commit_identity",
+                                    side_effect=injected,
+                                )
+                            )
+                            stack.enter_context(
+                                patch.object(
+                                    runner,
+                                    "_published_exact_artifact_commit_identity",
+                                    return_value=None,
+                                )
+                            )
+                        elif recovery_stage == "public_observation":
+                            stack.enter_context(
+                                patch.object(
+                                    runner,
+                                    "_pinned_exact_artifact_commit_identity",
+                                    return_value=None,
+                                )
+                            )
+                            stack.enter_context(
+                                patch.object(
+                                    runner,
+                                    "_published_exact_artifact_commit_identity",
+                                    side_effect=injected,
+                                )
+                            )
+                        elif recovery_stage == "durability_retry":
+                            stack.enter_context(
+                                patch.object(
+                                    runner,
+                                    "_retry_committed_artifact_durability",
+                                    side_effect=injected,
+                                )
+                            )
+                        else:
+                            stack.enter_context(
+                                patch.object(
+                                    runner,
+                                    "_retry_committed_artifact_durability",
+                                    return_value=False,
+                                )
+                            )
+                            stack.enter_context(
+                                patch.object(
+                                    runner,
+                                    "_revoke_exact_artifact_commit_at",
+                                    side_effect=injected,
+                                )
+                            )
+                        with self.assertRaises(expected_error):
+                            runner._publish_run_artifact(
+                                preflight,
+                                authorization,
+                                reviewed_authorization_revision=(
+                                    _AUTHORIZATION_REVISION
+                                ),
+                                repository_root=root,
+                            )
+
+                    attempt = root / (
+                        f".artifact.attempt-{authorization['deterministic_digest']}"
+                    )
+                    self.assertTrue((attempt / "started.json").is_file())
+                    self.assertTrue((attempt / "ready_to_commit.json").is_file())
+                    self.assertFalse((attempt / "not_run.json").exists())
+                    if recovery_stage == "durability_retry":
+                        self.assertTrue((attempt / "invalid.json").is_file())
+                        self.assertFalse((output / "commit.json").exists())
+                        self.assertTrue(
+                            any(
+                                path.name.startswith(".commit.json.revoked-")
+                                for path in output.iterdir()
+                            )
+                        )
+                    else:
+                        self.assertFalse((attempt / "invalid.json").exists())
+                        self.assertTrue((output / "commit.json").is_file())
 
     def test_persistent_artifact_parent_sync_failure_revokes_commit_as_invalid(
         self,

@@ -3524,13 +3524,17 @@ def _publish_run_artifact_locked(
     except BaseException as error:
         pinned_commit_identity = None
         public_commit_identity = None
+        commit_observation_error: BaseException | None = None
         if "staging_identity" in locals() and "commit_receipt" in locals():
             if output_fd >= 0:
-                pinned_commit_identity = _pinned_exact_artifact_commit_identity(
-                    output_fd,
-                    staging_identity,
-                    commit_receipt,
-                )
+                try:
+                    pinned_commit_identity = _pinned_exact_artifact_commit_identity(
+                        output_fd,
+                        staging_identity,
+                        commit_receipt,
+                    )
+                except BaseException as observation_error:
+                    commit_observation_error = observation_error
             try:
                 public_commit_identity = _published_exact_artifact_commit_identity(
                     parent_fd,
@@ -3538,21 +3542,25 @@ def _publish_run_artifact_locked(
                     staging_identity,
                     commit_receipt,
                 )
-            except DiagnosticPublicationStateAmbiguousError:
-                if pinned_commit_identity is None:
-                    raise
+            except BaseException as observation_error:
+                if commit_observation_error is None:
+                    commit_observation_error = observation_error
         if pinned_commit_identity is not None or public_commit_identity is not None:
-            if _retry_committed_artifact_durability(
-                parent=output.parent,
-                parent_fd=parent_fd,
-                parent_stat=parent_stat,
-                output_name=output.name,
-                staging_identity=staging_identity,
-                run_manifest=run_manifest,
-                records_byte_count=records_byte_count,
-                records_sha256=records_hasher.hexdigest(),
-                commit_receipt=commit_receipt,
-            ):
+            try:
+                commit_is_durable = _retry_committed_artifact_durability(
+                    parent=output.parent,
+                    parent_fd=parent_fd,
+                    parent_stat=parent_stat,
+                    output_name=output.name,
+                    staging_identity=staging_identity,
+                    run_manifest=run_manifest,
+                    records_byte_count=records_byte_count,
+                    records_sha256=records_hasher.hexdigest(),
+                    commit_receipt=commit_receipt,
+                )
+            except BaseException:
+                commit_is_durable = False
+            if commit_is_durable:
                 return run_manifest, commit_receipt
             try:
                 if pinned_commit_identity is not None:
@@ -3568,7 +3576,7 @@ def _publish_run_artifact_locked(
                         staging_identity,
                         commit_receipt,
                     )
-            except DiagnosticPublicationStateAmbiguousError as rollback_error:
+            except BaseException as rollback_error:
                 raise DiagnosticPublicationStateAmbiguousError(
                     "artifact commit durability and exact rollback are both unproven"
                 ) from rollback_error
@@ -3576,6 +3584,10 @@ def _publish_run_artifact_locked(
                 raise DiagnosticPublicationStateAmbiguousError(
                     "artifact commit durability and exact rollback are both unproven"
                 ) from error
+        elif commit_observation_error is not None:
+            raise DiagnosticPublicationStateAmbiguousError(
+                "artifact commit presence and exact rollback are both unproven"
+            ) from commit_observation_error
         try:
             _write_attempt_receipt(
                 attempt,

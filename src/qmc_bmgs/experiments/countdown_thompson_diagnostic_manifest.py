@@ -95,6 +95,8 @@ COMPONENT_FILENAMES = (
 )
 SEAL_FILENAME = "seal.json"
 BUNDLE_FILENAMES = COMPONENT_FILENAMES + (SEAL_FILENAME,)
+_BUNDLE_MEMBER_BYTE_CAP_V1 = 8 * 1024 * 1024
+_BUNDLE_READ_CHUNK_BYTES = 1024 * 1024
 
 _COMPONENT_TOP_LEVEL_FIELDS = {
     "analysis.json": {
@@ -280,17 +282,24 @@ def _compare_rational(
 
 
 def _assert_no_forbidden_material(payload: Any, *, path: str = "$") -> None:
-    if type(payload) is dict:
-        forbidden = sorted(set(payload) & _FORBIDDEN_PERSISTED_KEYS)
-        if forbidden:
-            raise DiagnosticManifestError(
-                f"forbidden outcome or material keys at {path}: {forbidden}"
+    pending: list[tuple[Any, str]] = [(payload, path)]
+    while pending:
+        current, current_path = pending.pop()
+        if type(current) is dict:
+            forbidden = sorted(set(current) & _FORBIDDEN_PERSISTED_KEYS)
+            if forbidden:
+                raise DiagnosticManifestError(
+                    f"forbidden outcome or material keys at {current_path}: {forbidden}"
+                )
+            pending.extend(
+                (value, f"{current_path}.{key}")
+                for key, value in reversed(tuple(current.items()))
             )
-        for key, value in payload.items():
-            _assert_no_forbidden_material(value, path=f"{path}.{key}")
-    elif type(payload) is list:
-        for index, value in enumerate(payload):
-            _assert_no_forbidden_material(value, path=f"{path}[{index}]")
+        elif type(current) is list:
+            pending.extend(
+                (current[index], f"{current_path}[{index}]")
+                for index in range(len(current) - 1, -1, -1)
+            )
 
 
 def _validate_component_schemas(
@@ -1245,74 +1254,307 @@ def build_countdown_thompson_diagnostic_payloads(
 def _parse_canonical_object(raw: bytes, *, filename: str) -> dict[str, Any]:
     try:
         parsed = strict_json_loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, TraceValidationError) as error:
+    except (RecursionError, UnicodeDecodeError, TraceValidationError) as error:
         raise DiagnosticManifestError(f"invalid strict JSON: {filename}") from error
     if type(parsed) is not dict:
         raise DiagnosticManifestError(f"bundle JSON is not an object: {filename}")
-    if raw != _canonical_bytes(parsed):
+    try:
+        canonical = _canonical_bytes(parsed)
+    except (RecursionError, TraceValidationError, TypeError, ValueError) as error:
+        raise DiagnosticManifestError(f"invalid strict JSON: {filename}") from error
+    if raw != canonical:
         raise DiagnosticManifestError(f"bundle JSON is not canonical: {filename}")
     return parsed
+
+
+def _bundle_entry_stable_state(observed: os.stat_result) -> tuple[int, ...]:
+    return (
+        observed.st_dev,
+        observed.st_ino,
+        observed.st_mode,
+        observed.st_nlink,
+        observed.st_size,
+        observed.st_mtime_ns,
+        observed.st_ctime_ns,
+    )
+
+
+def _assert_exact_bundle_directory_closure(directory_fd: int) -> None:
+    expected = set(BUNDLE_FILENAMES)
+    observed: set[str] = set()
+    try:
+        with os.scandir(directory_fd) as entries:
+            for entry in entries:
+                if entry.name not in expected or entry.name in observed:
+                    raise DiagnosticManifestError("bundle directory closure drifted")
+                observed.add(entry.name)
+    except DiagnosticManifestError:
+        raise
+    except OSError as error:
+        raise DiagnosticManifestError(
+            "bundle directory closure could not be observed"
+        ) from error
+    if observed != expected:
+        raise DiagnosticManifestError("bundle directory closure drifted")
+
+
+_BundleDirectoryGeneration = tuple[
+    tuple[int, ...],
+    tuple[tuple[str, tuple[int, ...]], ...],
+]
+
+
+def _capture_bundle_directory_generation(
+    directory_fd: int,
+) -> _BundleDirectoryGeneration:
+    """Capture one stable collective generation for all nine bundle members."""
+
+    try:
+        directory_before = os.fstat(directory_fd)
+        if not stat.S_ISDIR(directory_before.st_mode):
+            raise DiagnosticManifestError("bundle path must be a regular directory")
+        directory_state = _bundle_entry_stable_state(directory_before)
+        _assert_exact_bundle_directory_closure(directory_fd)
+        member_states: list[tuple[str, tuple[int, ...]]] = []
+        for filename in BUNDLE_FILENAMES:
+            observed = os.stat(
+                filename,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISREG(observed.st_mode):
+                raise DiagnosticManifestError(
+                    f"bundle entry is not a regular file: {filename}"
+                )
+            if observed.st_size < 0 or observed.st_size > _BUNDLE_MEMBER_BYTE_CAP_V1:
+                raise DiagnosticManifestError(
+                    "bundle entry exceeds the v1 byte cap of "
+                    f"{_BUNDLE_MEMBER_BYTE_CAP_V1}: {filename}"
+                )
+            member_states.append((filename, _bundle_entry_stable_state(observed)))
+        directory_after = os.fstat(directory_fd)
+        reobserved_states = tuple(
+            (
+                filename,
+                _bundle_entry_stable_state(
+                    os.stat(
+                        filename,
+                        dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                ),
+            )
+            for filename in BUNDLE_FILENAMES
+        )
+    except DiagnosticManifestError:
+        raise
+    except OSError as error:
+        raise DiagnosticManifestError(
+            "bundle collective generation could not be captured"
+        ) from error
+    if _bundle_entry_stable_state(
+        directory_after
+    ) != directory_state or reobserved_states != tuple(member_states):
+        raise DiagnosticManifestError(
+            "bundle changed during collective generation capture"
+        )
+    return directory_state, tuple(member_states)
+
+
+def _open_stable_bundle_directory(
+    directory: Path,
+) -> tuple[int, tuple[int, ...]]:
+    descriptor = -1
+    try:
+        named_before = os.stat(directory, follow_symlinks=False)
+        if not stat.S_ISDIR(named_before.st_mode):
+            raise DiagnosticManifestError("bundle path must be a regular directory")
+        descriptor = os.open(
+            directory,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+        opened = os.fstat(descriptor)
+        named_after = os.stat(directory, follow_symlinks=False)
+        expected_state = _bundle_entry_stable_state(opened)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or _bundle_entry_stable_state(named_before) != expected_state
+            or _bundle_entry_stable_state(named_after) != expected_state
+        ):
+            raise DiagnosticManifestError(
+                "bundle path changed during descriptor acquisition"
+            )
+        return descriptor, expected_state
+    except DiagnosticManifestError:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise
+    except OSError as error:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise DiagnosticManifestError(
+            "bundle path must be a stable regular directory"
+        ) from error
+
+
+def _assert_stable_bundle_directory_path(
+    directory: Path,
+    directory_fd: int,
+    expected_state: tuple[int, ...],
+) -> None:
+    try:
+        opened = os.fstat(directory_fd)
+        named = os.stat(directory, follow_symlinks=False)
+    except OSError as error:
+        raise DiagnosticManifestError(
+            "bundle path identity could not be reobserved"
+        ) from error
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or not stat.S_ISDIR(named.st_mode)
+        or _bundle_entry_stable_state(opened) != expected_state
+        or _bundle_entry_stable_state(named) != expected_state
+    ):
+        raise DiagnosticManifestError("bundle path identity changed")
+
+
+def _read_bounded_bundle_member_at(
+    directory_fd: int,
+    filename: str,
+) -> bytes:
+    file_fd = -1
+    try:
+        named_before = os.stat(
+            filename,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if not stat.S_ISREG(named_before.st_mode):
+            raise DiagnosticManifestError(
+                f"bundle entry is not a regular file: {filename}"
+            )
+        if (
+            named_before.st_size < 0
+            or named_before.st_size > _BUNDLE_MEMBER_BYTE_CAP_V1
+        ):
+            raise DiagnosticManifestError(
+                "bundle entry exceeds the v1 byte cap of "
+                f"{_BUNDLE_MEMBER_BYTE_CAP_V1}: {filename}"
+            )
+        file_fd = os.open(
+            filename,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=directory_fd,
+        )
+        opened = os.fstat(file_fd)
+        expected_state = _bundle_entry_stable_state(opened)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_size < 0
+            or opened.st_size > _BUNDLE_MEMBER_BYTE_CAP_V1
+            or _bundle_entry_stable_state(named_before) != expected_state
+        ):
+            raise DiagnosticManifestError(
+                f"bundle entry changed before descriptor acquisition: {filename}"
+            )
+        remaining = opened.st_size
+        raw = bytearray()
+        while remaining:
+            chunk = os.read(
+                file_fd,
+                min(remaining, _BUNDLE_READ_CHUNK_BYTES),
+            )
+            if not chunk:
+                raise DiagnosticManifestError(
+                    f"bundle entry ended before its declared byte size: {filename}"
+                )
+            raw.extend(chunk)
+            remaining -= len(chunk)
+        if os.read(file_fd, 1):
+            raise DiagnosticManifestError(
+                f"bundle entry grew beyond its declared byte size: {filename}"
+            )
+        descriptor_after = os.fstat(file_fd)
+        named_after = os.stat(
+            filename,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if (
+            _bundle_entry_stable_state(descriptor_after) != expected_state
+            or _bundle_entry_stable_state(named_after) != expected_state
+        ):
+            raise DiagnosticManifestError(
+                f"bundle entry changed during bounded read: {filename}"
+            )
+        return bytes(raw)
+    except DiagnosticManifestError:
+        raise
+    except OSError as error:
+        raise DiagnosticManifestError(
+            f"bundle entry is not a stable bounded regular file: {filename}"
+        ) from error
+    finally:
+        if file_fd >= 0:
+            try:
+                os.close(file_fd)
+            except OSError:
+                pass
+
+
+def _read_bundle_snapshot_from_descriptor(
+    directory_fd: int,
+) -> tuple[dict[str, dict[str, Any]], dict[str, bytes]]:
+    before_generation = _capture_bundle_directory_generation(directory_fd)
+    payloads: dict[str, dict[str, Any]] = {}
+    raw_files: dict[str, bytes] = {}
+    for filename in BUNDLE_FILENAMES:
+        raw = _read_bounded_bundle_member_at(directory_fd, filename)
+        payloads[filename] = _parse_canonical_object(raw, filename=filename)
+        raw_files[filename] = raw
+    after_generation = _capture_bundle_directory_generation(directory_fd)
+    if after_generation != before_generation:
+        raise DiagnosticManifestError(
+            "bundle member generation changed during snapshot"
+        )
+    return payloads, raw_files
+
+
+def _require_descriptor_bound_bundle_platform() -> None:
+    required_flags = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+    if os.name != "posix" or any(not hasattr(os, flag) for flag in required_flags):
+        raise DiagnosticManifestError(
+            "descriptor-bound bundle verification is unavailable on this platform"
+        )
 
 
 def _read_bundle_snapshot(
     directory: Path,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, bytes]]:
-    if directory.is_symlink() or not directory.is_dir():
-        raise DiagnosticManifestError("bundle path must be a regular directory")
-    payloads: dict[str, dict[str, Any]] = {}
-    raw_files: dict[str, bytes] = {}
-    if os.name == "nt":
-        entries = {entry.name for entry in directory.iterdir()}
-        if entries != set(BUNDLE_FILENAMES):
-            raise DiagnosticManifestError("bundle directory closure drifted")
-        for filename in BUNDLE_FILENAMES:
-            path = directory / filename
-            if path.is_symlink() or not path.is_file():
-                raise DiagnosticManifestError(
-                    f"bundle entry is not a regular file: {filename}"
-                )
-            raw = path.read_bytes()
-            payloads[filename] = _parse_canonical_object(raw, filename=filename)
-            raw_files[filename] = raw
-        return payloads, raw_files
-
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    _require_descriptor_bound_bundle_platform()
+    candidate = Path(directory)
+    directory_fd = -1
     try:
-        directory_fd = os.open(directory, flags)
-    except OSError as error:
-        raise DiagnosticManifestError(
-            "bundle path must be a regular directory"
-        ) from error
-    try:
-        if not stat.S_ISDIR(os.fstat(directory_fd).st_mode):
-            raise DiagnosticManifestError("bundle path must be a regular directory")
-        if set(os.listdir(directory_fd)) != set(BUNDLE_FILENAMES):
-            raise DiagnosticManifestError("bundle directory closure drifted")
-        for filename in BUNDLE_FILENAMES:
-            try:
-                file_fd = os.open(
-                    filename,
-                    os.O_RDONLY | os.O_NOFOLLOW,
-                    dir_fd=directory_fd,
-                )
-            except OSError as error:
-                raise DiagnosticManifestError(
-                    f"bundle entry is not a regular file: {filename}"
-                ) from error
-            try:
-                if not stat.S_ISREG(os.fstat(file_fd).st_mode):
-                    raise DiagnosticManifestError(
-                        f"bundle entry is not a regular file: {filename}"
-                    )
-                with os.fdopen(file_fd, "rb", closefd=False) as handle:
-                    raw = handle.read()
-            finally:
-                os.close(file_fd)
-            payloads[filename] = _parse_canonical_object(raw, filename=filename)
-            raw_files[filename] = raw
+        directory_fd, directory_state = _open_stable_bundle_directory(candidate)
+        snapshot = _read_bundle_snapshot_from_descriptor(directory_fd)
+        _assert_stable_bundle_directory_path(
+            candidate,
+            directory_fd,
+            directory_state,
+        )
+        return snapshot
     finally:
-        os.close(directory_fd)
-    return payloads, raw_files
+        if directory_fd >= 0:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                pass
 
 
 def _validate_local_digests(
@@ -1401,36 +1643,58 @@ def verify_countdown_thompson_diagnostic_bundle(
 ) -> VerifiedDiagnosticBundle:
     """Verify bytes, authorities, regeneration, schedule, and directory closure."""
 
+    _require_descriptor_bound_bundle_platform()
     directory = Path(bundle_dir)
-    payloads, raw_files = _read_bundle_snapshot(directory)
-    _validate_component_schemas(payloads)
-    _validate_local_digests(payloads, raw_files)
-    _assert_no_forbidden_material(payloads)
-    expected = build_countdown_thompson_diagnostic_payloads(
-        repository_root=repository_root
-    )
-    for filename in BUNDLE_FILENAMES:
-        if raw_files[filename] != _canonical_bytes(expected[filename]):
+    directory_fd = -1
+    directory_state: tuple[int, ...] | None = None
+    try:
+        directory_fd, directory_state = _open_stable_bundle_directory(directory)
+        payloads, raw_files = _read_bundle_snapshot_from_descriptor(directory_fd)
+        _validate_component_schemas(payloads)
+        _validate_local_digests(payloads, raw_files)
+        _assert_no_forbidden_material(payloads)
+        expected = build_countdown_thompson_diagnostic_payloads(
+            repository_root=repository_root
+        )
+        for filename in BUNDLE_FILENAMES:
+            if raw_files[filename] != _canonical_bytes(expected[filename]):
+                raise DiagnosticManifestError(
+                    "bundle bytes differ from independent deterministic regeneration: "
+                    f"{filename}"
+                )
+        cells = _cells_from_components(
+            payloads["diagnostic_tasks.json"],
+            payloads["proposals.json"],
+            payloads["methods.json"],
+            payloads["budgets.json"],
+        )
+        schedule = [cell.to_dict() for cell in cells]
+        matrix = payloads["preregistration.json"]["execution_matrix"]
+        if matrix["schedule"] != schedule:
+            raise DiagnosticManifestError("diagnostic schedule rows drifted")
+        if matrix["schedule_digest"] != sha256_json(schedule):
+            raise DiagnosticManifestError("diagnostic schedule digest drifted")
+        final_payloads, final_raw_files = _read_bundle_snapshot_from_descriptor(
+            directory_fd
+        )
+        if directory_state is None:
             raise DiagnosticManifestError(
-                "bundle bytes differ from independent deterministic regeneration: "
-                f"{filename}"
+                "bundle directory authority was not established"
             )
-    cells = _cells_from_components(
-        payloads["diagnostic_tasks.json"],
-        payloads["proposals.json"],
-        payloads["methods.json"],
-        payloads["budgets.json"],
-    )
-    schedule = [cell.to_dict() for cell in cells]
-    matrix = payloads["preregistration.json"]["execution_matrix"]
-    if matrix["schedule"] != schedule:
-        raise DiagnosticManifestError("diagnostic schedule rows drifted")
-    if matrix["schedule_digest"] != sha256_json(schedule):
-        raise DiagnosticManifestError("diagnostic schedule digest drifted")
-    final_payloads, final_raw_files = _read_bundle_snapshot(directory)
-    if final_payloads != payloads or final_raw_files != raw_files:
-        raise DiagnosticManifestError("bundle changed during verification")
-    return VerifiedDiagnosticBundle(directory, deepcopy(payloads), cells)
+        _assert_stable_bundle_directory_path(
+            directory,
+            directory_fd,
+            directory_state,
+        )
+        if final_payloads != payloads or final_raw_files != raw_files:
+            raise DiagnosticManifestError("bundle changed during verification")
+        return VerifiedDiagnosticBundle(directory, deepcopy(payloads), cells)
+    finally:
+        if directory_fd >= 0:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                pass
 
 
 def iter_countdown_thompson_diagnostic_cells(

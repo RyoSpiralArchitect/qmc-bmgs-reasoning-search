@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -157,12 +157,28 @@ def _preflight(output: Path) -> runner._Preflight:
         "status": "RUNTIME_QUALIFIED",
     }
     return runner._Preflight(
-        bundle=_FakeBundle(payloads, (cell,)),
+        bundle=_FakeBundle(payloads, (cell,), seal_digest="e" * 64),
         cells=(cell,),
         qualification=qualification,
         runtime_qualification_digest=sha256_json(qualification),
         build=_build_attestation(),
         output_path=output.resolve(),
+        publication_backend=runner._SYNTHETIC_PUBLICATION_BACKEND,
+        synthetic_fixture_digest=runner._SYNTHETIC_MICRO_FIXTURE_CONTENT_DIGEST,
+    )
+
+
+def _production_preflight(output: Path) -> runner._Preflight:
+    fixture = _preflight(output)
+    return replace(
+        fixture,
+        bundle=_FakeBundle(
+            fixture.bundle.payloads,  # type: ignore[attr-defined]
+            fixture.cells,
+            seal_digest=runner.EXPECTED_SEAL_DIGEST,
+        ),
+        publication_backend=runner._PUBLICATION_BACKEND_UNAVAILABLE,
+        synthetic_fixture_digest=None,
     )
 
 
@@ -184,6 +200,20 @@ class CountdownThompsonDiagnosticRunnerTests(unittest.TestCase):
         self.assertEqual(result["status"], "PASS")
         self.assertEqual(result["replay"]["stage1_generative"], "PASS")
         self.assertIn("no sealed outcome", result["claim_boundary"])
+
+    def test_deep_authorization_json_is_typed_runner_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            authorization = Path(temporary) / "authorization.json"
+            depth = 10_000
+            authorization.write_bytes(
+                b'{"nested":' + (b"[" * depth) + b"0" + (b"]" * depth) + b"}\n"
+            )
+            with self.assertRaisesRegex(
+                runner.DiagnosticRunnerError,
+                "authorization JSON nesting exceeds the supported depth",
+            ) as raised:
+                runner._strict_canonical_object(authorization)
+            self.assertIs(type(raised.exception), runner.DiagnosticRunnerError)
 
     def test_verified_bundle_binds_exact_240_cell_runner_schedule(self) -> None:
         repository = Path(runner.__file__).resolve().parents[3]
@@ -403,7 +433,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             root = Path(temporary)
             output = root / "artifact"
             authorization_path = root / "authorization.json"
-            preflight = _preflight(output)
+            preflight = _production_preflight(output)
             with patch.object(runner, "_fresh_preflight", return_value=preflight):
                 receipt = runner.write_countdown_thompson_diagnostic_execution_plan(
                     root / "bundle",
@@ -460,7 +490,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             output = root / "artifact"
             missing_ancestor = root / "missing"
             authorization_path = missing_ancestor / "reviews" / "authorization.json"
-            preflight = _preflight(output)
+            preflight = _production_preflight(output)
             with (
                 patch.object(runner, "_fresh_preflight", return_value=preflight),
                 patch.object(
@@ -497,7 +527,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             root = Path(temporary)
             output = root / "artifact"
             authorization_path = root / "authorization.json"
-            preflight = _preflight(output)
+            preflight = _production_preflight(output)
             original_fsync = runner.os.fsync
             call_count = 0
 
@@ -547,7 +577,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             root = Path(temporary)
             output = root / "artifact"
             authorization_path = root / "authorization.json"
-            preflight = _preflight(output)
+            preflight = _production_preflight(output)
             original_fsync = runner.os.fsync
             call_count = 0
 
@@ -585,7 +615,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             root = Path(temporary)
             output = root / "artifact"
             authorization_path = root / "authorization.json"
-            preflight = _preflight(output)
+            preflight = _production_preflight(output)
             original_fsync = runner.os.fsync
             call_count = 0
 
@@ -621,7 +651,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             root = Path(temporary)
             output = root / "artifact"
             authorization_path = root / "authorization.json"
-            preflight = _preflight(output)
+            preflight = _production_preflight(output)
             original_assert = runner._assert_directory_path_identity
             call_count = 0
 
@@ -666,7 +696,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 stolen = root / "stolen-authorization.json"
                 foreign = root / "foreign-authorization.json"
                 foreign.write_bytes(b"foreign\n")
-                preflight = _preflight(output)
+                preflight = _production_preflight(output)
                 original_assert = runner._assert_directory_path_identity
                 original_fsync = runner.os.fsync
                 root_identity = (root.stat().st_dev, root.stat().st_ino)
@@ -728,7 +758,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             root = Path(temporary)
             output = root / "artifact"
             authorization_path = root / "authorization.json"
-            payload = runner._authorization_payload(_preflight(output))
+            payload = runner._authorization_payload(_production_preflight(output))
             build = payload["runner_build_attestation"]
             self.assertIsInstance(build, dict)
             build["search_source_files"].pop("src/qmc_bmgs/__init__.py")
@@ -780,7 +810,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             root = Path(temporary)
             output = root / "artifact"
             authorization_path = root / "authorization.json"
-            preflight = _preflight(output)
+            preflight = _production_preflight(output)
             payload = runner._authorization_payload(preflight)
             authorization_path.write_bytes(runner._canonical_bytes(payload))
             symlink = root / "authorization-link.json"
@@ -1053,41 +1083,33 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     reviewed_authorization_revision=reviewed_tag,
                 )
 
-    def test_public_run_reports_preflight_refusal_as_not_run(self) -> None:
+    def test_public_run_fails_closed_before_inputs_without_atomic_backend(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             authorization = root / "authorization.json"
             authorization.write_bytes(runner._canonical_bytes({"invalid": True}))
-            with patch.object(
-                runner,
-                "_publish_run_artifact",
-                side_effect=AssertionError("execution must not start"),
-            ):
-                with self.assertRaises(runner.DiagnosticNotRunError):
-                    runner.run_countdown_thompson_diagnostic(
-                        root / "bundle",
-                        root / "output",
-                        authorization,
-                        "0" * 64,
-                        _AUTHORIZATION_REVISION,
-                        repository_root=root,
-                    )
-
             with (
                 patch.object(
                     runner,
                     "_load_and_match_authorization",
-                    side_effect=OSError("pre-outcome filesystem failure"),
+                    side_effect=AssertionError("inputs must not be opened"),
                 ),
                 patch.object(
                     runner,
                     "_publish_run_artifact",
                     side_effect=AssertionError("execution must not start"),
                 ),
+                patch.object(
+                    runner,
+                    "run_countdown_track_a_search",
+                    side_effect=AssertionError("diagnostic search must not run"),
+                ),
             ):
                 with self.assertRaisesRegex(
                     runner.DiagnosticNotRunError,
-                    "pre-outcome filesystem failure",
+                    "portable atomic directory creation authority is unavailable",
                 ):
                     runner.run_countdown_thompson_diagnostic(
                         root / "bundle",
@@ -1097,6 +1119,286 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         _AUTHORIZATION_REVISION,
                         repository_root=root,
                     )
+
+    def test_real_backend_preflight_cannot_enter_fixture_publisher(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            preflight = replace(
+                _preflight(root / "artifact"),
+                publication_backend=runner._PUBLICATION_BACKEND_UNAVAILABLE,
+            )
+            authorization = runner._authorization_payload(preflight)
+            with (
+                patch.object(
+                    runner,
+                    "_open_stable_directory",
+                    side_effect=AssertionError("output parent must not be opened"),
+                ),
+                patch.object(
+                    runner,
+                    "_publish_run_artifact_locked",
+                    side_effect=AssertionError("publisher body must not run"),
+                ),
+                patch.object(
+                    runner,
+                    "run_countdown_track_a_search",
+                    side_effect=AssertionError("diagnostic search must not run"),
+                ),
+                self.assertRaisesRegex(
+                    runner.DiagnosticNotRunError,
+                    "portable atomic directory creation authority is unavailable",
+                ),
+            ):
+                runner._publish_run_artifact(
+                    preflight,
+                    authorization,
+                    reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                    repository_root=root,
+                )
+
+    def test_retagged_diagnostic_shape_cannot_enter_fixture_publisher(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = _preflight(root / "artifact")
+            authorization = runner._authorization_payload(fixture)
+            preflight = replace(
+                fixture,
+                bundle=_FakeBundle(
+                    fixture.bundle.payloads,  # type: ignore[attr-defined]
+                    fixture.cells,
+                    seal_digest=runner.EXPECTED_SEAL_DIGEST,
+                ),
+                publication_backend=runner._SYNTHETIC_PUBLICATION_BACKEND,
+            )
+            with (
+                patch.object(
+                    runner,
+                    "_open_stable_directory",
+                    side_effect=AssertionError("output parent must not be opened"),
+                ),
+                patch.object(
+                    runner,
+                    "_publish_run_artifact_locked",
+                    side_effect=AssertionError("publisher body must not run"),
+                ),
+                patch.object(
+                    runner,
+                    "run_countdown_track_a_search",
+                    side_effect=AssertionError("diagnostic search must not run"),
+                ),
+                self.assertRaisesRegex(
+                    runner.DiagnosticNotRunError,
+                    "portable atomic directory creation authority is unavailable",
+                ),
+            ):
+                runner._publish_run_artifact(
+                    preflight,
+                    authorization,
+                    reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                    repository_root=root,
+                )
+
+    def test_unknown_synthetic_content_cannot_enter_fixture_publisher(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = _preflight(root / "artifact")
+            unexpected_cell = replace(fixture.cells[0], exploration_seed=1)
+            unexpected_payloads = json.loads(
+                json.dumps(fixture.bundle.payloads)  # type: ignore[attr-defined]
+            )
+            unexpected_payloads["preregistration.json"]["execution_matrix"][
+                "schedule_digest"
+            ] = sha256_json([unexpected_cell.to_dict()])
+            unexpected_bundle = _FakeBundle(
+                unexpected_payloads,
+                (unexpected_cell,),
+                seal_digest="e" * 64,
+            )
+            unexpected_digest = sha256_json(
+                {
+                    "cells": [unexpected_cell.to_dict()],
+                    "payloads": unexpected_bundle.payloads,
+                    "qualification": fixture.qualification,
+                    "runtime_qualification_digest": (
+                        fixture.runtime_qualification_digest
+                    ),
+                    "seal_digest": unexpected_bundle.seal_digest,
+                }
+            )
+            preflight = replace(
+                fixture,
+                bundle=unexpected_bundle,
+                cells=(unexpected_cell,),
+                synthetic_fixture_digest=unexpected_digest,
+            )
+            authorization = runner._authorization_payload_from_preflight(
+                preflight,
+                synthetic_fixture=True,
+            )
+            self.assertNotIn(
+                unexpected_digest,
+                runner._SYNTHETIC_FIXTURE_CONTENT_DIGESTS,
+            )
+            self.assertEqual(
+                authorization["synthetic_fixture_digest"],
+                unexpected_digest,
+            )
+            with (
+                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
+                patch.object(runner, "EXPECTED_SEAL_DIGEST", "f" * 64),
+                patch.object(
+                    runner,
+                    "_open_stable_directory",
+                    side_effect=AssertionError("output parent must not be opened"),
+                ) as open_directory,
+                patch.object(
+                    runner,
+                    "run_countdown_track_a_search",
+                    side_effect=AssertionError("diagnostic search must not run"),
+                ) as search,
+                self.assertRaisesRegex(
+                    runner.DiagnosticNotRunError,
+                    "portable atomic directory creation authority is unavailable",
+                ) as raised,
+            ):
+                runner._publish_run_artifact(
+                    preflight,
+                    authorization,
+                    reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                    repository_root=root,
+                )
+            self.assertIs(
+                type(raised.exception.__cause__), runner.DiagnosticRunnerError
+            )
+            self.assertIn(
+                "not a positively identified synthetic fixture",
+                str(raised.exception.__cause__),
+            )
+            open_directory.assert_not_called()
+            search.assert_not_called()
+
+    def test_adversarial_cell_iterable_cannot_enter_fixture_publisher(self) -> None:
+        class _Cells:
+            def __init__(self, cells: tuple[DiagnosticCell, ...]) -> None:
+                self.cells = cells
+                self.iterations = 0
+
+            def __len__(self) -> int:
+                return 1
+
+            def __iter__(self):  # type: ignore[no-untyped-def]
+                self.iterations += 1
+                return iter(self.cells)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = _preflight(root / "artifact")
+            authorization = runner._authorization_payload(fixture)
+            cells = _Cells(fixture.cells)
+            preflight = replace(fixture, cells=cells)  # type: ignore[arg-type]
+            with (
+                patch.object(
+                    runner,
+                    "_open_stable_directory",
+                    side_effect=AssertionError("output parent must not be opened"),
+                ),
+                patch.object(
+                    runner,
+                    "run_countdown_track_a_search",
+                    side_effect=AssertionError("diagnostic search must not run"),
+                ),
+                self.assertRaisesRegex(
+                    runner.DiagnosticNotRunError,
+                    "portable atomic directory creation authority is unavailable",
+                ),
+            ):
+                runner._publish_run_artifact(
+                    preflight,
+                    authorization,
+                    reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                    repository_root=root,
+                )
+            self.assertEqual(cells.iterations, 0)
+
+    def test_stateful_authorization_mapping_is_refused_before_output(self) -> None:
+        class _Authorization(dict[str, object]):
+            pass
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            preflight = _preflight(root / "artifact")
+            authorization = _Authorization(runner._authorization_payload(preflight))
+            with (
+                patch.object(
+                    runner,
+                    "_open_stable_directory",
+                    side_effect=AssertionError("output parent must not be opened"),
+                ),
+                patch.object(
+                    runner,
+                    "run_countdown_track_a_search",
+                    side_effect=AssertionError("diagnostic search must not run"),
+                ),
+                self.assertRaisesRegex(
+                    runner.DiagnosticNotRunError,
+                    "portable atomic directory creation authority is unavailable",
+                ),
+            ):
+                runner._publish_run_artifact(
+                    preflight,
+                    authorization,
+                    reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                    repository_root=root,
+                )
+
+    def test_split_output_path_is_refused_before_output_or_execution(self) -> None:
+        class _SplitPath:
+            def __init__(self, claimed: Path, actual_parent: Path) -> None:
+                self.claimed = claimed
+                self.actual_parent = actual_parent
+
+            @property
+            def name(self) -> str:
+                return self.claimed.name
+
+            @property
+            def parent(self) -> Path:
+                return self.actual_parent
+
+            def __str__(self) -> str:
+                return str(self.claimed)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = _preflight(root / "claimed" / "artifact")
+            authorization = runner._authorization_payload(fixture)
+            split = _SplitPath(fixture.output_path, root / "actual")
+            preflight = replace(fixture, output_path=split)  # type: ignore[arg-type]
+            with (
+                patch.object(
+                    runner,
+                    "_open_stable_directory",
+                    side_effect=AssertionError("output parent must not be opened"),
+                ),
+                patch.object(
+                    runner,
+                    "_execute_cell",
+                    side_effect=AssertionError("synthetic cell must not execute"),
+                ),
+                self.assertRaisesRegex(
+                    runner.DiagnosticNotRunError,
+                    "portable atomic directory creation authority is unavailable",
+                ),
+            ):
+                runner._publish_run_artifact(
+                    preflight,
+                    authorization,
+                    reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                    repository_root=root,
+                    _terminal_result=True,
+                )
+            self.assertFalse((root / "claimed" / "artifact").exists())
+            self.assertFalse((root / "actual" / "artifact").exists())
 
     def test_authorization_must_lie_outside_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1289,6 +1591,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 attempt = runner._Attempt(
                     directory=attempt_path,
                     directory_fd=attempt_fd,
+                    directory_identity=attempt_identity,
                     directory_name="attempt",
                     staging_path=attempt_path / "staging",
                     receipt_base={},
@@ -1381,6 +1684,367 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             finally:
                 runner.os.close(attempt_fd)
                 runner.os.close(parent_fd)
+
+    def test_terminal_receipt_generation_spans_final_name_proof(self) -> None:
+        terminal_cases = {
+            "COMMITTED": {
+                "receipts": {
+                    "pre_outcome.json": {"phase": "PRE_OUTCOME", "status": "PENDING"},
+                    "ready_to_commit.json": {
+                        "phase": "STARTED",
+                        "status": "PENDING",
+                    },
+                    "started.json": {"phase": "STARTED", "status": "PENDING"},
+                },
+                "target": "ready_to_commit.json",
+                "success": True,
+            },
+            "NOT_RUN": {
+                "receipts": {
+                    "not_run.json": {"phase": "PRE_OUTCOME", "status": "NOT_RUN"}
+                },
+                "target": "not_run.json",
+                "success": False,
+            },
+            "INVALID": {
+                "receipts": {"invalid.json": {"phase": "STARTED", "status": "INVALID"}},
+                "target": "invalid.json",
+                "success": False,
+            },
+        }
+        for terminal_status, case in terminal_cases.items():
+            with (
+                self.subTest(terminal_status=terminal_status),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                parent = Path(temporary).resolve()
+                attempt_path = parent / "attempt"
+                attempt_path.mkdir()
+                receipts = case["receipts"]
+                assert isinstance(receipts, dict)
+                for filename, payload in receipts.items():
+                    (attempt_path / filename).write_bytes(
+                        runner._canonical_bytes(payload)
+                    )
+                parent_fd = runner.os.open(parent, runner.os.O_RDONLY)
+                attempt_fd = runner.os.open(attempt_path, runner.os.O_RDONLY)
+                attempt_stat = attempt_path.stat()
+                attempt = runner._Attempt(
+                    directory=attempt_path,
+                    directory_fd=attempt_fd,
+                    directory_identity=(attempt_stat.st_dev, attempt_stat.st_ino),
+                    directory_name=attempt_path.name,
+                    staging_path=attempt_path / "staging",
+                    receipt_base={},
+                )
+                target = attempt_path / str(case["target"])
+                target_before = target.stat()
+                original_capture = runner._capture_attempt_member_generation
+                capture_calls = 0
+
+                def mutate_before_final_generation(
+                    observed_attempt: runner._Attempt,
+                    observed_parent_fd: int,
+                    filenames: tuple[str, ...],
+                ) -> runner._DirectoryMemberGeneration:
+                    nonlocal capture_calls
+                    capture_calls += 1
+                    if capture_calls == 2:
+                        original = target.read_bytes()
+                        replacement = bytes([original[0] ^ 1]) + original[1:]
+                        descriptor = runner.os.open(target, runner.os.O_WRONLY)
+                        try:
+                            runner.os.pwrite(descriptor, replacement, 0)
+                            runner.os.fsync(descriptor)
+                        finally:
+                            runner.os.close(descriptor)
+                    return original_capture(
+                        observed_attempt,
+                        observed_parent_fd,
+                        filenames,
+                    )
+
+                try:
+                    proof_kwargs: dict[str, object] = {}
+                    if case["success"]:
+                        proof_kwargs["success_receipts"] = receipts
+                    else:
+                        proof_kwargs["required_receipts"] = receipts
+                    with (
+                        patch.object(
+                            runner,
+                            "_capture_attempt_member_generation",
+                            side_effect=mutate_before_final_generation,
+                        ),
+                        self.assertRaisesRegex(
+                            runner.DiagnosticPublicationStateAmbiguousError,
+                            "terminal attempt receipt generation changed",
+                        ),
+                    ):
+                        runner._prove_attempt_terminal_authority(
+                            parent=parent,
+                            parent_fd=parent_fd,
+                            parent_stat=parent.stat(),
+                            attempt=attempt,
+                            **proof_kwargs,
+                        )
+                    target_after = target.stat()
+                    self.assertEqual(target_after.st_ino, target_before.st_ino)
+                    self.assertEqual(target_after.st_size, target_before.st_size)
+                finally:
+                    runner._close_descriptor_best_effort(attempt_fd)
+                    runner._close_descriptor_best_effort(parent_fd)
+
+    def test_committed_collective_rejects_alternating_exact_authorities(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary).resolve()
+            attempt_path = parent / "attempt"
+            artifact = parent / "artifact"
+            attempt_path.mkdir()
+            artifact.mkdir()
+            success_receipts = {
+                "pre_outcome.json": {"phase": "PRE_OUTCOME", "status": "PENDING"},
+                "ready_to_commit.json": {
+                    "phase": "STARTED",
+                    "status": "PENDING",
+                },
+                "started.json": {"phase": "STARTED", "status": "PENDING"},
+            }
+            for filename, payload in success_receipts.items():
+                (attempt_path / filename).write_bytes(runner._canonical_bytes(payload))
+            run_manifest = {"fixture": "collective-commit"}
+            records_bytes = b'{"fixture":"collective-commit"}\n'
+            commit_receipt = {"status": "COMMITTED"}
+            manifest = artifact / "manifest.json"
+            records = artifact / "records.jsonl"
+            commit = artifact / "commit.json"
+            manifest_exact = runner._canonical_bytes(run_manifest)
+            manifest_corrupt = bytes([manifest_exact[0] ^ 1]) + manifest_exact[1:]
+            manifest.write_bytes(manifest_exact)
+            records.write_bytes(records_bytes)
+            commit.write_bytes(runner._canonical_bytes(commit_receipt))
+            started = attempt_path / "started.json"
+            started_exact = started.read_bytes()
+            started_corrupt = bytes([started_exact[0] ^ 1]) + started_exact[1:]
+            started.write_bytes(started_corrupt)
+
+            def overwrite_same_extent(path: Path, payload: bytes) -> None:
+                self.assertEqual(path.stat().st_size, len(payload))
+                descriptor = runner.os.open(path, runner.os.O_WRONLY)
+                try:
+                    runner.os.pwrite(descriptor, payload, 0)
+                    runner.os.fsync(descriptor)
+                finally:
+                    runner.os.close(descriptor)
+
+            parent_fd = runner.os.open(parent, runner.os.O_RDONLY)
+            attempt_fd = runner.os.open(attempt_path, runner.os.O_RDONLY)
+            output_fd = runner.os.open(artifact, runner.os.O_RDONLY)
+            parent_stat = parent.stat()
+            attempt_stat = attempt_path.stat()
+            artifact_stat = artifact.stat()
+            attempt = runner._Attempt(
+                directory=attempt_path,
+                directory_fd=attempt_fd,
+                directory_identity=(attempt_stat.st_dev, attempt_stat.st_ino),
+                directory_name=attempt_path.name,
+                staging_path=attempt_path / "staging",
+                receipt_base={},
+            )
+            original_artifact_proof = runner._published_artifact_matches
+            original_attempt_proof = runner._prove_attempt_terminal_authority
+            artifact_proofs = 0
+            attempt_proofs = 0
+
+            def rotate_after_artifact_proof(
+                *args: object,
+                **kwargs: object,
+            ) -> bool:
+                nonlocal artifact_proofs
+                matches = original_artifact_proof(*args, **kwargs)
+                artifact_proofs += 1
+                if artifact_proofs == 1:
+                    self.assertTrue(matches)
+                    overwrite_same_extent(manifest, manifest_corrupt)
+                    overwrite_same_extent(started, started_exact)
+                return matches
+
+            def rotate_after_attempt_proof(
+                **kwargs: object,
+            ) -> bool:
+                nonlocal attempt_proofs
+                matches = original_attempt_proof(**kwargs)
+                attempt_proofs += 1
+                if attempt_proofs == 1:
+                    self.assertTrue(matches)
+                    overwrite_same_extent(started, started_corrupt)
+                    overwrite_same_extent(manifest, manifest_exact)
+                return matches
+
+            try:
+                with (
+                    patch.object(
+                        runner,
+                        "_published_artifact_matches",
+                        side_effect=rotate_after_artifact_proof,
+                    ),
+                    patch.object(
+                        runner,
+                        "_prove_attempt_terminal_authority",
+                        side_effect=rotate_after_attempt_proof,
+                    ),
+                    self.assertRaisesRegex(
+                        runner.DiagnosticPublicationStateAmbiguousError,
+                        "committed artifact and attempt changed",
+                    ),
+                ):
+                    runner._prove_committed_terminal_collective(
+                        parent=parent,
+                        parent_fd=parent_fd,
+                        parent_stat=parent_stat,
+                        attempt=attempt,
+                        success_receipts=success_receipts,
+                        output_name=artifact.name,
+                        output_fd=output_fd,
+                        staging_identity=(artifact_stat.st_dev, artifact_stat.st_ino),
+                        run_manifest=run_manifest,
+                        records_byte_count=len(records_bytes),
+                        records_sha256=runner._sha256_bytes(records_bytes),
+                        commit_receipt=commit_receipt,
+                    )
+                self.assertEqual(artifact_proofs, 2)
+                self.assertEqual(attempt_proofs, 1)
+                self.assertEqual(manifest.read_bytes(), manifest_exact)
+                self.assertEqual(started.read_bytes(), started_corrupt)
+            finally:
+                runner._close_descriptor_best_effort(output_fd)
+                runner._close_descriptor_best_effort(attempt_fd)
+                runner._close_descriptor_best_effort(parent_fd)
+
+    def test_invalid_collective_rejects_alternating_receipt_and_absence(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary).resolve()
+            attempt_path = parent / "attempt"
+            artifact = parent / "artifact"
+            attempt_path.mkdir()
+            artifact.mkdir()
+            invalid_receipt = {"phase": "STARTED", "status": "INVALID"}
+            invalid = attempt_path / "invalid.json"
+            invalid_exact = runner._canonical_bytes(invalid_receipt)
+            invalid_corrupt = bytes([invalid_exact[0] ^ 1]) + invalid_exact[1:]
+            invalid.write_bytes(invalid_exact)
+            run_manifest = {"fixture": "collective-invalid"}
+            records_bytes = b'{"fixture":"collective-invalid"}\n'
+            commit_receipt = {"status": "COMMITTED"}
+            (artifact / "manifest.json").write_bytes(
+                runner._canonical_bytes(run_manifest)
+            )
+            (artifact / "records.jsonl").write_bytes(records_bytes)
+            commit = artifact / "commit.json"
+            commit_bytes = runner._canonical_bytes(commit_receipt)
+            commit.write_bytes(commit_bytes)
+
+            def overwrite_same_extent(path: Path, payload: bytes) -> None:
+                self.assertEqual(path.stat().st_size, len(payload))
+                descriptor = runner.os.open(path, runner.os.O_WRONLY)
+                try:
+                    runner.os.pwrite(descriptor, payload, 0)
+                    runner.os.fsync(descriptor)
+                finally:
+                    runner.os.close(descriptor)
+
+            def create_durable(path: Path, payload: bytes, directory_fd: int) -> None:
+                path.write_bytes(payload)
+                descriptor = runner.os.open(path, runner.os.O_RDONLY)
+                try:
+                    runner.os.fsync(descriptor)
+                finally:
+                    runner.os.close(descriptor)
+                runner.os.fsync(directory_fd)
+
+            parent_fd = runner.os.open(parent, runner.os.O_RDONLY)
+            attempt_fd = runner.os.open(attempt_path, runner.os.O_RDONLY)
+            output_fd = runner.os.open(artifact, runner.os.O_RDONLY)
+            parent_stat = parent.stat()
+            attempt_stat = attempt_path.stat()
+            attempt = runner._Attempt(
+                directory=attempt_path,
+                directory_fd=attempt_fd,
+                directory_identity=(attempt_stat.st_dev, attempt_stat.st_ino),
+                directory_name=attempt_path.name,
+                staging_path=attempt_path / "staging",
+                receipt_base={},
+            )
+            original_attempt_proof = runner._prove_attempt_terminal_authority
+            original_content_identity = runner._published_artifact_content_identity
+            attempt_proofs = 0
+            absence_proofs = 0
+
+            def rotate_after_invalid_proof(**kwargs: object) -> bool:
+                nonlocal attempt_proofs
+                result = original_attempt_proof(**kwargs)
+                attempt_proofs += 1
+                if attempt_proofs == 1:
+                    overwrite_same_extent(invalid, invalid_corrupt)
+                    commit.unlink()
+                    runner.os.fsync(output_fd)
+                return result
+
+            def rotate_after_absence_proof(
+                *args: object,
+                **kwargs: object,
+            ) -> tuple[int, int] | None:
+                nonlocal absence_proofs
+                identity = original_content_identity(*args, **kwargs)
+                absence_proofs += 1
+                if absence_proofs == 1:
+                    self.assertIsNone(identity)
+                    create_durable(commit, commit_bytes, output_fd)
+                    overwrite_same_extent(invalid, invalid_exact)
+                return identity
+
+            try:
+                with (
+                    patch.object(
+                        runner,
+                        "_prove_attempt_terminal_authority",
+                        side_effect=rotate_after_invalid_proof,
+                    ),
+                    patch.object(
+                        runner,
+                        "_published_artifact_content_identity",
+                        side_effect=rotate_after_absence_proof,
+                    ),
+                    self.assertRaisesRegex(
+                        runner.DiagnosticPublicationStateAmbiguousError,
+                        "INVALID receipt and artifact absence changed",
+                    ),
+                ):
+                    runner._prove_invalid_terminal_collective(
+                        parent=parent,
+                        parent_fd=parent_fd,
+                        parent_stat=parent_stat,
+                        attempt=attempt,
+                        invalid_receipt=invalid_receipt,
+                        output_name=artifact.name,
+                        output_fd=output_fd,
+                        run_manifest=run_manifest,
+                        records_byte_count=len(records_bytes),
+                        records_sha256=runner._sha256_bytes(records_bytes),
+                        commit_receipt=commit_receipt,
+                    )
+                self.assertEqual(attempt_proofs, 2)
+                self.assertEqual(absence_proofs, 1)
+                self.assertEqual(invalid.read_bytes(), invalid_exact)
+                self.assertEqual(commit.read_bytes(), commit_bytes)
+            finally:
+                runner._close_descriptor_best_effort(output_fd)
+                runner._close_descriptor_best_effort(attempt_fd)
+                runner._close_descriptor_best_effort(parent_fd)
 
     @unittest.skipUnless(hasattr(runner.os, "mkfifo"), "POSIX FIFO required")
     def test_bounded_readers_reject_fifo_and_stat_open_fifo_race(self) -> None:
@@ -1801,6 +2465,95 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 "exact",
             )
 
+    def test_foreign_nondirectory_swap_is_restored_from_directory_tombstone(
+        self,
+    ) -> None:
+        for foreign_kind in ("file", "symlink", "fifo"):
+            with (
+                self.subTest(foreign_kind=foreign_kind),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                authority = root / "attempt"
+                foreign = root / "foreign-entry"
+                stolen = root / "stolen-attempt"
+                authority.mkdir()
+                (authority / "exact.txt").write_text("exact", encoding="utf-8")
+                if foreign_kind == "file":
+                    foreign.write_text("foreign", encoding="utf-8")
+                elif foreign_kind == "symlink":
+                    foreign.symlink_to("foreign-target")
+                else:
+                    runner.os.mkfifo(foreign)
+                foreign_stat = foreign.lstat()
+                foreign_identity = (foreign_stat.st_dev, foreign_stat.st_ino)
+                parent_fd = runner.os.open(root, runner.os.O_RDONLY)
+                authority_fd = runner.os.open(authority, runner.os.O_RDONLY)
+                authority_stat = authority.stat()
+                authority_identity = (
+                    authority_stat.st_dev,
+                    authority_stat.st_ino,
+                )
+                original_rename = runner._rename_noreplace_at
+                swapped = False
+
+                def swap_before_quarantine(
+                    source_directory_fd: int,
+                    source_name: str,
+                    destination_directory_fd: int,
+                    destination_name: str,
+                ) -> None:
+                    nonlocal swapped
+                    if source_name == authority.name and not swapped:
+                        swapped = True
+                        authority.rename(stolen)
+                        foreign.rename(authority)
+                    original_rename(
+                        source_directory_fd,
+                        source_name,
+                        destination_directory_fd,
+                        destination_name,
+                    )
+
+                try:
+                    with patch.object(
+                        runner,
+                        "_rename_noreplace_at",
+                        side_effect=swap_before_quarantine,
+                    ):
+                        tombstone = runner._quarantine_exact_directory_at(
+                            parent_fd,
+                            authority.name,
+                            authority_fd,
+                            authority_identity,
+                            label="attempt reservation",
+                        )
+                finally:
+                    runner.os.close(authority_fd)
+                    runner.os.close(parent_fd)
+
+                restored = authority.lstat()
+                self.assertTrue(swapped)
+                self.assertIsNone(tombstone)
+                self.assertEqual(
+                    (restored.st_dev, restored.st_ino),
+                    foreign_identity,
+                )
+                if foreign_kind == "file":
+                    self.assertEqual(
+                        authority.read_text(encoding="utf-8"),
+                        "foreign",
+                    )
+                elif foreign_kind == "symlink":
+                    self.assertTrue(authority.is_symlink())
+                    self.assertEqual(runner.os.readlink(authority), "foreign-target")
+                else:
+                    self.assertTrue(runner.stat.S_ISFIFO(restored.st_mode))
+                self.assertTrue((stolen / "exact.txt").is_file())
+                self.assertFalse(
+                    any(".revoked-" in path.name for path in root.iterdir())
+                )
+
     def test_foreign_staging_swap_is_not_deleted_by_finally_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1857,7 +2610,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             preflight = _preflight(output)
             authorization = runner._authorization_payload(preflight)
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
             ):
                 manifest = runner._publish_run_artifact(
@@ -1919,7 +2671,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             )
             self.assertFalse((Path(temporary) / ".artifact.publish-lock").exists())
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
             ):
                 with self.assertRaises(runner.DiagnosticNotRunError):
@@ -1929,6 +2680,96 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         reviewed_authorization_revision=(_AUTHORIZATION_REVISION),
                         repository_root=Path(temporary),
                     )
+
+    def test_fixture_bundle_properties_are_read_once_before_output(self) -> None:
+        class _OneReadBundle:
+            def __init__(self, source: _FakeBundle) -> None:
+                self._source = source
+                self.reads = {"cells": 0, "payloads": 0, "seal_digest": 0}
+
+            @property
+            def cells(self) -> tuple[DiagnosticCell, ...]:
+                self.reads["cells"] += 1
+                if self.reads["cells"] != 1:
+                    raise AssertionError("bundle cells were reread")
+                return self._source.cells
+
+            @property
+            def payloads(self) -> dict[str, object]:
+                self.reads["payloads"] += 1
+                if self.reads["payloads"] != 1:
+                    raise AssertionError("bundle payloads were reread")
+                return self._source.payloads
+
+            @property
+            def seal_digest(self) -> str:
+                self.reads["seal_digest"] += 1
+                if self.reads["seal_digest"] != 1:
+                    raise AssertionError("bundle seal was reread")
+                return self._source.seal_digest
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "artifact"
+            fixture = _preflight(output)
+            authorization = runner._authorization_payload(fixture)
+            bundle = _OneReadBundle(fixture.bundle)  # type: ignore[arg-type]
+            preflight = replace(fixture, bundle=bundle)
+            with patch.object(runner, "_recheck_source_closure"):
+                manifest = runner._publish_run_artifact(
+                    preflight,
+                    authorization,
+                    reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                    repository_root=Path(temporary),
+                )
+            self.assertEqual(manifest["cell_count"], 1)
+            self.assertEqual(
+                bundle.reads,
+                {"cells": 1, "payloads": 1, "seal_digest": 1},
+            )
+
+    def test_fixture_and_authorization_alias_mutation_cannot_reach_execution(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            frozen_authorization = json.loads(json.dumps(authorization))
+            original_open = runner._open_stable_directory
+            mutated = False
+
+            def mutate_after_snapshot(path: Path, label: str):  # type: ignore[no-untyped-def]
+                nonlocal mutated
+                if not mutated:
+                    mutated = True
+                    tasks = preflight.bundle._payloads["diagnostic_tasks.json"][  # type: ignore[attr-defined,index]
+                        "tasks"
+                    ]
+                    tasks[0]["target"] = -1
+                    authorization["artifact_id"] = "mutated-after-snapshot"
+                return original_open(path, label)
+
+            with (
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_open_stable_directory",
+                    side_effect=mutate_after_snapshot,
+                ),
+            ):
+                manifest = runner._publish_run_artifact(
+                    preflight,
+                    authorization,
+                    reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                    repository_root=Path(temporary),
+                )
+            self.assertTrue(mutated)
+            self.assertEqual(manifest["execution_authorization"], frozen_authorization)
+            lines = (output / "records.jsonl").read_bytes().splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(
+                json.loads(lines[0])["cell_id"], preflight.cells[0].cell_id
+            )
 
     def test_artifact_rename_syncs_both_source_and_destination_parents(
         self,
@@ -1971,7 +2812,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 original_fsync(descriptor)
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -2038,7 +2878,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     original_fsync(descriptor)
 
                 with (
-                    patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                     patch.object(runner, "_recheck_source_closure"),
                     patch.object(
                         runner,
@@ -2080,7 +2919,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             preflight = _preflight(output)
             authorization = runner._authorization_payload(preflight)
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -2123,7 +2961,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             self.assertEqual(invalid["phase"], "STARTED")
             self.assertEqual(invalid["status"], "INVALID")
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -2213,7 +3050,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         else "primary post-STARTED failure"
                     )
                     with (
-                        patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                         patch.object(runner, "_recheck_source_closure"),
                         patch.object(
                             runner.os,
@@ -2273,7 +3109,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     raise OSError("post-commit publication interruption")
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -2326,7 +3161,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         raise cleanup_error("synthetic recovery close failure")
 
                 with (
-                    patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                     patch.object(runner, "_recheck_source_closure"),
                     patch.object(
                         runner,
@@ -2390,9 +3224,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         expected_error = runner.DiagnosticPublicationStateAmbiguousError
 
                     with ExitStack() as stack:
-                        stack.enter_context(
-                            patch.object(runner, "EXPECTED_CELL_COUNT", 1)
-                        )
                         stack.enter_context(
                             patch.object(runner, "_recheck_source_closure")
                         )
@@ -2506,7 +3337,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     raise interruption("synthetic STARTED return interruption")
 
                 with (
-                    patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                     patch.object(runner, "_recheck_source_closure"),
                     patch.object(
                         runner,
@@ -2521,9 +3351,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         runner._publish_run_artifact(
                             preflight,
                             authorization,
-                            reviewed_authorization_revision=(
-                                _AUTHORIZATION_REVISION
-                            ),
+                            reviewed_authorization_revision=(_AUTHORIZATION_REVISION),
                             repository_root=root,
                         )
 
@@ -2554,7 +3382,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     raise interruption("synthetic publication return interruption")
 
                 with (
-                    patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                     patch.object(runner, "_recheck_source_closure"),
                     patch.object(
                         runner,
@@ -2569,9 +3396,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         runner._publish_run_artifact(
                             preflight,
                             authorization,
-                            reviewed_authorization_revision=(
-                                _AUTHORIZATION_REVISION
-                            ),
+                            reviewed_authorization_revision=(_AUTHORIZATION_REVISION),
                             repository_root=root,
                         )
 
@@ -2608,7 +3433,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 return identity
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -2669,7 +3493,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 return identity
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -2755,7 +3578,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 return identity
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -2835,7 +3657,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 return matches
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -2928,7 +3749,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 return matches
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -2943,7 +3763,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             ):
                 with self.assertRaisesRegex(
                     runner.DiagnosticPublicationStateAmbiguousError,
-                    "output parent identity drifted after STARTED",
+                    "run output parent path identity changed",
                 ):
                     runner._publish_run_artifact(
                         preflight,
@@ -2967,6 +3787,282 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 self.assertEqual(
                     {path.name for path in committed.iterdir()},
                     set(runner.ARTIFACT_FILENAMES),
+                )
+
+    def test_recovered_commit_requires_attempt_source_directory_barrier(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_attempt_write = runner._write_attempt_receipt
+            original_file_write = runner._write_canonical_file_noreplace_at
+            original_fsync = runner.os.fsync
+            attempt_fd = -1
+            commit_interrupted = False
+            source_barrier_failed = False
+
+            def capture_attempt(
+                attempt: runner._Attempt,
+                filename: str,
+                **kwargs: object,
+            ) -> dict[str, object]:
+                nonlocal attempt_fd
+                receipt = original_attempt_write(attempt, filename, **kwargs)
+                if filename == "ready_to_commit.json":
+                    attempt_fd = attempt.directory_fd
+                return receipt
+
+            def interrupt_after_commit(
+                directory_fd: int,
+                filename: str,
+                payload: dict[str, object],
+            ) -> tuple[int, int]:
+                nonlocal commit_interrupted
+                identity = original_file_write(directory_fd, filename, payload)
+                if filename == "commit.json" and not commit_interrupted:
+                    commit_interrupted = True
+                    raise OSError("synthetic post-commit recovery")
+                return identity
+
+            def fail_recovery_source_barrier(descriptor: int) -> None:
+                nonlocal source_barrier_failed
+                if (
+                    commit_interrupted
+                    and descriptor == attempt_fd
+                    and not source_barrier_failed
+                ):
+                    source_barrier_failed = True
+                    raise OSError("synthetic recovery source barrier failure")
+                original_fsync(descriptor)
+
+            with (
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_write_attempt_receipt",
+                    side_effect=capture_attempt,
+                ),
+                patch.object(
+                    runner,
+                    "_write_canonical_file_noreplace_at",
+                    side_effect=interrupt_after_commit,
+                ),
+                patch.object(
+                    runner.os,
+                    "fsync",
+                    side_effect=fail_recovery_source_barrier,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "attempt reservation durability is unproven",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertGreaterEqual(attempt_fd, 0)
+            self.assertTrue(commit_interrupted)
+            self.assertTrue(source_barrier_failed)
+            self.assertTrue((output / "commit.json").is_file())
+            self.assertFalse((attempt / "invalid.json").exists())
+            self.assertFalse((attempt / "not_run.json").exists())
+
+    def test_normal_commit_conflicting_invalid_receipt_is_never_committed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_attempt_write = runner._write_attempt_receipt
+            original_matches = runner._published_artifact_matches
+            captured_attempt: runner._Attempt | None = None
+            invalid_injected = False
+
+            def capture_attempt(
+                attempt: runner._Attempt,
+                filename: str,
+                **kwargs: object,
+            ) -> dict[str, object]:
+                nonlocal captured_attempt
+                receipt = original_attempt_write(attempt, filename, **kwargs)
+                if filename == "ready_to_commit.json":
+                    captured_attempt = attempt
+                return receipt
+
+            def inject_invalid_after_commit_match(
+                *args: object,
+                **kwargs: object,
+            ) -> bool:
+                nonlocal invalid_injected
+                matches = original_matches(*args, **kwargs)
+                if (
+                    matches
+                    and kwargs.get("commit_receipt") is not None
+                    and not invalid_injected
+                ):
+                    if captured_attempt is None:
+                        raise AssertionError("attempt was not captured")
+                    original_attempt_write(
+                        captured_attempt,
+                        "invalid.json",
+                        phase="STARTED",
+                        status="INVALID",
+                        reason="synthetic normal terminal conflict",
+                    )
+                    invalid_injected = True
+                return matches
+
+            with (
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_write_attempt_receipt",
+                    side_effect=capture_attempt,
+                ),
+                patch.object(
+                    runner,
+                    "_published_artifact_matches",
+                    side_effect=inject_invalid_after_commit_match,
+                ),
+            ):
+                with self.assertRaises(runner.DiagnosticPublicationStateAmbiguousError):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue(invalid_injected)
+            self.assertTrue((attempt / "invalid.json").is_file())
+            self.assertFalse((output / "commit.json").exists())
+            self.assertTrue(
+                any(
+                    path.name.startswith(".commit.json.revoked-")
+                    for path in output.iterdir()
+                )
+            )
+
+    def test_recovery_reason_terminal_conflict_revokes_commit(self) -> None:
+        for terminal_filename in ("invalid.json", "not_run.json"):
+            with (
+                self.subTest(terminal_filename=terminal_filename),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                output = root / "artifact"
+                preflight = _preflight(output)
+                authorization = runner._authorization_payload(preflight)
+                original_attempt_write = runner._write_attempt_receipt
+                original_file_write = runner._write_canonical_file_noreplace_at
+                captured_attempt: runner._Attempt | None = None
+
+                class TerminalWritingError(OSError):
+                    def __init__(self) -> None:
+                        super().__init__("synthetic post-commit terminal conflict")
+                        self.str_calls = 0
+
+                    def __str__(self) -> str:
+                        self.str_calls += 1
+                        if self.str_calls == 1:
+                            if captured_attempt is None:
+                                raise AssertionError("attempt was not captured")
+                            if terminal_filename == "invalid.json":
+                                original_attempt_write(
+                                    captured_attempt,
+                                    terminal_filename,
+                                    phase="STARTED",
+                                    status="INVALID",
+                                    reason=("synthetic post-commit terminal conflict"),
+                                )
+                            else:
+                                original_attempt_write(
+                                    captured_attempt,
+                                    terminal_filename,
+                                    phase="PRE_OUTCOME",
+                                    status="NOT_RUN",
+                                    reason=("synthetic post-commit terminal conflict"),
+                                )
+                        return "synthetic post-commit terminal conflict"
+
+                injected_error = TerminalWritingError()
+                commit_interrupted = False
+
+                def capture_attempt(
+                    attempt: runner._Attempt,
+                    filename: str,
+                    **kwargs: object,
+                ) -> dict[str, object]:
+                    nonlocal captured_attempt
+                    receipt = original_attempt_write(attempt, filename, **kwargs)
+                    if filename == "ready_to_commit.json":
+                        captured_attempt = attempt
+                    return receipt
+
+                def commit_then_raise(
+                    directory_fd: int,
+                    filename: str,
+                    payload: dict[str, object],
+                ) -> tuple[int, int]:
+                    nonlocal commit_interrupted
+                    identity = original_file_write(directory_fd, filename, payload)
+                    if filename == "commit.json" and not commit_interrupted:
+                        commit_interrupted = True
+                        raise injected_error
+                    return identity
+
+                with (
+                    patch.object(runner, "_recheck_source_closure"),
+                    patch.object(
+                        runner,
+                        "_write_attempt_receipt",
+                        side_effect=capture_attempt,
+                    ),
+                    patch.object(
+                        runner,
+                        "_write_canonical_file_noreplace_at",
+                        side_effect=commit_then_raise,
+                    ),
+                ):
+                    with self.assertRaisesRegex(
+                        runner.DiagnosticInvalidRunError,
+                        "synthetic post-commit terminal conflict",
+                    ):
+                        runner._publish_run_artifact(
+                            preflight,
+                            authorization,
+                            reviewed_authorization_revision=(_AUTHORIZATION_REVISION),
+                            repository_root=root,
+                        )
+
+                attempt = root / (
+                    f".artifact.attempt-{authorization['deterministic_digest']}"
+                )
+                self.assertTrue(commit_interrupted)
+                self.assertEqual(injected_error.str_calls, 1)
+                self.assertTrue((attempt / terminal_filename).is_file())
+                self.assertTrue((attempt / "invalid.json").is_file())
+                self.assertFalse((output / "commit.json").exists())
+                self.assertTrue(
+                    any(
+                        path.name.startswith(".commit.json.revoked-")
+                        for path in output.iterdir()
+                    )
                 )
 
     def test_commit_published_by_invalid_hook_is_reconciled_and_revoked(
@@ -3042,7 +4138,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 return receipt
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -3185,7 +4280,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 return receipt
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -3290,7 +4384,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 return identity
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -3328,7 +4421,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             )
             self.assertFalse((displaced_parent / "artifact" / "commit.json").exists())
 
-    def test_persistent_artifact_parent_sync_failure_revokes_commit_as_invalid(
+    def test_persistent_artifact_parent_sync_failure_revokes_commit_but_lock_is_ambiguous(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -3366,7 +4459,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 original_fsync(descriptor)
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -3376,8 +4468,8 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 patch.object(runner.os, "fsync", side_effect=fail_parent_sync),
             ):
                 with self.assertRaisesRegex(
-                    runner.DiagnosticInvalidRunError,
-                    "persistent artifact parent sync failure",
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "publication lock retirement",
                 ):
                     runner._publish_run_artifact(
                         preflight,
@@ -3442,7 +4534,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 original_fsync(descriptor)
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -3502,7 +4593,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 return identity
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -3560,7 +4650,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     runner.os.mkfifo(output / "manifest.json")
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -3611,7 +4700,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 return exact
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -3698,7 +4786,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 return original_scandir(path)
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -3772,7 +4859,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     swapped = True
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -3787,7 +4873,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             ):
                 with self.assertRaisesRegex(
                     runner.DiagnosticInvalidRunError,
-                    "published artifact changed before commit return",
+                    "public run artifact identity changed",
                 ):
                     runner._publish_run_artifact(
                         preflight,
@@ -3839,7 +4925,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     raise OSError("interrupted after successful rename")
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -3892,7 +4977,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 raise OSError("synthetic final rename ambiguity")
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -3933,7 +5017,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             authorized_parent.rename(displaced_parent)
             authorized_parent.symlink_to(redirected_parent, target_is_directory=True)
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
             ):
                 with self.assertRaisesRegex(
@@ -3964,7 +5047,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 return payload
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -4036,7 +5118,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 return original_write(attempt, filename, **kwargs)
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -4045,9 +5126,9 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 ),
                 patch.object(
                     runner,
-                    "_resolve_components",
-                    side_effect=AssertionError("sealed task must not be resolved"),
-                ) as resolve_components,
+                    "_execute_cell",
+                    side_effect=AssertionError("synthetic cell must not execute"),
+                ) as execute_cell,
             ):
                 with self.assertRaisesRegex(
                     runner.DiagnosticNotRunError,
@@ -4068,15 +5149,14 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             self.assertTrue((attempt / "not_run.json").is_file())
             self.assertFalse((attempt / "started.json").exists())
             self.assertFalse((attempt / "invalid.json").exists())
-            resolve_components.assert_not_called()
+            execute_cell.assert_not_called()
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
-                    "_resolve_components",
+                    "_execute_cell",
                     side_effect=AssertionError("spent attempt must not retry"),
-                ) as retry_components,
+                ) as retry_execute_cell,
             ):
                 with self.assertRaisesRegex(
                     runner.DiagnosticNotRunError,
@@ -4088,7 +5168,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         reviewed_authorization_revision=_AUTHORIZATION_REVISION,
                         repository_root=root,
                     )
-            retry_components.assert_not_called()
+            retry_execute_cell.assert_not_called()
 
     def test_started_appearing_during_not_run_write_reconciles_to_invalid(
         self,
@@ -4122,7 +5202,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 return original_write(attempt, filename, **kwargs)
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -4131,9 +5210,9 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 ),
                 patch.object(
                     runner,
-                    "_resolve_components",
-                    side_effect=AssertionError("sealed task must not be resolved"),
-                ) as resolve_components,
+                    "_execute_cell",
+                    side_effect=AssertionError("synthetic cell must not execute"),
+                ) as execute_cell,
             ):
                 with self.assertRaisesRegex(
                     runner.DiagnosticInvalidRunError,
@@ -4154,15 +5233,14 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             self.assertTrue((attempt / "started.json").is_file())
             self.assertTrue((attempt / "not_run.json").is_file())
             self.assertTrue((attempt / "invalid.json").is_file())
-            resolve_components.assert_not_called()
+            execute_cell.assert_not_called()
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
-                    "_resolve_components",
+                    "_execute_cell",
                     side_effect=AssertionError("spent attempt must not retry"),
-                ) as retry_components,
+                ) as retry_execute_cell,
             ):
                 with self.assertRaisesRegex(
                     runner.DiagnosticNotRunError,
@@ -4174,7 +5252,261 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         reviewed_authorization_revision=_AUTHORIZATION_REVISION,
                         repository_root=root,
                     )
-            retry_components.assert_not_called()
+            retry_execute_cell.assert_not_called()
+
+    def test_pre_outcome_not_run_reconciles_late_started_to_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_write = runner._write_attempt_receipt
+            late_started_written = False
+
+            def fail_pre_outcome_closure(*args: object, **kwargs: object) -> None:
+                raise OSError("synthetic PRE_OUTCOME closure failure")
+
+            def write_started_during_not_run(
+                attempt: runner._Attempt,
+                filename: str,
+                **kwargs: object,
+            ) -> dict[str, object]:
+                nonlocal late_started_written
+                receipt = original_write(attempt, filename, **kwargs)
+                if filename == "not_run.json" and not late_started_written:
+                    original_write(
+                        attempt,
+                        "started.json",
+                        phase="STARTED",
+                        status="PENDING",
+                    )
+                    late_started_written = True
+                return receipt
+
+            with (
+                patch.object(
+                    runner,
+                    "_recheck_source_closure",
+                    side_effect=fail_pre_outcome_closure,
+                ),
+                patch.object(
+                    runner,
+                    "_write_attempt_receipt",
+                    side_effect=write_started_during_not_run,
+                ),
+                patch.object(
+                    runner,
+                    "_execute_cell",
+                    side_effect=AssertionError("synthetic cell must not execute"),
+                ) as execute_cell,
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticInvalidRunError,
+                    "synthetic PRE_OUTCOME closure failure",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+
+            attempt = root / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue(late_started_written)
+            self.assertEqual(
+                {path.name for path in attempt.iterdir()},
+                {
+                    "invalid.json",
+                    "not_run.json",
+                    "pre_outcome.json",
+                    "started.json",
+                },
+            )
+            execute_cell.assert_not_called()
+
+    def test_attempt_rename_during_started_work_is_publication_ambiguous(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            attempt_name = f".artifact.attempt-{authorization['deterministic_digest']}"
+            attempt = root / attempt_name
+            displaced_attempt = root / "displaced-attempt"
+            moved = False
+
+            def move_attempt_then_fail(*args: object, **kwargs: object):
+                nonlocal moved
+                attempt.rename(displaced_attempt)
+                moved = True
+                raise OSError("synthetic attempt canonical-name loss")
+
+            with (
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_execute_cell",
+                    side_effect=move_attempt_then_fail,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "attempt reservation canonical identity",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                    )
+
+            self.assertTrue(moved)
+            self.assertFalse(attempt.exists())
+            self.assertTrue((displaced_attempt / "started.json").is_file())
+            self.assertFalse((displaced_attempt / "invalid.json").exists())
+            self.assertFalse((displaced_attempt / "not_run.json").exists())
+            self.assertFalse(output.exists())
+
+    def test_parent_replacement_mid_pre_outcome_is_publication_ambiguous(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            container = Path(temporary)
+            authorized_parent = container / "authorized"
+            replacement_parent = container / "replacement"
+            displaced_parent = container / "displaced"
+            authorized_parent.mkdir()
+            replacement_parent.mkdir()
+            (replacement_parent / "foreign.txt").write_text(
+                "preserve me",
+                encoding="utf-8",
+            )
+            output = authorized_parent / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            parent_replaced = False
+
+            def replace_parent_then_fail(*args: object, **kwargs: object) -> None:
+                nonlocal parent_replaced
+                authorized_parent.rename(displaced_parent)
+                replacement_parent.rename(authorized_parent)
+                parent_replaced = True
+                raise OSError("synthetic PRE_OUTCOME parent replacement")
+
+            with (
+                patch.object(
+                    runner,
+                    "_recheck_source_closure",
+                    side_effect=replace_parent_then_fail,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "output parent identity drifted after STARTED",
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=container,
+                    )
+
+            attempt = displaced_parent / (
+                f".artifact.attempt-{authorization['deterministic_digest']}"
+            )
+            self.assertTrue(parent_replaced)
+            self.assertEqual(
+                (authorized_parent / "foreign.txt").read_text(encoding="utf-8"),
+                "preserve me",
+            )
+            self.assertTrue((attempt / "pre_outcome.json").is_file())
+            self.assertFalse((attempt / "not_run.json").exists())
+            self.assertFalse((attempt / "invalid.json").exists())
+
+    def test_terminal_receipt_replacement_prevents_typed_terminal_status(
+        self,
+    ) -> None:
+        for terminal_filename in ("not_run.json", "invalid.json"):
+            with (
+                self.subTest(terminal_filename=terminal_filename),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                output = root / "artifact"
+                preflight = _preflight(output)
+                authorization = runner._authorization_payload(preflight)
+                original_write = runner._write_attempt_receipt
+                terminal_replaced = False
+
+                def replace_terminal_receipt(
+                    attempt: runner._Attempt,
+                    filename: str,
+                    **kwargs: object,
+                ) -> dict[str, object]:
+                    nonlocal terminal_replaced
+                    receipt = original_write(attempt, filename, **kwargs)
+                    if filename == terminal_filename and not terminal_replaced:
+                        terminal_path = attempt.directory / filename
+                        terminal_path.rename(attempt.directory / f".{filename}.stolen")
+                        terminal_path.write_bytes(b"foreign terminal receipt\n")
+                        terminal_replaced = True
+                    return receipt
+
+                with ExitStack() as stack:
+                    stack.enter_context(
+                        patch.object(
+                            runner,
+                            "_write_attempt_receipt",
+                            side_effect=replace_terminal_receipt,
+                        )
+                    )
+                    if terminal_filename == "not_run.json":
+                        stack.enter_context(
+                            patch.object(
+                                runner,
+                                "_recheck_source_closure",
+                                side_effect=OSError(
+                                    "synthetic PRE_OUTCOME terminal failure"
+                                ),
+                            )
+                        )
+                    else:
+                        stack.enter_context(
+                            patch.object(runner, "_recheck_source_closure")
+                        )
+                        stack.enter_context(
+                            patch.object(
+                                runner,
+                                "_execute_cell",
+                                side_effect=OSError(
+                                    "synthetic STARTED terminal failure"
+                                ),
+                            )
+                        )
+                    with self.assertRaisesRegex(
+                        runner.DiagnosticPublicationStateAmbiguousError,
+                        "terminal attempt receipt drifted",
+                    ):
+                        runner._publish_run_artifact(
+                            preflight,
+                            authorization,
+                            reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                            repository_root=root,
+                        )
+
+                attempt = root / (
+                    f".artifact.attempt-{authorization['deterministic_digest']}"
+                )
+                self.assertTrue(terminal_replaced)
+                self.assertEqual(
+                    (attempt / terminal_filename).read_bytes(),
+                    b"foreign terminal receipt\n",
+                )
+                self.assertTrue((attempt / f".{terminal_filename}.stolen").is_file())
 
     def test_parent_drift_after_typed_started_transition_is_ambiguous(
         self,
@@ -4209,7 +5541,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 )
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -4218,9 +5549,9 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 ),
                 patch.object(
                     runner,
-                    "_resolve_components",
-                    side_effect=AssertionError("sealed task must not be resolved"),
-                ) as resolve_components,
+                    "_execute_cell",
+                    side_effect=AssertionError("synthetic cell must not execute"),
+                ) as execute_cell,
             ):
                 with self.assertRaisesRegex(
                     runner.DiagnosticPublicationStateAmbiguousError,
@@ -4239,7 +5570,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             self.assertTrue((attempt / "started.json").is_file())
             self.assertTrue((attempt / "invalid.json").is_file())
             self.assertFalse((attempt / "not_run.json").exists())
-            resolve_components.assert_not_called()
+            execute_cell.assert_not_called()
 
     def test_started_receipt_observation_failure_is_publication_ambiguous(
         self,
@@ -4270,7 +5601,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 return original_read(directory_fd, filename)
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -4284,7 +5614,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 ),
                 patch.object(
                     runner,
-                    "_resolve_components",
+                    "_execute_cell",
                     side_effect=AssertionError("search must not start"),
                 ),
             ):
@@ -4356,7 +5686,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     else None
                 )
                 with (
-                    patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                     patch.object(
                         runner,
                         "_recheck_source_closure",
@@ -4405,7 +5734,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 else:
                     self.assertTrue((attempt / "started.json").is_file())
 
-    def test_pre_outcome_closure_failure_is_not_run_and_never_resolves_task(
+    def test_pre_outcome_closure_failure_is_not_run_and_never_executes_cell(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -4421,8 +5750,8 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 ),
                 patch.object(
                     runner,
-                    "_resolve_components",
-                    side_effect=AssertionError("sealed task must not be resolved"),
+                    "_execute_cell",
+                    side_effect=AssertionError("synthetic cell must not execute"),
                 ),
             ):
                 with self.assertRaisesRegex(
@@ -4527,7 +5856,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     else "primary PRE_OUTCOME failure"
                 )
                 with (
-                    patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                     patch.object(runner, "_recheck_source_closure"),
                     patch.object(
                         runner.os,
@@ -4599,6 +5927,22 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 def fail_transition(attempt: runner._Attempt) -> dict[str, object]:
                     nonlocal attempt_fd, close_armed
                     attempt_fd = attempt.directory_fd
+                    if expected_error is runner.DiagnosticInvalidRunError:
+                        runner._write_attempt_receipt(
+                            attempt,
+                            "invalid.json",
+                            phase="STARTED",
+                            status="INVALID",
+                            reason="primary STARTED transition status",
+                        )
+                    elif expected_error is runner.DiagnosticNotRunError:
+                        runner._write_attempt_receipt(
+                            attempt,
+                            "not_run.json",
+                            phase="PRE_OUTCOME",
+                            status="NOT_RUN",
+                            reason="primary STARTED transition status",
+                        )
                     close_armed = True
                     raise expected_error("primary STARTED transition status")
 
@@ -4609,7 +5953,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         raise OSError("synthetic cleanup close failure")
 
                 with (
-                    patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                     patch.object(runner, "_recheck_source_closure"),
                     patch.object(
                         runner.os,
@@ -4674,7 +6017,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                             raise error_type("synthetic attempt rename ambiguity")
 
                     with (
-                        patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                         patch.object(runner, "_recheck_source_closure"),
                         patch.object(
                             runner,
@@ -4733,8 +6075,8 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 ),
                 patch.object(
                     runner,
-                    "_resolve_components",
-                    side_effect=AssertionError("sealed task must not be resolved"),
+                    "_execute_cell",
+                    side_effect=AssertionError("synthetic cell must not execute"),
                 ),
             ):
                 with self.assertRaisesRegex(
@@ -4779,7 +6121,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 original_fsync(descriptor)
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner.os,
@@ -4788,7 +6129,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 ),
                 patch.object(
                     runner,
-                    "_resolve_components",
+                    "_execute_cell",
                     side_effect=AssertionError("search must not start"),
                 ),
             ):
@@ -4825,7 +6166,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 original_fsync(descriptor)
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(runner.os, "fsync", side_effect=fail_after_attempt_rename),
             ):
@@ -4846,7 +6186,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             self.assertTrue((output / "commit.json").is_file())
             self.assertFalse((root / ".artifact.publish-lock").exists())
 
-    def test_post_barrier_attempt_swap_is_durably_not_run(self) -> None:
+    def test_post_barrier_attempt_swap_is_publication_ambiguous(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             output = root / "artifact"
@@ -4876,7 +6216,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 original_fsync(descriptor)
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner.os,
@@ -4885,13 +6224,13 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 ),
                 patch.object(
                     runner,
-                    "_resolve_components",
+                    "_execute_cell",
                     side_effect=AssertionError("search must not start"),
                 ),
             ):
                 with self.assertRaisesRegex(
-                    runner.DiagnosticNotRunError,
-                    "durably absent",
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "durably lost after publication",
                 ):
                     runner._publish_run_artifact(
                         preflight,
@@ -4926,7 +6265,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 original_fsync(descriptor)
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner.os,
@@ -4935,8 +6273,8 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 ),
                 patch.object(
                     runner,
-                    "_resolve_components",
-                    side_effect=AssertionError("sealed task must not be resolved"),
+                    "_execute_cell",
+                    side_effect=AssertionError("synthetic cell must not execute"),
                 ),
             ):
                 with self.assertRaisesRegex(
@@ -4973,7 +6311,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 original_fsync(descriptor)
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner.os,
@@ -4982,8 +6319,8 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 ),
                 patch.object(
                     runner,
-                    "_resolve_components",
-                    side_effect=AssertionError("sealed task must not be resolved"),
+                    "_execute_cell",
+                    side_effect=AssertionError("synthetic cell must not execute"),
                 ),
             ):
                 with self.assertRaisesRegex(
@@ -5040,7 +6377,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 return original_closure(descriptor, expected)
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(runner.os, "fsync", side_effect=fail_parent_sync),
                 patch.object(
@@ -5050,8 +6386,8 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 ),
                 patch.object(
                     runner,
-                    "_resolve_components",
-                    side_effect=AssertionError("sealed task must not be resolved"),
+                    "_execute_cell",
+                    side_effect=AssertionError("synthetic cell must not execute"),
                 ),
             ):
                 with self.assertRaisesRegex(
@@ -5093,7 +6429,6 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 return original_stat(path, *args, **kwargs)
 
             with (
-                patch.object(runner, "EXPECTED_CELL_COUNT", 1),
                 patch.object(runner, "_recheck_source_closure"),
                 patch.object(
                     runner,
@@ -5251,6 +6586,419 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         reviewed_authorization_revision=(_AUTHORIZATION_REVISION),
                         repository_root=root,
                     )
+
+    def test_lock_retirement_precedes_all_terminal_attempt_proofs(self) -> None:
+        for terminal_status in ("COMMITTED", "NOT_RUN", "INVALID"):
+            with (
+                self.subTest(terminal_status=terminal_status),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                output = root / "artifact"
+                preflight = _preflight(output)
+                authorization = runner._authorization_payload(preflight)
+                attempt_name = (
+                    f".artifact.attempt-{authorization['deterministic_digest']}"
+                )
+                displaced_name = f"{attempt_name}.displaced"
+                original_quarantine = runner._quarantine_exact_directory_at
+                original_execute = runner._execute_cell
+                displaced = False
+
+                def recheck_source(*_args: object, **_kwargs: object) -> None:
+                    if terminal_status == "NOT_RUN":
+                        raise OSError("synthetic PRE_OUTCOME failure")
+
+                def execute_cell(*args: object, **kwargs: object):
+                    if terminal_status == "INVALID":
+                        raise OSError("synthetic STARTED failure")
+                    return original_execute(*args, **kwargs)
+
+                def retire_then_displace(
+                    *args: object,
+                    **kwargs: object,
+                ) -> str | None:
+                    nonlocal displaced
+                    tombstone = original_quarantine(*args, **kwargs)
+                    if kwargs.get("label") == "publication lock":
+                        parent_fd = args[0]
+                        runner.os.rename(
+                            attempt_name,
+                            displaced_name,
+                            src_dir_fd=parent_fd,
+                            dst_dir_fd=parent_fd,
+                        )
+                        runner.os.fsync(parent_fd)
+                        displaced = True
+                    return tombstone
+
+                with (
+                    patch.object(
+                        runner,
+                        "_recheck_source_closure",
+                        side_effect=recheck_source,
+                    ),
+                    patch.object(
+                        runner,
+                        "_execute_cell",
+                        side_effect=execute_cell,
+                    ),
+                    patch.object(
+                        runner,
+                        "_quarantine_exact_directory_at",
+                        side_effect=retire_then_displace,
+                    ),
+                    self.assertRaisesRegex(
+                        runner.DiagnosticPublicationStateAmbiguousError,
+                        "attempt reservation canonical identity",
+                    ),
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                        _terminal_result=True,
+                    )
+                self.assertTrue(displaced)
+                self.assertFalse((root / attempt_name).exists())
+                self.assertTrue((root / displaced_name).is_dir())
+
+    def test_not_run_rejects_started_injected_during_lock_retirement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_quarantine = runner._quarantine_exact_directory_at
+            original_attempt_write = runner._write_attempt_receipt
+            captured_attempt: runner._Attempt | None = None
+            started_injected = False
+
+            def capture_not_run(
+                attempt: runner._Attempt,
+                filename: str,
+                **kwargs: object,
+            ) -> dict[str, object]:
+                nonlocal captured_attempt
+                receipt = original_attempt_write(attempt, filename, **kwargs)
+                if filename == "not_run.json":
+                    captured_attempt = attempt
+                return receipt
+
+            def retire_then_start(
+                *args: object,
+                **kwargs: object,
+            ) -> str | None:
+                nonlocal started_injected
+                tombstone = original_quarantine(*args, **kwargs)
+                if kwargs.get("label") == "publication lock":
+                    if captured_attempt is None:
+                        raise AssertionError("NOT_RUN attempt was not captured")
+                    original_attempt_write(
+                        captured_attempt,
+                        "started.json",
+                        phase="STARTED",
+                        status="PENDING",
+                    )
+                    runner.os.fsync(captured_attempt.directory_fd)
+                    started_injected = True
+                return tombstone
+
+            with (
+                patch.object(
+                    runner,
+                    "_recheck_source_closure",
+                    side_effect=OSError("synthetic PRE_OUTCOME failure"),
+                ),
+                patch.object(
+                    runner,
+                    "_write_attempt_receipt",
+                    side_effect=capture_not_run,
+                ),
+                patch.object(
+                    runner,
+                    "_quarantine_exact_directory_at",
+                    side_effect=retire_then_start,
+                ),
+                self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "forbidden terminal attempt entry exists: started.json",
+                ),
+            ):
+                runner._publish_run_artifact(
+                    preflight,
+                    authorization,
+                    reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                    repository_root=root,
+                )
+            self.assertTrue(started_injected)
+
+    def test_commit_rejects_invalid_injected_during_lock_retirement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            original_quarantine = runner._quarantine_exact_directory_at
+            original_attempt_write = runner._write_attempt_receipt
+            captured_attempt: runner._Attempt | None = None
+            invalid_injected = False
+
+            def capture_ready(
+                attempt: runner._Attempt,
+                filename: str,
+                **kwargs: object,
+            ) -> dict[str, object]:
+                nonlocal captured_attempt
+                receipt = original_attempt_write(attempt, filename, **kwargs)
+                if filename == "ready_to_commit.json":
+                    captured_attempt = attempt
+                return receipt
+
+            def retire_then_invalidate(
+                *args: object,
+                **kwargs: object,
+            ) -> str | None:
+                nonlocal invalid_injected
+                tombstone = original_quarantine(*args, **kwargs)
+                if kwargs.get("label") == "publication lock":
+                    if captured_attempt is None:
+                        raise AssertionError("COMMITTED attempt was not captured")
+                    original_attempt_write(
+                        captured_attempt,
+                        "invalid.json",
+                        phase="STARTED",
+                        status="INVALID",
+                        reason="synthetic post-lock terminal conflict",
+                    )
+                    runner.os.fsync(captured_attempt.directory_fd)
+                    invalid_injected = True
+                return tombstone
+
+            with (
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_write_attempt_receipt",
+                    side_effect=capture_ready,
+                ),
+                patch.object(
+                    runner,
+                    "_quarantine_exact_directory_at",
+                    side_effect=retire_then_invalidate,
+                ),
+                self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "committed artifact or attempt conflicted after lock retirement",
+                ),
+            ):
+                runner._publish_run_artifact(
+                    preflight,
+                    authorization,
+                    reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                    repository_root=root,
+                    _terminal_result=True,
+                )
+            self.assertTrue(invalid_injected)
+            self.assertTrue((output / "commit.json").is_file())
+
+    def test_terminal_namespace_signature_spans_final_name_proof(self) -> None:
+        for terminal_status in ("COMMITTED", "NOT_RUN"):
+            with (
+                self.subTest(terminal_status=terminal_status),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                output = root / "artifact"
+                preflight = _preflight(output)
+                authorization = runner._authorization_payload(preflight)
+                original_quarantine = runner._quarantine_exact_directory_at
+                original_assert_identity = runner._assert_attempt_entry_identity
+                original_attempt_write = runner._write_attempt_receipt
+                lock_retired = False
+                identity_calls_after_retirement = 0
+                receipt_injected = False
+
+                def observe_retirement(
+                    *args: object,
+                    **kwargs: object,
+                ) -> str | None:
+                    nonlocal lock_retired
+                    tombstone = original_quarantine(*args, **kwargs)
+                    if kwargs.get("label") == "publication lock":
+                        lock_retired = True
+                    return tombstone
+
+                def inject_during_final_identity(
+                    attempt: runner._Attempt,
+                    parent_fd: int,
+                ) -> None:
+                    nonlocal identity_calls_after_retirement, receipt_injected
+                    if lock_retired:
+                        identity_calls_after_retirement += 1
+                        if (
+                            identity_calls_after_retirement == 2
+                            and not receipt_injected
+                        ):
+                            if terminal_status == "COMMITTED":
+                                original_attempt_write(
+                                    attempt,
+                                    "invalid.json",
+                                    phase="STARTED",
+                                    status="INVALID",
+                                    reason="synthetic final-name conflict",
+                                )
+                            else:
+                                original_attempt_write(
+                                    attempt,
+                                    "started.json",
+                                    phase="STARTED",
+                                    status="PENDING",
+                                )
+                            runner.os.fsync(attempt.directory_fd)
+                            receipt_injected = True
+                    original_assert_identity(attempt, parent_fd)
+
+                recheck_effect = (
+                    OSError("synthetic PRE_OUTCOME failure")
+                    if terminal_status == "NOT_RUN"
+                    else None
+                )
+                with (
+                    patch.object(
+                        runner,
+                        "_recheck_source_closure",
+                        side_effect=recheck_effect,
+                    ),
+                    patch.object(
+                        runner,
+                        "_quarantine_exact_directory_at",
+                        side_effect=observe_retirement,
+                    ),
+                    patch.object(
+                        runner,
+                        "_assert_attempt_entry_identity",
+                        side_effect=inject_during_final_identity,
+                    ),
+                    self.assertRaisesRegex(
+                        runner.DiagnosticPublicationStateAmbiguousError,
+                        (
+                            "terminal COMMITTED authority is ambiguous"
+                            "|forbidden terminal attempt entry exists: started.json"
+                        ),
+                    ),
+                ):
+                    runner._publish_run_artifact(
+                        preflight,
+                        authorization,
+                        reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                        repository_root=root,
+                        _terminal_result=True,
+                    )
+                self.assertTrue(receipt_injected)
+
+    def test_lock_retirement_ambiguity_supersedes_terminal_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+
+            with (
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_quarantine_exact_directory_at",
+                    side_effect=runner.DiagnosticPublicationStateAmbiguousError(
+                        "foreign publication lock could not be restored"
+                    ),
+                ),
+                self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "foreign-entry restoration are ambiguous",
+                ),
+            ):
+                runner._publish_run_artifact(
+                    preflight,
+                    authorization,
+                    reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                    repository_root=root,
+                    _terminal_result=True,
+                )
+            self.assertTrue((root / ".artifact.publish-lock").is_dir())
+
+    def test_attempt_name_is_reobserved_after_final_canonical_open(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "artifact"
+            preflight = _preflight(output)
+            authorization = runner._authorization_payload(preflight)
+            attempt_name = f".artifact.attempt-{authorization['deterministic_digest']}"
+            displaced_name = f"{attempt_name}.post-open-displaced"
+            original_quarantine = runner._quarantine_exact_directory_at
+            original_open = runner.os.open
+            lock_retired = False
+            displaced = False
+
+            def observe_retirement(
+                *args: object,
+                **kwargs: object,
+            ) -> str | None:
+                nonlocal lock_retired
+                tombstone = original_quarantine(*args, **kwargs)
+                if kwargs.get("label") == "publication lock":
+                    lock_retired = True
+                return tombstone
+
+            def open_then_displace(
+                path: object,
+                flags: int,
+                mode: int = 0o777,
+                *,
+                dir_fd: int | None = None,
+            ) -> int:
+                nonlocal displaced
+                descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+                if (
+                    lock_retired
+                    and not displaced
+                    and path == attempt_name
+                    and dir_fd is not None
+                ):
+                    runner.os.rename(
+                        attempt_name,
+                        displaced_name,
+                        src_dir_fd=dir_fd,
+                        dst_dir_fd=dir_fd,
+                    )
+                    runner.os.fsync(dir_fd)
+                    displaced = True
+                return descriptor
+
+            with (
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "_quarantine_exact_directory_at",
+                    side_effect=observe_retirement,
+                ),
+                patch.object(runner.os, "open", side_effect=open_then_displace),
+                self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "attempt reservation canonical identity is unavailable",
+                ),
+            ):
+                runner._publish_run_artifact(
+                    preflight,
+                    authorization,
+                    reviewed_authorization_revision=_AUTHORIZATION_REVISION,
+                    repository_root=root,
+                    _terminal_result=True,
+                )
+            self.assertTrue(displaced)
+            self.assertFalse((root / attempt_name).exists())
+            self.assertTrue((root / displaced_name).is_dir())
 
     def test_lock_cleanup_restores_a_foreign_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

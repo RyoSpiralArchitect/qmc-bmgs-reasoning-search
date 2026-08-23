@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import tempfile
+import time
 import unittest
 from collections import Counter, defaultdict
 from copy import deepcopy
@@ -434,20 +436,87 @@ class CountdownThompsonDiagnosticManifestTests(unittest.TestCase):
                 repository_root=self.root / "not-a-repository"
             )
 
+    def test_strict_parser_types_deep_recursion_as_manifest_invalid(self) -> None:
+        nesting = 10_000
+        raw = b'{"nested":' + (b"[" * nesting) + b"0" + (b"]" * nesting) + b"}\n"
+        with self.assertRaises(module.DiagnosticManifestError) as raised:
+            module._parse_canonical_object(raw, filename="deep.json")
+        self.assertIs(type(raised.exception), module.DiagnosticManifestError)
+
+    def test_public_verifier_types_deep_parseable_bundle_as_manifest_invalid(
+        self,
+    ) -> None:
+        deep_bundle = self.root / "deep-parseable-bundle"
+        payloads = deepcopy(self.payloads)
+        nested: object = 0
+        for _ in range(1_050):
+            nested = [nested]
+        analysis_payload = payloads["analysis.json"]
+        analysis_payload["claim_boundary"] = nested
+        analysis_core = {
+            key: value
+            for key, value in analysis_payload.items()
+            if key != "deterministic_digest"
+        }
+        analysis_payload["deterministic_digest"] = sha256_json(analysis_core)
+
+        preregistration = payloads["preregistration.json"]
+        preregistration["component_manifest_digests"]["analysis.json"] = (
+            analysis_payload["deterministic_digest"]
+        )
+        preregistration_core = {
+            key: value
+            for key, value in preregistration.items()
+            if key != "deterministic_digest"
+        }
+        preregistration["deterministic_digest"] = sha256_json(preregistration_core)
+        payloads[module.SEAL_FILENAME] = module._seal(
+            {filename: payloads[filename] for filename in module.COMPONENT_FILENAMES}
+        )
+
+        deep_bundle.mkdir()
+        for filename in module.BUNDLE_FILENAMES:
+            (deep_bundle / filename).write_bytes(
+                module._canonical_bytes(payloads[filename])
+            )
+        self.assertIs(
+            type(
+                module._parse_canonical_object(
+                    (deep_bundle / "analysis.json").read_bytes(),
+                    filename="analysis.json",
+                )
+            ),
+            dict,
+        )
+
+        with (
+            patch.object(
+                module,
+                "build_countdown_thompson_diagnostic_payloads",
+                return_value=deepcopy(self.payloads),
+            ),
+            self.assertRaises(module.DiagnosticManifestError) as raised,
+        ):
+            module.verify_countdown_thompson_diagnostic_bundle(
+                deep_bundle,
+                repository_root=self.repository_root,
+            )
+        self.assertIs(type(raised.exception), module.DiagnosticManifestError)
+
     def test_verifier_rejects_directory_change_during_verification(self) -> None:
         changed = self.root / "changed-during-verify"
         shutil.copytree(self.bundle, changed)
-        original = module._read_bundle_snapshot
+        original = module._read_bundle_snapshot_from_descriptor
         calls = 0
 
         def read_then_change(
-            directory: Path,
+            directory_fd: int,
         ) -> tuple[dict[str, dict[str, object]], dict[str, bytes]]:
             nonlocal calls
-            result = original(directory)
+            result = original(directory_fd)
             calls += 1
             if calls == 1:
-                path = directory / "analysis.json"
+                path = changed / "analysis.json"
                 path.write_bytes(b" " + path.read_bytes())
             return result
 
@@ -457,13 +526,140 @@ class CountdownThompsonDiagnosticManifestTests(unittest.TestCase):
                 "build_countdown_thompson_diagnostic_payloads",
                 return_value=deepcopy(self.payloads),
             ),
-            patch.object(module, "_read_bundle_snapshot", side_effect=read_then_change),
+            patch.object(
+                module,
+                "_read_bundle_snapshot_from_descriptor",
+                side_effect=read_then_change,
+            ),
         ):
             with self.assertRaises(module.DiagnosticManifestError):
                 module.verify_countdown_thompson_diagnostic_bundle(
                     changed,
                     repository_root=self.repository_root,
                 )
+
+    @unittest.skipUnless(
+        os.name == "posix" and hasattr(os, "mkfifo"),
+        "POSIX FIFO semantics required",
+    )
+    def test_snapshot_rejects_regular_to_fifo_race_without_blocking(self) -> None:
+        raced = self.root / "regular-to-fifo-race"
+        shutil.copytree(self.bundle, raced)
+        target = raced / module.BUNDLE_FILENAMES[0]
+        original_open = module.os.open
+        swapped = False
+
+        def swap_before_member_open(
+            path: object,
+            flags: int,
+            *args: object,
+            **kwargs: object,
+        ) -> int:
+            nonlocal swapped
+            if path == target.name and kwargs.get("dir_fd") is not None and not swapped:
+                self.assertTrue(flags & os.O_NONBLOCK)
+                target.unlink()
+                os.mkfifo(target)
+                swapped = True
+            return original_open(path, flags, *args, **kwargs)
+
+        started = time.monotonic()
+        with (
+            patch.object(module.os, "open", side_effect=swap_before_member_open),
+            self.assertRaisesRegex(
+                module.DiagnosticManifestError,
+                "changed before descriptor acquisition",
+            ),
+        ):
+            module._read_bundle_snapshot(raced)
+        self.assertTrue(swapped)
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_snapshot_rejects_oversize_member_before_open(self) -> None:
+        oversized = self.root / "oversized-member"
+        shutil.copytree(self.bundle, oversized)
+        target = oversized / module.BUNDLE_FILENAMES[0]
+        with target.open("wb") as handle:
+            handle.truncate(module._BUNDLE_MEMBER_BYTE_CAP_V1 + 1)
+        original_open = module.os.open
+        member_opened = False
+
+        def observe_member_open(
+            path: object,
+            flags: int,
+            *args: object,
+            **kwargs: object,
+        ) -> int:
+            nonlocal member_opened
+            if path == target.name and kwargs.get("dir_fd") is not None:
+                member_opened = True
+            return original_open(path, flags, *args, **kwargs)
+
+        with (
+            patch.object(module.os, "open", side_effect=observe_member_open),
+            self.assertRaisesRegex(
+                module.DiagnosticManifestError,
+                "exceeds the v1 byte cap",
+            ),
+        ):
+            module._read_bundle_snapshot(oversized)
+        self.assertFalse(member_opened)
+
+    def test_snapshot_rejects_rotating_member_generations(self) -> None:
+        rotating = self.root / "rotating-member-generations"
+        shutil.copytree(self.bundle, rotating)
+        early = rotating / module.BUNDLE_FILENAMES[0]
+        late = rotating / "analysis.json"
+        early_exact = early.read_bytes()
+        late_exact = late.read_bytes()
+        early_foreign = bytes([early_exact[0] ^ 1]) + early_exact[1:]
+        late_foreign = bytes([late_exact[0] ^ 1]) + late_exact[1:]
+        self.assertEqual(len(early_foreign), len(early_exact))
+        self.assertEqual(len(late_foreign), len(late_exact))
+        late.write_bytes(late_foreign)
+        original_read = module._read_bounded_bundle_member_at
+        rotated = False
+
+        def rotate_before_late_read(
+            directory_fd: int,
+            filename: str,
+        ) -> bytes:
+            nonlocal rotated
+            if filename == late.name and not rotated:
+                early.write_bytes(early_foreign)
+                late.write_bytes(late_exact)
+                rotated = True
+            return original_read(directory_fd, filename)
+
+        with (
+            patch.object(
+                module,
+                "_read_bounded_bundle_member_at",
+                side_effect=rotate_before_late_read,
+            ),
+            self.assertRaisesRegex(
+                module.DiagnosticManifestError,
+                "bundle member generation changed during snapshot",
+            ),
+        ):
+            module._read_bundle_snapshot(rotating)
+        self.assertTrue(rotated)
+        self.assertEqual(early.read_bytes(), early_foreign)
+        self.assertEqual(late.read_bytes(), late_exact)
+
+    def test_verifier_fails_closed_without_descriptor_bound_platform(self) -> None:
+        with (
+            patch.object(module.os, "name", "nt"),
+            self.assertRaisesRegex(
+                module.DiagnosticManifestError,
+                "descriptor-bound bundle verification is unavailable",
+            ) as raised,
+        ):
+            module.verify_countdown_thompson_diagnostic_bundle(
+                self.bundle,
+                repository_root=self.repository_root,
+            )
+        self.assertIs(type(raised.exception), module.DiagnosticManifestError)
 
     def test_verifier_rejects_rehashed_semantic_tamper(self) -> None:
         tampered = self.root / "tampered"

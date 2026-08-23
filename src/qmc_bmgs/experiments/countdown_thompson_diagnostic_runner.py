@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Manifest-driven, fail-closed runner for the sealed Countdown Thompson diagnostic.
+"""Fail-closed controls for the sealed Countdown Thompson diagnostic.
 
-Planning performs every outcome-blind preflight and writes a separate,
-canonical authorization candidate.  Running recomputes those checks from the
-bundle *path*, requires the reviewed authorization bytes and digest, and only
-then constructs the first diagnostic task or proposal.  ``--self-test`` uses a
-non-diagnostic fixture and never reads the sealed task cohort.
+Planning retains the outcome-blind authorization protocol, but production
+execution is disabled until artifact creation and descriptor authority share
+one atomic primitive.  The legacy directory publisher is reachable only by
+explicit non-diagnostic fixtures.  ``--self-test`` never reads the sealed task
+cohort.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import time
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, NoReturn, Sequence
+from typing import Any, Callable, Mapping, NoReturn, Sequence
 
 from qmc_bmgs.benchmarks.countdown import CountdownTask
 from qmc_bmgs.experiments import countdown_thompson_diagnostic_analysis as analysis
@@ -132,6 +132,38 @@ _MAX_COMMIT_FILE_BYTES = 1 * 1024 * 1024
 _MAX_CONTROL_FILE_BYTES = 8 * 1024 * 1024
 _MAX_ATTESTED_FILE_BYTES = 512 * 1024 * 1024
 _MAX_RECORDS_FILE_BYTES = 256 * 1024 * 1024
+_PUBLICATION_BACKEND_UNAVAILABLE = "atomic_directory_authority_unavailable/v1"
+_SYNTHETIC_PUBLICATION_BACKEND = "nondiagnostic_fixture_mkdir_open/v1"
+_SYNTHETIC_AUTHORIZATION_SCHEMA_VERSION = (
+    "qmc-bmgs-countdown-thompson-nondiagnostic-fixture-authorization/v1"
+)
+_SYNTHETIC_AUTHORIZATION_SCOPE = "one_nondiagnostic_synthetic_protocol_fixture"
+_SYNTHETIC_AUTHORIZATION_CLAIM_BOUNDARY = (
+    "synthetic protocol fixture authority only; no diagnostic execution, "
+    "inferential, superiority, retry, or locked-evaluation authority is granted"
+)
+_PUBLICATION_BACKEND_REFUSAL = (
+    "diagnostic execution is fail-closed because portable atomic directory "
+    "creation authority is unavailable; no attempt or outcome was opened"
+)
+_SYNTHETIC_RUN_CLAIM_BOUNDARY = (
+    "non-diagnostic synthetic protocol fixture; byte replay exercises plumbing "
+    "only, telemetry is volatile, and no diagnostic, inferential, superiority, "
+    "or locked-evaluation authority is granted"
+)
+_SYNTHETIC_EXPECTED_CELL_COUNT = 1
+_SYNTHETIC_MICRO_FIXTURE_CONTENT_DIGEST = (
+    "7e64bbfb3443f25dbb0fcbe6fe326711c5df81e9718333013207930d4c0be9a8"
+)
+_SYNTHETIC_HANDSHAKE_FIXTURE_CONTENT_DIGEST = (
+    "ef097f451fe6af90ca7b8d6451c00ce959f8e54521a1fd148da2a25cb1683755"
+)
+_SYNTHETIC_FIXTURE_CONTENT_DIGESTS = frozenset(
+    {
+        _SYNTHETIC_MICRO_FIXTURE_CONTENT_DIGEST,
+        _SYNTHETIC_HANDSHAKE_FIXTURE_CONTENT_DIGEST,
+    }
+)
 
 
 class DiagnosticRunnerError(RuntimeError):
@@ -148,6 +180,12 @@ class DiagnosticInvalidRunError(DiagnosticRunnerError):
 
 class DiagnosticPublicationStateAmbiguousError(DiagnosticRunnerError):
     """Publication durability and exact rollback could not be established."""
+
+
+class _PublicationLockRetirementAmbiguousError(
+    DiagnosticPublicationStateAmbiguousError
+):
+    """The transient publication lock could not be retired without ambiguity."""
 
 
 class _ExactPublicationRevokedError(DiagnosticRunnerError):
@@ -212,9 +250,14 @@ def _strict_canonical_object(path: Path) -> tuple[dict[str, Any], bytes]:
     )
     try:
         parsed = strict_json_loads(raw.decode("utf-8"))
+        canonical = _canonical_bytes(parsed) if type(parsed) is dict else None
+    except RecursionError as error:
+        raise DiagnosticRunnerError(
+            "authorization JSON nesting exceeds the supported depth"
+        ) from error
     except (UnicodeDecodeError, TraceValidationError) as error:
         raise DiagnosticRunnerError("authorization is not strict UTF-8 JSON") from error
-    if type(parsed) is not dict or raw != _canonical_bytes(parsed):
+    if type(parsed) is not dict or raw != canonical:
         raise DiagnosticRunnerError("authorization is not a canonical JSON object")
     return parsed, raw
 
@@ -226,6 +269,7 @@ def _stable_stat_signature(observed: os.stat_result) -> tuple[int, ...]:
         observed.st_dev,
         observed.st_ino,
         observed.st_mode,
+        observed.st_nlink,
         observed.st_size,
         observed.st_mtime_ns,
         observed.st_ctime_ns,
@@ -361,6 +405,45 @@ def _assert_directory_path_identity(
         opened.st_ino,
     ) != identity:
         raise DiagnosticRunnerError(f"{label} path identity changed")
+
+
+_PathGeneration = tuple[tuple[str, tuple[int, ...]], ...]
+
+
+def _capture_canonical_path_generation(
+    path: Path,
+    expected_identity: tuple[int, int],
+    label: str,
+) -> _PathGeneration:
+    """Capture non-symlink ancestor generations for one canonical directory."""
+
+    candidate = Path(os.path.abspath(os.fspath(path)))
+    try:
+        if candidate.resolve() != candidate:
+            raise DiagnosticPublicationStateAmbiguousError(
+                f"{label} now traverses a symlink"
+            )
+        current = Path(candidate.anchor)
+        captured: list[tuple[str, tuple[int, ...]]] = []
+        captured.append((os.fspath(current), _stable_stat_signature(os.lstat(current))))
+        for component in candidate.parts[1:]:
+            current /= component
+            captured.append(
+                (os.fspath(current), _stable_stat_signature(os.lstat(current)))
+            )
+        opened = os.stat(candidate, follow_symlinks=False)
+    except DiagnosticPublicationStateAmbiguousError:
+        raise
+    except (OSError, RuntimeError) as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"{label} path generation is unavailable"
+        ) from error
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or (opened.st_dev, opened.st_ino) != expected_identity
+    ):
+        raise DiagnosticPublicationStateAmbiguousError(f"{label} path identity changed")
+    return tuple(captured)
 
 
 def _rename_noreplace_at(
@@ -1264,27 +1347,635 @@ def _assert_started_output_parent_identity(
         ) from error
 
 
-def _retry_committed_artifact_durability(
+def _assert_attempt_entry_identity(
+    attempt: _Attempt,
+    parent_fd: int,
+) -> None:
+    """Require the canonical attempt name to retain the reserved directory."""
+
+    named_fd = -1
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        named_fd = os.open(attempt.directory_name, flags, dir_fd=parent_fd)
+        named = os.fstat(named_fd)
+        pinned = os.fstat(attempt.directory_fd)
+        named_after = os.stat(
+            attempt.directory_name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+    except BaseException as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "attempt reservation canonical identity is unavailable"
+        ) from error
+    finally:
+        _close_descriptor_best_effort(named_fd)
+    if (
+        not stat.S_ISDIR(named.st_mode)
+        or not stat.S_ISDIR(pinned.st_mode)
+        or not stat.S_ISDIR(named_after.st_mode)
+        or (named.st_dev, named.st_ino) != attempt.directory_identity
+        or (pinned.st_dev, pinned.st_ino) != attempt.directory_identity
+        or (named_after.st_dev, named_after.st_ino) != attempt.directory_identity
+    ):
+        raise DiagnosticPublicationStateAmbiguousError(
+            "attempt reservation canonical identity drifted after publication"
+        )
+
+
+_MemberGeneration = tuple[tuple[str, tuple[int, ...] | None], ...]
+_DirectoryMemberGeneration = tuple[tuple[int, ...], _MemberGeneration]
+_NamedDirectoryGeneration = tuple[
+    tuple[int, ...] | None,
+    _DirectoryMemberGeneration | None,
+]
+_TerminalCollectiveGeneration = tuple[
+    _PathGeneration,
+    tuple[int, ...],
+    _DirectoryMemberGeneration,
+    _NamedDirectoryGeneration,
+    _DirectoryMemberGeneration | None,
+]
+
+
+def _optional_entry_signature_at(
+    directory_fd: int,
+    filename: str,
+    label: str,
+) -> tuple[int, ...] | None:
+    try:
+        return _stable_stat_signature(
+            os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+        )
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"{label} entry generation is unavailable: {filename}"
+        ) from error
+
+
+def _capture_directory_member_generation(
+    directory_fd: int,
+    filenames: Sequence[str],
+    label: str,
+) -> _DirectoryMemberGeneration:
+    """Capture one directory plus selected member non-ABA generations."""
+
+    ordered = tuple(sorted(set(filenames)))
+    if len(ordered) != len(tuple(filenames)) or any(
+        not filename or Path(filename).name != filename for filename in ordered
+    ):
+        raise DiagnosticRunnerError(f"{label} generation member set is invalid")
+    try:
+        before_directory = os.fstat(directory_fd)
+        if not stat.S_ISDIR(before_directory.st_mode):
+            raise DiagnosticPublicationStateAmbiguousError(
+                f"{label} is not a directory"
+            )
+        directory_signature = _stable_stat_signature(before_directory)
+        members = tuple(
+            (
+                filename,
+                _optional_entry_signature_at(directory_fd, filename, label),
+            )
+            for filename in ordered
+        )
+        after_directory = os.fstat(directory_fd)
+        reobserved = tuple(
+            (
+                filename,
+                _optional_entry_signature_at(directory_fd, filename, label),
+            )
+            for filename in ordered
+        )
+    except DiagnosticPublicationStateAmbiguousError:
+        raise
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"{label} generation could not be captured"
+        ) from error
+    if (
+        _stable_stat_signature(after_directory) != directory_signature
+        or reobserved != members
+    ):
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"{label} changed during generation capture"
+        )
+    return directory_signature, members
+
+
+def _capture_attempt_member_generation(
+    attempt: _Attempt,
+    parent_fd: int,
+    filenames: Sequence[str],
+) -> _DirectoryMemberGeneration:
+    _assert_attempt_entry_identity(attempt, parent_fd)
+    generation = _capture_directory_member_generation(
+        attempt.directory_fd,
+        filenames,
+        "terminal attempt",
+    )
+    _assert_attempt_entry_identity(attempt, parent_fd)
+    return generation
+
+
+def _capture_named_directory_generation(
+    parent_fd: int,
+    name: str,
+    filenames: Sequence[str],
+    label: str,
+    *,
+    expected_identity: tuple[int, int] | None = None,
+) -> _NamedDirectoryGeneration:
+    """Capture a named entry and selected children when it is a directory."""
+
+    entry_signature = _optional_entry_signature_at(parent_fd, name, label)
+    if entry_signature is None:
+        if expected_identity is not None:
+            raise DiagnosticPublicationStateAmbiguousError(
+                f"{label} disappeared during generation capture"
+            )
+        return None, None
+    if not stat.S_ISDIR(entry_signature[2]):
+        if expected_identity is not None:
+            raise DiagnosticPublicationStateAmbiguousError(
+                f"{label} is not the expected directory"
+            )
+        return entry_signature, None
+    descriptor = -1
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
+        opened = os.fstat(descriptor)
+        opened_signature = _stable_stat_signature(opened)
+        if opened_signature != entry_signature:
+            raise DiagnosticPublicationStateAmbiguousError(
+                f"{label} changed before descriptor acquisition"
+            )
+        if (
+            expected_identity is not None
+            and (
+                opened.st_dev,
+                opened.st_ino,
+            )
+            != expected_identity
+        ):
+            raise DiagnosticPublicationStateAmbiguousError(f"{label} identity changed")
+        generation = _capture_directory_member_generation(
+            descriptor,
+            filenames,
+            label,
+        )
+        final_signature = _optional_entry_signature_at(parent_fd, name, label)
+        if final_signature != entry_signature:
+            raise DiagnosticPublicationStateAmbiguousError(
+                f"{label} changed during generation capture"
+            )
+        return entry_signature, generation
+    except DiagnosticPublicationStateAmbiguousError:
+        raise
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"{label} generation could not be captured"
+        ) from error
+    finally:
+        _close_descriptor_best_effort(descriptor)
+
+
+def _capture_terminal_collective_generation(
     *,
     parent: Path,
     parent_fd: int,
     parent_stat: os.stat_result,
+    attempt: _Attempt,
+    attempt_filenames: Sequence[str],
     output_name: str,
+    output_filenames: Sequence[str],
+    output_fd: int = -1,
+    expected_output_identity: tuple[int, int] | None = None,
+) -> _TerminalCollectiveGeneration:
+    """Capture path, attempt, public artifact, and pinned artifact generations."""
+
+    parent_identity = (parent_stat.st_dev, parent_stat.st_ino)
+    path_generation = _capture_canonical_path_generation(
+        parent,
+        parent_identity,
+        "run output parent",
+    )
+    try:
+        parent_signature = _stable_stat_signature(os.fstat(parent_fd))
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "terminal authority parent descriptor is unavailable"
+        ) from error
+    attempt_generation = _capture_attempt_member_generation(
+        attempt,
+        parent_fd,
+        attempt_filenames,
+    )
+    public_generation = _capture_named_directory_generation(
+        parent_fd,
+        output_name,
+        output_filenames,
+        "public run artifact",
+        expected_identity=expected_output_identity,
+    )
+    pinned_generation = (
+        _capture_directory_member_generation(
+            output_fd,
+            output_filenames,
+            "pinned run artifact",
+        )
+        if output_fd >= 0
+        else None
+    )
+    try:
+        final_parent_signature = _stable_stat_signature(os.fstat(parent_fd))
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "terminal authority parent descriptor is unavailable"
+        ) from error
+    final_path_generation = _capture_canonical_path_generation(
+        parent,
+        parent_identity,
+        "run output parent",
+    )
+    if (
+        final_parent_signature != parent_signature
+        or final_path_generation != path_generation
+    ):
+        raise DiagnosticPublicationStateAmbiguousError(
+            "terminal authority parent changed during generation capture"
+        )
+    return (
+        path_generation,
+        parent_signature,
+        attempt_generation,
+        public_generation,
+        pinned_generation,
+    )
+
+
+def _attempt_success_closure_matches(
+    attempt: _Attempt,
+    success_receipts: Mapping[str, Mapping[str, Any]],
+) -> bool:
+    """Prove the exact three-receipt success namespace on the pinned attempt."""
+
+    expected_filenames = {
+        "pre_outcome.json",
+        "ready_to_commit.json",
+        "started.json",
+    }
+    if set(success_receipts) != expected_filenames:
+        raise DiagnosticRunnerError("attempt success receipt set is invalid")
+    try:
+        before = os.fstat(attempt.directory_fd)
+        directory_signature = _stable_stat_signature(before)
+        if not _directory_has_exact_entries(
+            attempt.directory_fd,
+            expected_filenames,
+        ):
+            return False
+        for filename, payload in success_receipts.items():
+            if (
+                _exact_regular_file_identity_at(
+                    attempt.directory_fd,
+                    filename,
+                    _canonical_bytes(payload),
+                    label=f"attempt success receipt {filename}",
+                )
+                is None
+            ):
+                return False
+        if not _directory_has_exact_entries(
+            attempt.directory_fd,
+            expected_filenames,
+        ):
+            return False
+        after = os.fstat(attempt.directory_fd)
+    except DiagnosticPublicationStateAmbiguousError:
+        raise
+    except BaseException as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "attempt success closure observation failed"
+        ) from error
+    return (
+        stat.S_ISDIR(before.st_mode)
+        and _stable_stat_signature(after) == directory_signature
+        and (after.st_dev, after.st_ino) == attempt.directory_identity
+    )
+
+
+def _prove_attempt_terminal_authority(
+    *,
+    parent: Path,
+    parent_fd: int,
+    parent_stat: os.stat_result,
+    attempt: _Attempt,
+    required_receipts: Mapping[str, Mapping[str, Any]] | None = None,
+    forbidden_entries: Sequence[str] | None = None,
+    success_receipts: Mapping[str, Mapping[str, Any]] | None = None,
+) -> bool:
+    """Barrier and re-prove parent, reservation name, and optional success closure."""
+
+    tracked_receipts: dict[str, bytes] = {}
+    for receipt_set in (required_receipts, success_receipts):
+        for filename, payload in (receipt_set or {}).items():
+            canonical = _canonical_bytes(payload)
+            if filename in tracked_receipts and tracked_receipts[filename] != canonical:
+                raise DiagnosticRunnerError(
+                    f"terminal attempt receipt expectation conflicts: {filename}"
+                )
+            tracked_receipts[filename] = canonical
+    _assert_started_output_parent_identity(parent, parent_fd, parent_stat)
+    _assert_attempt_entry_identity(attempt, parent_fd)
+    try:
+        os.fsync(attempt.directory_fd)
+        terminal_namespace_signature = _stable_stat_signature(
+            os.fstat(attempt.directory_fd)
+        )
+    except BaseException as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "attempt reservation durability is unproven"
+        ) from error
+    receipt_generation = _capture_attempt_member_generation(
+        attempt,
+        parent_fd,
+        tuple(tracked_receipts),
+    )
+    if required_receipts is not None:
+        try:
+            receipt_namespace_signature = _stable_stat_signature(
+                os.fstat(attempt.directory_fd)
+            )
+            for filename, payload in required_receipts.items():
+                if (
+                    _exact_regular_file_identity_at(
+                        attempt.directory_fd,
+                        filename,
+                        _canonical_bytes(payload),
+                        label=f"terminal attempt receipt {filename}",
+                    )
+                    is None
+                ):
+                    raise DiagnosticPublicationStateAmbiguousError(
+                        f"terminal attempt receipt drifted: {filename}"
+                    )
+            for filename in forbidden_entries or ():
+                if Path(filename).name != filename or not filename:
+                    raise DiagnosticRunnerError(
+                        "forbidden terminal attempt entry name is invalid"
+                    )
+                try:
+                    os.stat(
+                        filename,
+                        dir_fd=attempt.directory_fd,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    pass
+                except OSError as error:
+                    raise DiagnosticPublicationStateAmbiguousError(
+                        f"forbidden terminal attempt entry could not be "
+                        f"observed: {filename}"
+                    ) from error
+                else:
+                    raise DiagnosticPublicationStateAmbiguousError(
+                        f"forbidden terminal attempt entry exists: {filename}"
+                    )
+            if (
+                _stable_stat_signature(os.fstat(attempt.directory_fd))
+                != receipt_namespace_signature
+            ):
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "terminal attempt receipt namespace changed during proof"
+                )
+        except DiagnosticPublicationStateAmbiguousError:
+            raise
+        except BaseException as error:
+            raise DiagnosticPublicationStateAmbiguousError(
+                "terminal attempt receipt observation failed"
+            ) from error
+    success_matches = True
+    if success_receipts is not None:
+        success_matches = _attempt_success_closure_matches(
+            attempt,
+            success_receipts,
+        )
+    _assert_attempt_entry_identity(attempt, parent_fd)
+    _assert_started_output_parent_identity(parent, parent_fd, parent_stat)
+    try:
+        terminal_namespace_after = _stable_stat_signature(
+            os.fstat(attempt.directory_fd)
+        )
+    except BaseException as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "terminal attempt namespace final observation failed"
+        ) from error
+    if terminal_namespace_after != terminal_namespace_signature:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "terminal attempt namespace changed during collective proof"
+        )
+    if (
+        _capture_attempt_member_generation(
+            attempt,
+            parent_fd,
+            tuple(tracked_receipts),
+        )
+        != receipt_generation
+    ):
+        raise DiagnosticPublicationStateAmbiguousError(
+            "terminal attempt receipt generation changed during collective proof"
+        )
+    return success_matches
+
+
+def _prove_committed_terminal_collective(
+    *,
+    parent: Path,
+    parent_fd: int,
+    parent_stat: os.stat_result,
+    attempt: _Attempt,
+    success_receipts: Mapping[str, Mapping[str, Any]],
+    output_name: str,
+    output_fd: int,
     staging_identity: tuple[int, int],
     run_manifest: Mapping[str, Any],
     records_byte_count: int,
     records_sha256: str,
     commit_receipt: Mapping[str, Any],
 ) -> bool:
+    """Prove committed artifact and attempt in one non-ABA generation."""
+
+    artifact_filenames = ("commit.json", "manifest.json", "records.jsonl")
+    attempt_filenames = tuple(success_receipts)
+    before_generation = _capture_terminal_collective_generation(
+        parent=parent,
+        parent_fd=parent_fd,
+        parent_stat=parent_stat,
+        attempt=attempt,
+        attempt_filenames=attempt_filenames,
+        output_name=output_name,
+        output_filenames=artifact_filenames,
+        output_fd=output_fd,
+        expected_output_identity=staging_identity,
+    )
+    if not _published_artifact_matches(
+        parent_fd,
+        output_name,
+        staging_identity,
+        run_manifest,
+        records_byte_count=records_byte_count,
+        records_sha256=records_sha256,
+        commit_receipt=commit_receipt,
+    ):
+        return False
+    if not _prove_attempt_terminal_authority(
+        parent=parent,
+        parent_fd=parent_fd,
+        parent_stat=parent_stat,
+        attempt=attempt,
+        success_receipts=success_receipts,
+    ):
+        return False
+    if not _published_artifact_matches(
+        parent_fd,
+        output_name,
+        staging_identity,
+        run_manifest,
+        records_byte_count=records_byte_count,
+        records_sha256=records_sha256,
+        commit_receipt=commit_receipt,
+    ):
+        return False
+    after_generation = _capture_terminal_collective_generation(
+        parent=parent,
+        parent_fd=parent_fd,
+        parent_stat=parent_stat,
+        attempt=attempt,
+        attempt_filenames=attempt_filenames,
+        output_name=output_name,
+        output_filenames=artifact_filenames,
+        output_fd=output_fd,
+        expected_output_identity=staging_identity,
+    )
+    if after_generation != before_generation:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "committed artifact and attempt changed during collective proof"
+        )
+    return True
+
+
+def _prove_invalid_terminal_collective(
+    *,
+    parent: Path,
+    parent_fd: int,
+    parent_stat: os.stat_result,
+    attempt: _Attempt,
+    invalid_receipt: Mapping[str, Any],
+    output_name: str,
+    output_fd: int,
+    run_manifest: Mapping[str, Any],
+    records_byte_count: int,
+    records_sha256: str,
+    commit_receipt: Mapping[str, Any],
+) -> None:
+    """Prove INVALID receipt and committed-artifact absence collectively."""
+
+    artifact_filenames = ("commit.json", "manifest.json", "records.jsonl")
+    attempt_filenames = ("invalid.json",)
+    before_generation = _capture_terminal_collective_generation(
+        parent=parent,
+        parent_fd=parent_fd,
+        parent_stat=parent_stat,
+        attempt=attempt,
+        attempt_filenames=attempt_filenames,
+        output_name=output_name,
+        output_filenames=artifact_filenames,
+        output_fd=output_fd,
+    )
+    _prove_attempt_terminal_authority(
+        parent=parent,
+        parent_fd=parent_fd,
+        parent_stat=parent_stat,
+        attempt=attempt,
+        required_receipts={"invalid.json": invalid_receipt},
+    )
+    if output_fd >= 0 and not _durably_prove_file_not_exact_at(
+        output_fd,
+        "commit.json",
+        _canonical_bytes(commit_receipt),
+        label="pinned artifact commit",
+    ):
+        raise DiagnosticPublicationStateAmbiguousError(
+            "pinned artifact commit remained after final reconciliation"
+        )
+    remaining_public_content = _published_artifact_content_identity(
+        parent_fd,
+        output_name,
+        run_manifest,
+        records_byte_count=records_byte_count,
+        records_sha256=records_sha256,
+        commit_receipt=commit_receipt,
+    )
+    if remaining_public_content is not None:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "an exact committed artifact remains public after INVALID"
+        )
+    _prove_attempt_terminal_authority(
+        parent=parent,
+        parent_fd=parent_fd,
+        parent_stat=parent_stat,
+        attempt=attempt,
+        required_receipts={"invalid.json": invalid_receipt},
+    )
+    after_generation = _capture_terminal_collective_generation(
+        parent=parent,
+        parent_fd=parent_fd,
+        parent_stat=parent_stat,
+        attempt=attempt,
+        attempt_filenames=attempt_filenames,
+        output_name=output_name,
+        output_filenames=artifact_filenames,
+        output_fd=output_fd,
+    )
+    if after_generation != before_generation:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "INVALID receipt and artifact absence changed during collective proof"
+        )
+
+
+def _retry_committed_artifact_durability(
+    *,
+    parent: Path,
+    parent_fd: int,
+    parent_stat: os.stat_result,
+    attempt: _Attempt,
+    success_receipts: Mapping[str, Mapping[str, Any]],
+    output_name: str,
+    staging_identity: tuple[int, int],
+    run_manifest: Mapping[str, Any],
+    records_byte_count: int,
+    records_sha256: str,
+    commit_receipt: Mapping[str, Any],
+    retire_publication_lock: Callable[[], None] | None = None,
+) -> bool:
     """Retry both directory barriers before accepting an exact commit."""
 
     output_fd = -1
     try:
-        _assert_started_output_parent_identity(
-            parent,
-            parent_fd,
-            parent_stat,
-        )
+        if not _prove_attempt_terminal_authority(
+            parent=parent,
+            parent_fd=parent_fd,
+            parent_stat=parent_stat,
+            attempt=attempt,
+            success_receipts=success_receipts,
+        ):
+            return False
         try:
             flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
             flags |= getattr(os, "O_NOFOLLOW", 0)
@@ -1296,11 +1987,7 @@ def _retry_committed_artifact_durability(
             os.fsync(parent_fd)
         except BaseException:
             return False
-        _assert_started_output_parent_identity(
-            parent,
-            parent_fd,
-            parent_stat,
-        )
+        _assert_started_output_parent_identity(parent, parent_fd, parent_stat)
         commit_matches = _published_artifact_matches(
             parent_fd,
             output_name,
@@ -1312,12 +1999,64 @@ def _retry_committed_artifact_durability(
         )
         if not commit_matches:
             return False
-        _assert_started_output_parent_identity(
-            parent,
-            parent_fd,
-            parent_stat,
+        if not _prove_committed_terminal_collective(
+            parent=parent,
+            parent_fd=parent_fd,
+            parent_stat=parent_stat,
+            attempt=attempt,
+            success_receipts=success_receipts,
+            output_name=output_name,
+            output_fd=output_fd,
+            staging_identity=staging_identity,
+            run_manifest=run_manifest,
+            records_byte_count=records_byte_count,
+            records_sha256=records_sha256,
+            commit_receipt=commit_receipt,
+        ):
+            return False
+        if retire_publication_lock is not None:
+            retire_publication_lock()
+            try:
+                if not _prove_committed_terminal_collective(
+                    parent=parent,
+                    parent_fd=parent_fd,
+                    parent_stat=parent_stat,
+                    attempt=attempt,
+                    success_receipts=success_receipts,
+                    output_name=output_name,
+                    output_fd=output_fd,
+                    staging_identity=staging_identity,
+                    run_manifest=run_manifest,
+                    records_byte_count=records_byte_count,
+                    records_sha256=records_sha256,
+                    commit_receipt=commit_receipt,
+                ):
+                    raise DiagnosticPublicationStateAmbiguousError(
+                        "committed artifact or attempt conflicted after recovery "
+                        "lock retirement"
+                    )
+            except _PublicationLockRetirementAmbiguousError:
+                raise
+            except BaseException as terminal_error:
+                raise _PublicationLockRetirementAmbiguousError(
+                    "recovered COMMITTED authority is ambiguous after lock "
+                    f"retirement: {terminal_error}"
+                ) from terminal_error
+            return True
+        return _prove_committed_terminal_collective(
+            parent=parent,
+            parent_fd=parent_fd,
+            parent_stat=parent_stat,
+            attempt=attempt,
+            success_receipts=success_receipts,
+            output_name=output_name,
+            output_fd=output_fd,
+            staging_identity=staging_identity,
+            run_manifest=run_manifest,
+            records_byte_count=records_byte_count,
+            records_sha256=records_sha256,
+            commit_receipt=commit_receipt,
         )
-        return True
     finally:
         if output_fd >= 0:
             _close_descriptor_best_effort(output_fd)
@@ -2063,6 +2802,218 @@ class _Preflight:
     runtime_qualification_digest: str
     build: _BuildAttestation
     output_path: Path
+    publication_backend: str
+    synthetic_fixture_digest: str | None
+    synthetic_components: _ResolvedComponents | None = None
+    synthetic_method_manifest_digest: str | None = None
+    synthetic_expected_cell_count: int | None = None
+
+
+@dataclass(frozen=True)
+class _SyntheticFixtureBundleSnapshot:
+    """An immutable-byte snapshot of one positively identified test fixture."""
+
+    _payload_bytes: bytes
+    cells: tuple[DiagnosticCell, ...]
+    seal_digest: str
+
+    @property
+    def payloads(self) -> dict[str, Any]:
+        parsed = strict_json_loads(self._payload_bytes.decode("utf-8"))
+        if type(parsed) is not dict:
+            raise DiagnosticRunnerError("synthetic payload snapshot is not an object")
+        return parsed
+
+
+def _snapshot_json_object(value: object, label: str) -> tuple[dict[str, Any], bytes]:
+    if type(value) is not dict:
+        raise DiagnosticRunnerError(f"{label} is not an exact JSON object")
+    raw = _canonical_bytes(value)
+    parsed = strict_json_loads(raw.decode("utf-8"))
+    if type(parsed) is not dict or _canonical_bytes(parsed) != raw:
+        raise DiagnosticRunnerError(f"{label} did not survive canonical snapshotting")
+    return parsed, raw
+
+
+def _snapshot_diagnostic_cell(cell: object) -> DiagnosticCell:
+    if type(cell) is not DiagnosticCell:
+        raise DiagnosticRunnerError("synthetic schedule contains a non-exact cell")
+    observed = cell.to_dict()
+    snapshot = DiagnosticCell(
+        task_fingerprint=cell.task_fingerprint,
+        task_manifest_digest=cell.task_manifest_digest,
+        proposal_label=cell.proposal_label,
+        proposal_spec_digest=cell.proposal_spec_digest,
+        method_label=cell.method_label,
+        method_spec_digest=cell.method_spec_digest,
+        method_manifest_digest=cell.method_manifest_digest,
+        budget_profile_id=cell.budget_profile_id,
+        budget_profile_spec_digest=cell.budget_profile_spec_digest,
+        exploration_seed=cell.exploration_seed,
+    )
+    if type(observed) is not dict or snapshot.to_dict() != observed:
+        raise DiagnosticRunnerError("synthetic schedule cell snapshot drifted")
+    return snapshot
+
+
+def _snapshot_exact_absolute_path(
+    value: object,
+    label: str,
+    *,
+    require_leaf: bool,
+) -> Path:
+    path_type = type(Path())
+    if (
+        type(value) is not path_type
+        or not value.is_absolute()
+        or ".." in value.parts
+        or (require_leaf and not value.name)
+    ):
+        raise DiagnosticRunnerError(f"{label} is not an exact absolute path")
+    snapshot = Path(value)
+    if type(snapshot) is not path_type or str(snapshot) != str(value):
+        raise DiagnosticRunnerError(f"{label} path snapshot drifted")
+    return snapshot
+
+
+def _snapshot_exact_synthetic_preflight(preflight: _Preflight) -> _Preflight:
+    """Bind the private publisher to fixed nondiagnostic bytes before I/O."""
+
+    try:
+        if (
+            type(preflight) is not _Preflight
+            or type(preflight.publication_backend) is not str
+            or preflight.publication_backend != _SYNTHETIC_PUBLICATION_BACKEND
+        ):
+            raise DiagnosticNotRunError(_PUBLICATION_BACKEND_REFUSAL)
+        output_path = _snapshot_exact_absolute_path(
+            preflight.output_path,
+            "synthetic output path",
+            require_leaf=True,
+        )
+        cells_value = preflight.cells
+        bundle_cells_value = getattr(preflight.bundle, "cells", None)
+        if type(cells_value) is not tuple or type(bundle_cells_value) is not tuple:
+            raise DiagnosticRunnerError(
+                "synthetic schedule must be an exact materialized tuple"
+            )
+        cells = tuple(_snapshot_diagnostic_cell(cell) for cell in cells_value)
+        bundle_cells = tuple(
+            _snapshot_diagnostic_cell(cell) for cell in bundle_cells_value
+        )
+        if len(cells) != _SYNTHETIC_EXPECTED_CELL_COUNT or [
+            cell.to_dict() for cell in cells
+        ] != [cell.to_dict() for cell in bundle_cells]:
+            raise DiagnosticRunnerError(
+                "synthetic preflight and bundle schedules do not exact-match"
+            )
+        payloads, payload_bytes = _snapshot_json_object(
+            getattr(preflight.bundle, "payloads", None),
+            "synthetic fixture payloads",
+        )
+        seal_digest = _require_sha256(
+            getattr(preflight.bundle, "seal_digest", None),
+            "synthetic fixture seal digest",
+        )
+        qualification, _ = _snapshot_json_object(
+            preflight.qualification,
+            "synthetic runtime qualification",
+        )
+        runtime_qualification_digest = _require_sha256(
+            preflight.runtime_qualification_digest,
+            "synthetic runtime qualification digest",
+        )
+        fixture_digest = sha256_json(
+            {
+                "cells": [cell.to_dict() for cell in cells],
+                "payloads": payloads,
+                "qualification": qualification,
+                "runtime_qualification_digest": runtime_qualification_digest,
+                "seal_digest": seal_digest,
+            }
+        )
+        if (
+            type(preflight.synthetic_fixture_digest) is not str
+            or preflight.synthetic_fixture_digest != fixture_digest
+            or fixture_digest not in _SYNTHETIC_FIXTURE_CONTENT_DIGESTS
+        ):
+            raise DiagnosticRunnerError(
+                "preflight is not a positively identified synthetic fixture"
+            )
+        if (
+            set(payloads)
+            != {
+                "budgets.json",
+                "diagnostic_tasks.json",
+                "methods.json",
+                "preregistration.json",
+                "proposals.json",
+            }
+            or set(qualification)
+            != {
+                "bundle_id",
+                "execution_authorized",
+                "runtime_bindings_digest",
+                "status",
+            }
+            or qualification["bundle_id"] != BUNDLE_ID
+            or qualification["execution_authorized"] is not False
+            or qualification["status"] != "RUNTIME_QUALIFIED"
+            or sha256_json(qualification) != runtime_qualification_digest
+            or qualification["runtime_bindings_digest"]
+            != sha256_json(payloads["methods.json"]["runtime_bindings"])
+        ):
+            raise DiagnosticRunnerError(
+                "synthetic fixture runtime qualification drifted"
+            )
+        components = _resolve_components(payloads)
+        method_manifest_digest = _require_sha256(
+            payloads["methods.json"]["deterministic_digest"],
+            "synthetic method manifest digest",
+        )
+        for cell in cells:
+            _validate_cell_component_bindings(
+                cell,
+                task=components.tasks[cell.task_fingerprint],
+                proposal=components.proposals[cell.proposal_label],
+                method=components.methods[cell.method_label],
+                budget_profile=components.budgets[cell.budget_profile_id],
+                method_manifest_digest=method_manifest_digest,
+            )
+        if type(preflight.build) is not _BuildAttestation:
+            raise DiagnosticRunnerError("synthetic build attestation type drifted")
+        build_payload, _ = _snapshot_json_object(
+            preflight.build.payload,
+            "synthetic build attestation",
+        )
+        build = _BuildAttestation(
+            payload=build_payload,
+            current_head=_require_git_oid(
+                preflight.build.current_head,
+                "synthetic build HEAD",
+            ),
+        )
+        return _Preflight(
+            bundle=_SyntheticFixtureBundleSnapshot(
+                _payload_bytes=payload_bytes,
+                cells=cells,
+                seal_digest=seal_digest,
+            ),
+            cells=cells,
+            qualification=qualification,
+            runtime_qualification_digest=runtime_qualification_digest,
+            build=build,
+            output_path=output_path,
+            publication_backend=_SYNTHETIC_PUBLICATION_BACKEND,
+            synthetic_fixture_digest=fixture_digest,
+            synthetic_components=components,
+            synthetic_method_manifest_digest=method_manifest_digest,
+            synthetic_expected_cell_count=_SYNTHETIC_EXPECTED_CELL_COUNT,
+        )
+    except DiagnosticNotRunError:
+        raise
+    except BaseException as error:
+        raise DiagnosticNotRunError(_PUBLICATION_BACKEND_REFUSAL) from error
 
 
 def _fresh_preflight(
@@ -2128,20 +3079,36 @@ def _fresh_preflight(
         runtime_qualification_digest=sha256_json(qualification),
         build=build,
         output_path=output,
+        publication_backend=_PUBLICATION_BACKEND_UNAVAILABLE,
+        synthetic_fixture_digest=None,
     )
 
 
-def _authorization_payload(preflight: _Preflight) -> dict[str, Any]:
+def _authorization_payload_from_preflight(
+    preflight: _Preflight,
+    *,
+    synthetic_fixture: bool,
+) -> dict[str, Any]:
     payloads = preflight.bundle.payloads  # type: ignore[attr-defined]
     core = {
         "artifact_id": preflight.output_path.name,
-        "authorization_scope": "one_exact_complete_240_cell_diagnostic_run",
+        "authorization_scope": (
+            _SYNTHETIC_AUTHORIZATION_SCOPE
+            if synthetic_fixture
+            else "one_exact_complete_240_cell_diagnostic_run"
+        ),
         "bundle_id": BUNDLE_ID,
         "diagnostic_seal_digest": preflight.bundle.seal_digest,  # type: ignore[attr-defined]
-        "cell_count": EXPECTED_CELL_COUNT,
+        "cell_count": len(preflight.cells)
+        if synthetic_fixture
+        else EXPECTED_CELL_COUNT,
         "claim_boundary": (
-            "execution authority only; this engineering diagnostic grants no "
-            "method-superiority or locked-128 execution authority"
+            _SYNTHETIC_AUTHORIZATION_CLAIM_BOUNDARY
+            if synthetic_fixture
+            else (
+                "execution authority only; this engineering diagnostic grants no "
+                "method-superiority or locked-128 execution authority"
+            )
         ),
         "method_manifest_digest": payloads["methods.json"]["deterministic_digest"],
         "output_path": str(preflight.output_path),
@@ -2152,9 +3119,51 @@ def _authorization_payload(preflight: _Preflight) -> dict[str, Any]:
         "schedule_digest": payloads["preregistration.json"]["execution_matrix"][
             "schedule_digest"
         ],
-        "schema_version": AUTHORIZATION_SCHEMA_VERSION,
+        "schema_version": (
+            _SYNTHETIC_AUTHORIZATION_SCHEMA_VERSION
+            if synthetic_fixture
+            else AUTHORIZATION_SCHEMA_VERSION
+        ),
     }
+    if synthetic_fixture:
+        core["synthetic_fixture_digest"] = preflight.synthetic_fixture_digest
     return _with_digest(core)
+
+
+def _authorization_payload(preflight: _Preflight) -> dict[str, Any]:
+    synthetic_fixture = preflight.publication_backend == _SYNTHETIC_PUBLICATION_BACKEND
+    if synthetic_fixture:
+        preflight = _snapshot_exact_synthetic_preflight(preflight)
+    return _authorization_payload_from_preflight(
+        preflight,
+        synthetic_fixture=synthetic_fixture,
+    )
+
+
+def _snapshot_exact_synthetic_authorization(
+    preflight: _Preflight,
+    authorization: object,
+) -> dict[str, Any]:
+    """Detach and exact-match synthetic authority before output access."""
+
+    try:
+        observed, _ = _snapshot_json_object(
+            authorization,
+            "synthetic execution authorization",
+        )
+        expected = _authorization_payload_from_preflight(
+            preflight,
+            synthetic_fixture=True,
+        )
+        if observed != expected:
+            raise DiagnosticRunnerError(
+                "synthetic authorization does not exact-match frozen preflight"
+            )
+        return observed
+    except DiagnosticNotRunError:
+        raise
+    except BaseException as error:
+        raise DiagnosticNotRunError(_PUBLICATION_BACKEND_REFUSAL) from error
 
 
 def _authorization_repository_location(
@@ -2408,6 +3417,29 @@ def _resolve_components(payloads: Mapping[str, Any]) -> _ResolvedComponents:
     return _ResolvedComponents(tasks, proposals, methods, budgets)
 
 
+def _validate_cell_component_bindings(
+    cell: DiagnosticCell,
+    *,
+    task: CountdownTask,
+    proposal: TrackAProposalSpec,
+    method: TrackAMethodSpec,
+    budget_profile: TrackABudgetProfile,
+    method_manifest_digest: str,
+) -> None:
+    if task.task_fingerprint != cell.task_fingerprint:
+        raise DiagnosticRunnerError("cell task fingerprint does not match typed task")
+    if proposal.deterministic_digest != cell.proposal_spec_digest:
+        raise DiagnosticRunnerError(
+            "cell proposal digest does not match typed proposal"
+        )
+    if sha256_json(method.to_dict()) != cell.method_spec_digest:
+        raise DiagnosticRunnerError("cell method digest does not match typed method")
+    if sha256_json(budget_profile.to_dict()) != cell.budget_profile_spec_digest:
+        raise DiagnosticRunnerError("cell budget digest does not match typed budget")
+    if method_manifest_digest != cell.method_manifest_digest:
+        raise DiagnosticRunnerError("cell method-manifest digest drifted")
+
+
 def _execute_cell(
     cell: DiagnosticCell,
     *,
@@ -2423,19 +3455,14 @@ def _execute_cell(
 ) -> dict[str, Any]:
     """Execute and independently replay one already-authorized typed cell."""
 
-    if task.task_fingerprint != cell.task_fingerprint:
-        raise DiagnosticRunnerError("cell task fingerprint does not match typed task")
-    if proposal.deterministic_digest != cell.proposal_spec_digest:
-        raise DiagnosticRunnerError(
-            "cell proposal digest does not match typed proposal"
-        )
-    if sha256_json(method.to_dict()) != cell.method_spec_digest:
-        raise DiagnosticRunnerError("cell method digest does not match typed method")
-    if sha256_json(budget_profile.to_dict()) != cell.budget_profile_spec_digest:
-        raise DiagnosticRunnerError("cell budget digest does not match typed budget")
-    if method_manifest_digest != cell.method_manifest_digest:
-        raise DiagnosticRunnerError("cell method-manifest digest drifted")
-
+    _validate_cell_component_bindings(
+        cell,
+        task=task,
+        proposal=proposal,
+        method=method,
+        budget_profile=budget_profile,
+        method_manifest_digest=method_manifest_digest,
+    )
     search_started = time.perf_counter_ns()
     result = run_countdown_track_a_search(
         task,
@@ -2518,6 +3545,7 @@ def _execute_cell(
 class _Attempt:
     directory: Path
     directory_fd: int
+    directory_identity: tuple[int, int]
     directory_name: str
     staging_path: Path
     receipt_base: dict[str, Any]
@@ -2690,6 +3718,25 @@ def _directory_entry_identity_at(
     return observed.st_dev, observed.st_ino
 
 
+def _entry_identity_at(
+    parent_fd: int,
+    name: str,
+    *,
+    label: str,
+) -> tuple[int, int] | None:
+    """Observe any non-followed directory entry without conflating its type."""
+
+    try:
+        observed = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            f"{label} observation failed"
+        ) from error
+    return observed.st_dev, observed.st_ino
+
+
 def _quarantine_exact_directory_at(
     parent_fd: int,
     public_name: str,
@@ -2724,7 +3771,7 @@ def _quarantine_exact_directory_at(
             f"could not allocate {label} tombstone"
         )
 
-    tombstone_identity = _directory_entry_identity_at(
+    tombstone_identity = _entry_identity_at(
         parent_fd,
         tombstone_name,
         label=f"quarantined {label}",
@@ -3102,9 +4149,12 @@ def _reserve_attempt(
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     temporary_fd = os.open(temporary_name, flags, dir_fd=parent_fd)
+    temporary_stat = os.fstat(temporary_fd)
+    temporary_identity = (temporary_stat.st_dev, temporary_stat.st_ino)
     attempt = _Attempt(
         directory=temporary,
         directory_fd=temporary_fd,
+        directory_identity=temporary_identity,
         directory_name=temporary_name,
         staging_path=temporary / "staging",
         receipt_base={
@@ -3112,8 +4162,6 @@ def _reserve_attempt(
             "staging_path": str(staging_path),
         },
     )
-    temporary_stat = os.fstat(temporary_fd)
-    temporary_identity = (temporary_stat.st_dev, temporary_stat.st_ino)
     pre_outcome_receipt = _attempt_receipt(
         attempt,
         phase="PRE_OUTCOME",
@@ -3286,8 +4334,8 @@ def _reserve_attempt(
                 temporary_identity,
                 pre_outcome_receipt,
             ):
-                raise DiagnosticNotRunError(
-                    "attempt reservation was durably absent after publication"
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "attempt reservation was durably lost after publication"
                 )
             raise DiagnosticPublicationStateAmbiguousError(
                 "attempt reservation appeared during post-barrier proof"
@@ -3306,6 +4354,7 @@ def _reserve_attempt(
     return _Attempt(
         directory=attempt_directory,
         directory_fd=temporary_fd,
+        directory_identity=temporary_identity,
         directory_name=attempt_name,
         staging_path=staging_path,
         receipt_base=receipt_base,
@@ -3320,11 +4369,34 @@ def _publish_run_artifact(
     repository_root: Path,
     _terminal_result: bool = False,
 ) -> dict[str, Any]:
-    """Serialize attempts targeting one output while preserving auth markers.
+    """Exercise the legacy directory protocol on non-diagnostic fixtures only.
 
-    The output parent must already exist as a stable non-symlink directory;
-    publication never creates an ancestor without durably syncing its entry.
+    Portable POSIX does not provide an atomic mkdir-and-return-fd primitive, so
+    this layout cannot prove ownership across the pre-first-stat interval.  A
+    real verified diagnostic preflight is therefore refused before any output
+    filesystem access.  The remaining implementation exists only to preserve
+    synthetic protocol tests while a regular-file artifact layout is designed.
     """
+
+    preflight = _snapshot_exact_synthetic_preflight(preflight)
+    authorization = _snapshot_exact_synthetic_authorization(
+        preflight,
+        authorization,
+    )
+    try:
+        repository_root = _snapshot_exact_absolute_path(
+            repository_root,
+            "synthetic repository root",
+            require_leaf=False,
+        )
+        reviewed_authorization_revision = _require_git_oid(
+            reviewed_authorization_revision,
+            "reviewed authorization revision",
+        )
+        if type(_terminal_result) is not bool:
+            raise DiagnosticRunnerError("synthetic terminal-result mode is not boolean")
+    except BaseException as error:
+        raise DiagnosticNotRunError(_PUBLICATION_BACKEND_REFUSAL) from error
 
     output = preflight.output_path
     parent = output.parent
@@ -3333,7 +4405,38 @@ def _publish_run_artifact(
     lock_fd = -1
     lock_identity: tuple[int, int] | None = None
     lock_name = f".{output.name}.publish-lock"
+    lock_retirement_attempted = False
+    lock_retired = False
     publication_entered = False
+
+    def retire_publication_lock() -> None:
+        nonlocal lock_retired, lock_retirement_attempted
+        if lock_retired:
+            return
+        if lock_retirement_attempted:
+            raise _PublicationLockRetirementAmbiguousError(
+                "publication lock retirement was already attempted"
+            )
+        lock_retirement_attempted = True
+        if not lock_created or parent_fd < 0 or lock_fd < 0 or lock_identity is None:
+            raise _PublicationLockRetirementAmbiguousError(
+                "publication lock retirement authority is unavailable"
+            )
+        try:
+            _quarantine_exact_directory_at(
+                parent_fd,
+                lock_name,
+                lock_fd,
+                lock_identity,
+                label="publication lock",
+            )
+        except BaseException as error:
+            raise _PublicationLockRetirementAmbiguousError(
+                "publication lock retirement and foreign-entry restoration "
+                "are ambiguous"
+            ) from error
+        lock_retired = True
+
     try:
         parent_fd, parent_stat = _open_stable_directory(
             parent,
@@ -3365,6 +4468,7 @@ def _publish_run_artifact(
             repository_root=repository_root,
             parent_fd=parent_fd,
             parent_stat=parent_stat,
+            _retire_publication_lock=retire_publication_lock,
         )
         if _terminal_result:
             return {
@@ -3388,27 +4492,26 @@ def _publish_run_artifact(
             ) from error
         raise DiagnosticNotRunError(str(error)) from error
     finally:
+        primary_error = sys.exc_info()[1]
+        cleanup_error: BaseException | None = None
         if (
             lock_created
             and parent_fd >= 0
             and lock_fd >= 0
             and lock_identity is not None
+            and not lock_retirement_attempted
         ):
             try:
-                _quarantine_exact_directory_at(
-                    parent_fd,
-                    lock_name,
-                    lock_fd,
-                    lock_identity,
-                    label="publication lock",
-                )
-            except BaseException:
-                # The durable attempt directory, not this transient mutex, is
-                # the execution authority.  Never rewrite outcome state because
-                # lock retirement failed after an otherwise final transition.
-                pass
+                retire_publication_lock()
+            except BaseException as error:
+                cleanup_error = error
         _close_descriptor_best_effort(lock_fd)
         _close_descriptor_best_effort(parent_fd)
+        if cleanup_error is not None and not isinstance(
+            primary_error,
+            DiagnosticPublicationStateAmbiguousError,
+        ):
+            raise cleanup_error
 
 
 def _publish_run_artifact_locked(
@@ -3419,8 +4522,29 @@ def _publish_run_artifact_locked(
     repository_root: Path,
     parent_fd: int,
     parent_stat: os.stat_result,
+    _retire_publication_lock: Callable[[], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     output = preflight.output_path
+    if (
+        type(preflight.bundle) is not _SyntheticFixtureBundleSnapshot
+        or type(authorization) is not dict
+        or preflight.synthetic_components is None
+        or type(preflight.synthetic_method_manifest_digest) is not str
+        or preflight.synthetic_expected_cell_count != _SYNTHETIC_EXPECTED_CELL_COUNT
+    ):
+        raise DiagnosticNotRunError(_PUBLICATION_BACKEND_REFUSAL)
+    cells = preflight.cells
+    components = preflight.synthetic_components
+    method_manifest_digest = preflight.synthetic_method_manifest_digest
+    expected_cell_count = preflight.synthetic_expected_cell_count
+    seal_digest = preflight.bundle.seal_digest
+    build = preflight.build.payload
+    qualification = preflight.qualification
+
+    def retire_before_terminal_proof() -> None:
+        if _retire_publication_lock is not None:
+            _retire_publication_lock()
+
     if (
         authorization.get("output_path") != str(output)
         or authorization.get("artifact_id") != output.name
@@ -3441,6 +4565,16 @@ def _publish_run_artifact_locked(
         authorization,
         reviewed,
         parent_fd=parent_fd,
+    )
+    pre_outcome_receipt = _attempt_receipt(
+        attempt,
+        phase="PRE_OUTCOME",
+        status="PENDING",
+    )
+    expected_started_receipt = _attempt_receipt(
+        attempt,
+        phase="STARTED",
+        status="PENDING",
     )
     staging_fd = -1
     output_fd = -1
@@ -3467,42 +4601,146 @@ def _publish_run_artifact_locked(
     except BaseException as error:
         reason = str(error)
         try:
-            _write_attempt_receipt(
+            _prove_attempt_terminal_authority(
+                parent=output.parent,
+                parent_fd=parent_fd,
+                parent_stat=parent_stat,
+                attempt=attempt,
+            )
+            not_run_receipt = _write_attempt_receipt(
                 attempt,
                 "not_run.json",
                 phase="PRE_OUTCOME",
                 status="NOT_RUN",
                 reason=reason,
             )
+            os.fsync(attempt.directory_fd)
+            started_after_not_run = _attempt_receipt_matches(
+                attempt,
+                "started.json",
+                expected_started_receipt,
+            )
+        except DiagnosticPublicationStateAmbiguousError:
+            _close_descriptor_best_effort(staging_fd)
+            _close_descriptor_best_effort(attempt.directory_fd)
+            raise
         except BaseException as terminal_error:
             _close_descriptor_best_effort(staging_fd)
             _close_descriptor_best_effort(attempt.directory_fd)
             raise DiagnosticPublicationStateAmbiguousError(
-                "NOT_RUN receipt durability is unproven"
+                "NOT_RUN receipt durability is unproven; late STARTED state "
+                "could not be reconciled"
             ) from terminal_error
+        if started_after_not_run:
+            try:
+                _prove_attempt_terminal_authority(
+                    parent=output.parent,
+                    parent_fd=parent_fd,
+                    parent_stat=parent_stat,
+                    attempt=attempt,
+                )
+                invalid_receipt = _write_attempt_receipt(
+                    attempt,
+                    "invalid.json",
+                    phase="STARTED",
+                    status="INVALID",
+                    reason=reason,
+                )
+                retire_before_terminal_proof()
+                _prove_attempt_terminal_authority(
+                    parent=output.parent,
+                    parent_fd=parent_fd,
+                    parent_stat=parent_stat,
+                    attempt=attempt,
+                    required_receipts={"invalid.json": invalid_receipt},
+                )
+            except DiagnosticPublicationStateAmbiguousError:
+                _close_descriptor_best_effort(staging_fd)
+                _close_descriptor_best_effort(attempt.directory_fd)
+                raise
+            except BaseException as terminal_error:
+                _close_descriptor_best_effort(staging_fd)
+                _close_descriptor_best_effort(attempt.directory_fd)
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "INVALID receipt durability is unproven after late STARTED"
+                ) from terminal_error
+            _close_descriptor_best_effort(staging_fd)
+            _close_descriptor_best_effort(attempt.directory_fd)
+            raise DiagnosticInvalidRunError(reason) from error
+        try:
+            retire_before_terminal_proof()
+            _prove_attempt_terminal_authority(
+                parent=output.parent,
+                parent_fd=parent_fd,
+                parent_stat=parent_stat,
+                attempt=attempt,
+                required_receipts={"not_run.json": not_run_receipt},
+                forbidden_entries=(
+                    "invalid.json",
+                    "ready_to_commit.json",
+                    "started.json",
+                ),
+            )
+        except DiagnosticPublicationStateAmbiguousError:
+            _close_descriptor_best_effort(staging_fd)
+            _close_descriptor_best_effort(attempt.directory_fd)
+            raise
         _close_descriptor_best_effort(staging_fd)
         _close_descriptor_best_effort(attempt.directory_fd)
         raise DiagnosticNotRunError(reason) from error
 
-    expected_started_receipt = _attempt_receipt(
-        attempt,
-        phase="STARTED",
-        status="PENDING",
-    )
     try:
         started_receipt = _transition_attempt_to_started(attempt)
-    except DiagnosticInvalidRunError:
+    except DiagnosticInvalidRunError as terminal_error:
+        terminal_reason = str(terminal_error)
         try:
-            _assert_started_output_parent_identity(
-                output.parent,
-                parent_fd,
-                parent_stat,
+            retire_before_terminal_proof()
+            _prove_attempt_terminal_authority(
+                parent=output.parent,
+                parent_fd=parent_fd,
+                parent_stat=parent_stat,
+                attempt=attempt,
+                required_receipts={
+                    "invalid.json": _attempt_receipt(
+                        attempt,
+                        phase="STARTED",
+                        status="INVALID",
+                        reason=terminal_reason,
+                    )
+                },
             )
         finally:
             _close_descriptor_best_effort(staging_fd)
             _close_descriptor_best_effort(attempt.directory_fd)
         raise
-    except (DiagnosticNotRunError, DiagnosticPublicationStateAmbiguousError):
+    except DiagnosticNotRunError as terminal_error:
+        terminal_reason = str(terminal_error)
+        try:
+            retire_before_terminal_proof()
+            _prove_attempt_terminal_authority(
+                parent=output.parent,
+                parent_fd=parent_fd,
+                parent_stat=parent_stat,
+                attempt=attempt,
+                required_receipts={
+                    "not_run.json": _attempt_receipt(
+                        attempt,
+                        phase="PRE_OUTCOME",
+                        status="NOT_RUN",
+                        reason=terminal_reason,
+                    )
+                },
+                forbidden_entries=(
+                    "invalid.json",
+                    "ready_to_commit.json",
+                    "started.json",
+                ),
+            )
+        finally:
+            _close_descriptor_best_effort(staging_fd)
+            _close_descriptor_best_effort(attempt.directory_fd)
+        raise
+    except DiagnosticPublicationStateAmbiguousError:
         _close_descriptor_best_effort(staging_fd)
         _close_descriptor_best_effort(attempt.directory_fd)
         raise
@@ -3528,17 +4766,18 @@ def _publish_run_artifact_locked(
                 "STARTED transition return state is unproven"
             ) from error
         try:
-            _assert_started_output_parent_identity(
-                output.parent,
-                parent_fd,
-                parent_stat,
+            _prove_attempt_terminal_authority(
+                parent=output.parent,
+                parent_fd=parent_fd,
+                parent_stat=parent_stat,
+                attempt=attempt,
             )
         except DiagnosticPublicationStateAmbiguousError:
             _close_descriptor_best_effort(staging_fd)
             _close_descriptor_best_effort(attempt.directory_fd)
             raise
         try:
-            _write_attempt_receipt(
+            invalid_receipt = _write_attempt_receipt(
                 attempt,
                 "invalid.json",
                 phase="STARTED",
@@ -3552,10 +4791,13 @@ def _publish_run_artifact_locked(
                 "INVALID receipt durability is unproven after STARTED return"
             ) from terminal_error
         try:
-            _assert_started_output_parent_identity(
-                output.parent,
-                parent_fd,
-                parent_stat,
+            retire_before_terminal_proof()
+            _prove_attempt_terminal_authority(
+                parent=output.parent,
+                parent_fd=parent_fd,
+                parent_stat=parent_stat,
+                attempt=attempt,
+                required_receipts={"invalid.json": invalid_receipt},
             )
         except DiagnosticPublicationStateAmbiguousError:
             _close_descriptor_best_effort(staging_fd)
@@ -3566,10 +4808,6 @@ def _publish_run_artifact_locked(
         raise DiagnosticInvalidRunError(reason) from error
 
     try:
-        payloads = preflight.bundle.payloads  # type: ignore[attr-defined]
-        components = _resolve_components(payloads)
-        method_manifest_digest = payloads["methods.json"]["deterministic_digest"]
-        build = preflight.build.payload
         record_digests: list[str] = []
         cell_ids: list[str] = []
         replay_wall_time_ns_total = 0
@@ -3583,14 +4821,14 @@ def _publish_run_artifact_locked(
             dir_fd=staging_fd,
         )
         with os.fdopen(records_descriptor, "wb") as handle:
-            for cell in preflight.cells:
+            for cell in cells:
                 record = _execute_cell(
                     cell,
                     task=components.tasks[cell.task_fingerprint],
                     proposal=components.proposals[cell.proposal_label],
                     method=components.methods[cell.method_label],
                     budget_profile=components.budgets[cell.budget_profile_id],
-                    diagnostic_seal_digest=preflight.bundle.seal_digest,  # type: ignore[attr-defined]
+                    diagnostic_seal_digest=seal_digest,
                     method_manifest_digest=method_manifest_digest,
                     runtime_qualification_digest=(
                         preflight.runtime_qualification_digest
@@ -3624,12 +4862,12 @@ def _publish_run_artifact_locked(
                 cell_ids.append(record["cell_id"])
             handle.flush()
             os.fsync(handle.fileno())
-        expected_ids = [cell.cell_id for cell in preflight.cells]
-        if cell_ids != expected_ids or len(set(cell_ids)) != EXPECTED_CELL_COUNT:
+        expected_ids = [cell.cell_id for cell in cells]
+        if cell_ids != expected_ids or len(set(cell_ids)) != expected_cell_count:
             raise DiagnosticRunnerError(
                 "executed record schedule is incomplete or duplicated"
             )
-        if len(set(record_digests)) != EXPECTED_CELL_COUNT:
+        if len(set(record_digests)) != expected_cell_count:
             raise DiagnosticRunnerError("executed record digests are not unique")
         run_manifest = _with_digest(
             {
@@ -3643,14 +4881,9 @@ def _publish_run_artifact_locked(
                 ],
                 "authorized_output_path": authorization["output_path"],
                 "bundle_id": BUNDLE_ID,
-                "diagnostic_seal_digest": preflight.bundle.seal_digest,  # type: ignore[attr-defined]
-                "cell_count": EXPECTED_CELL_COUNT,
-                "claim_boundary": (
-                    "engineering diagnostic artifact; byte replay applies only to "
-                    "the embedded search core, telemetry is volatile, and no "
-                    "inferential, superiority, or locked-evaluation authority is "
-                    "granted"
-                ),
+                "diagnostic_seal_digest": seal_digest,
+                "cell_count": expected_cell_count,
+                "claim_boundary": _SYNTHETIC_RUN_CLAIM_BOUNDARY,
                 "execution_authorization_digest": authorization["deterministic_digest"],
                 "execution_authorization": deepcopy(dict(authorization)),
                 "execution_head_revision": preflight.build.current_head,
@@ -3660,7 +4893,7 @@ def _publish_run_artifact_locked(
                 "records_jsonl_sha256": records_hasher.hexdigest(),
                 "reviewed_authorization_revision": reviewed,
                 "runner_build_attestation": build,
-                "runtime_qualification": preflight.qualification,
+                "runtime_qualification": qualification,
                 "schedule_cell_ids": cell_ids,
                 "schema_version": RUN_MANIFEST_SCHEMA_VERSION,
                 "telemetry": {
@@ -3676,9 +4909,7 @@ def _publish_run_artifact_locked(
                 "attempt_started_receipt_digest": started_receipt[
                     "deterministic_digest"
                 ],
-                "execution_authorization_digest": authorization[
-                    "deterministic_digest"
-                ],
+                "execution_authorization_digest": authorization["deterministic_digest"],
                 "run_manifest_digest": run_manifest["deterministic_digest"],
                 "schema_version": ARTIFACT_COMMIT_SCHEMA_VERSION,
                 "status": "COMMITTED",
@@ -3698,13 +4929,18 @@ def _publish_run_artifact_locked(
         # Readiness evidence is durable before publication.  A copied staging
         # directory remains non-authoritative until the post-rename artifact
         # commit receipt is present and exact.
-        _write_attempt_receipt(
+        ready_to_commit_receipt = _write_attempt_receipt(
             attempt,
             "ready_to_commit.json",
             phase="STARTED",
             status="READY_TO_COMMIT",
             run_manifest_digest=run_manifest["deterministic_digest"],
         )
+        success_receipts = {
+            "pre_outcome.json": pre_outcome_receipt,
+            "ready_to_commit.json": ready_to_commit_receipt,
+            "started.json": started_receipt,
+        }
         _assert_directory_path_identity(
             output.parent,
             parent_fd,
@@ -3772,24 +5008,52 @@ def _publish_run_artifact_locked(
             parent_stat,
             "run output parent",
         )
-        if not _published_artifact_matches(
-            parent_fd,
-            output.name,
-            staging_identity,
-            run_manifest,
+        if not _prove_committed_terminal_collective(
+            parent=output.parent,
+            parent_fd=parent_fd,
+            parent_stat=parent_stat,
+            attempt=attempt,
+            success_receipts=success_receipts,
+            output_name=output.name,
+            output_fd=output_fd,
+            staging_identity=staging_identity,
+            run_manifest=run_manifest,
             records_byte_count=records_byte_count,
             records_sha256=records_hasher.hexdigest(),
             commit_receipt=commit_receipt,
         ):
             raise DiagnosticRunnerError(
-                "published artifact changed before commit return"
+                "artifact and attempt did not close before lock retirement"
             )
-        _assert_started_output_parent_identity(
-            output.parent,
-            parent_fd,
-            parent_stat,
-        )
+        retire_before_terminal_proof()
+        try:
+            if not _prove_committed_terminal_collective(
+                parent=output.parent,
+                parent_fd=parent_fd,
+                parent_stat=parent_stat,
+                attempt=attempt,
+                success_receipts=success_receipts,
+                output_name=output.name,
+                output_fd=output_fd,
+                staging_identity=staging_identity,
+                run_manifest=run_manifest,
+                records_byte_count=records_byte_count,
+                records_sha256=records_hasher.hexdigest(),
+                commit_receipt=commit_receipt,
+            ):
+                raise DiagnosticPublicationStateAmbiguousError(
+                    "committed artifact or attempt conflicted after lock retirement"
+                )
+        except _PublicationLockRetirementAmbiguousError:
+            raise
+        except BaseException as terminal_error:
+            raise _PublicationLockRetirementAmbiguousError(
+                "terminal COMMITTED authority is ambiguous after lock "
+                f"retirement: {terminal_error}"
+            ) from terminal_error
         return run_manifest, commit_receipt
+    except _PublicationLockRetirementAmbiguousError:
+        raise
     except BaseException as error:
         reason = str(error)
         pinned_commit_identity = None
@@ -3835,12 +5099,15 @@ def _publish_run_artifact_locked(
                     parent=output.parent,
                     parent_fd=parent_fd,
                     parent_stat=parent_stat,
+                    attempt=attempt,
+                    success_receipts=success_receipts,
                     output_name=output.name,
                     staging_identity=staging_identity,
                     run_manifest=run_manifest,
                     records_byte_count=records_byte_count,
                     records_sha256=records_hasher.hexdigest(),
                     commit_receipt=commit_receipt,
+                    retire_publication_lock=retire_before_terminal_proof,
                 )
             except DiagnosticPublicationStateAmbiguousError:
                 raise
@@ -3878,12 +5145,10 @@ def _publish_run_artifact_locked(
             # retry before permitting a terminal INVALID receipt.
             try:
                 if output_fd >= 0:
-                    pinned_commit_identity = (
-                        _pinned_exact_artifact_commit_identity(
-                            output_fd,
-                            staging_identity,
-                            commit_receipt,
-                        )
+                    pinned_commit_identity = _pinned_exact_artifact_commit_identity(
+                        output_fd,
+                        staging_identity,
+                        commit_receipt,
                     )
                 public_commit_identity = _published_exact_artifact_commit_identity(
                     parent_fd,
@@ -3895,42 +5160,51 @@ def _publish_run_artifact_locked(
                 raise DiagnosticPublicationStateAmbiguousError(
                     "artifact commit absence could not be re-observed"
                 ) from observation_error
-            if (
-                pinned_commit_identity is not None
-                or public_commit_identity is not None
-            ):
+            if pinned_commit_identity is not None or public_commit_identity is not None:
                 commit_identity_observed = True
-        _assert_started_output_parent_identity(
-            output.parent,
-            parent_fd,
-            parent_stat,
+        _prove_attempt_terminal_authority(
+            parent=output.parent,
+            parent_fd=parent_fd,
+            parent_stat=parent_stat,
+            attempt=attempt,
+        )
+        invalid_receipt = _attempt_receipt(
+            attempt,
+            phase="STARTED",
+            status="INVALID",
+            reason=reason,
         )
         try:
-            _write_attempt_receipt(
+            if not _attempt_receipt_matches(
                 attempt,
                 "invalid.json",
-                phase="STARTED",
-                status="INVALID",
-                reason=reason,
-            )
+                invalid_receipt,
+            ):
+                _write_attempt_receipt(
+                    attempt,
+                    "invalid.json",
+                    phase="STARTED",
+                    status="INVALID",
+                    reason=reason,
+                )
         except BaseException as terminal_error:
             raise DiagnosticPublicationStateAmbiguousError(
                 "INVALID receipt durability is unproven"
             ) from terminal_error
-        _assert_started_output_parent_identity(
-            output.parent,
-            parent_fd,
-            parent_stat,
+        _prove_attempt_terminal_authority(
+            parent=output.parent,
+            parent_fd=parent_fd,
+            parent_stat=parent_stat,
+            attempt=attempt,
+            required_receipts={"invalid.json": invalid_receipt},
         )
         if commit_context_exists:
             try:
                 if output_fd >= 0:
-                    pinned_commit_identity = (
-                        _pinned_exact_artifact_commit_identity(
-                            output_fd,
-                            staging_identity,
-                            commit_receipt,
-                        )
+                    pinned_commit_identity = _pinned_exact_artifact_commit_identity(
+                        output_fd,
+                        staging_identity,
+                        commit_receipt,
                     )
                     if pinned_commit_identity is not None and (
                         not _revoke_exact_artifact_commit_at(
@@ -3956,10 +5230,12 @@ def _publish_run_artifact_locked(
                     # Member revocation is barriered by the artifact directory.
                     # A persistent parent barrier failure retains INVALID only
                     # while the lexical parent still names the pinned directory.
-                    _assert_started_output_parent_identity(
-                        output.parent,
-                        parent_fd,
-                        parent_stat,
+                    _prove_attempt_terminal_authority(
+                        parent=output.parent,
+                        parent_fd=parent_fd,
+                        parent_stat=parent_stat,
+                        attempt=attempt,
+                        required_receipts={"invalid.json": invalid_receipt},
                     )
             except DiagnosticPublicationStateAmbiguousError:
                 raise
@@ -3967,26 +5243,18 @@ def _publish_run_artifact_locked(
                 raise DiagnosticPublicationStateAmbiguousError(
                     "final artifact commit reconciliation failed"
                 ) from reconciliation_error
-        _assert_started_output_parent_identity(
-            output.parent,
-            parent_fd,
-            parent_stat,
-        )
+        retire_before_terminal_proof()
         if commit_context_exists:
             try:
-                if output_fd >= 0 and not _durably_prove_file_not_exact_at(
-                    output_fd,
-                    "commit.json",
-                    _canonical_bytes(commit_receipt),
-                    label="pinned artifact commit",
-                ):
-                    raise DiagnosticPublicationStateAmbiguousError(
-                        "pinned artifact commit remained after final reconciliation"
-                    )
-                remaining_public_content = _published_artifact_content_identity(
-                    parent_fd,
-                    output.name,
-                    run_manifest,
+                _prove_invalid_terminal_collective(
+                    parent=output.parent,
+                    parent_fd=parent_fd,
+                    parent_stat=parent_stat,
+                    attempt=attempt,
+                    invalid_receipt=invalid_receipt,
+                    output_name=output.name,
+                    output_fd=output_fd,
+                    run_manifest=run_manifest,
                     records_byte_count=records_byte_count,
                     records_sha256=records_hasher.hexdigest(),
                     commit_receipt=commit_receipt,
@@ -3997,15 +5265,14 @@ def _publish_run_artifact_locked(
                 raise DiagnosticPublicationStateAmbiguousError(
                     "final artifact commit absence is unproven"
                 ) from reconciliation_error
-            if remaining_public_content is not None:
-                raise DiagnosticPublicationStateAmbiguousError(
-                    "an exact committed artifact remains public after INVALID"
-                ) from error
-        _assert_started_output_parent_identity(
-            output.parent,
-            parent_fd,
-            parent_stat,
-        )
+        else:
+            _prove_attempt_terminal_authority(
+                parent=output.parent,
+                parent_fd=parent_fd,
+                parent_stat=parent_stat,
+                attempt=attempt,
+                required_receipts={"invalid.json": invalid_receipt},
+            )
         raise DiagnosticInvalidRunError(reason) from error
     finally:
         _close_descriptor_best_effort(output_fd)
@@ -4022,31 +5289,9 @@ def run_countdown_thompson_diagnostic(
     *,
     repository_root: Path,
 ) -> dict[str, Any]:
-    """Execute exactly the sealed matrix after a fresh path-based preflight."""
+    """Fail closed until creation and ownership share one atomic primitive."""
 
-    try:
-        preflight, authorization = _load_and_match_authorization(
-            Path(authorization_path),
-            authorization_digest,
-            authorization_revision,
-            bundle_path=Path(bundle_path),
-            output_path=Path(output_path),
-            repository_root=Path(repository_root),
-        )
-    except (
-        DiagnosticInvalidRunError,
-        DiagnosticPublicationStateAmbiguousError,
-    ):
-        raise
-    except Exception as error:
-        raise DiagnosticNotRunError(str(error)) from error
-    return _publish_run_artifact(
-        preflight,
-        authorization,
-        reviewed_authorization_revision=authorization_revision,
-        repository_root=Path(repository_root),
-        _terminal_result=True,
-    )
+    raise DiagnosticNotRunError(_PUBLICATION_BACKEND_REFUSAL)
 
 
 def _self_test() -> dict[str, Any]:

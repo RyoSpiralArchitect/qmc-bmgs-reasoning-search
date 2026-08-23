@@ -161,6 +161,66 @@ class RegularFilePublicationV2Tests(unittest.TestCase):
         finally:
             os.close(descriptor)
 
+    def _crash_before_terminal_fsync(
+        self,
+        output: Path,
+        status: str,
+    ) -> subprocess.CompletedProcess[bytes]:
+        code = """
+import os
+import sys
+from qmc_bmgs.experiments import countdown_thompson_regular_file_publication_v2 as publication
+
+output = sys.argv[1]
+status = sys.argv[2]
+layout = publication.RegularFileLayoutV2.from_output_path(output)
+target_name = {
+    'NOT_RUN': layout.not_run_name,
+    'INVALID': layout.invalid_name,
+    'COMMITTED': layout.commit_name,
+}[status]
+target_descriptor = -1
+real_fsync = publication.os.fsync
+
+def hook(event, context):
+    global target_descriptor
+    if event == 'after_exclusive_open' and context['name'] == target_name:
+        target_descriptor = int(context['file_descriptor'])
+
+def crashing_fsync(descriptor):
+    if descriptor == target_descriptor:
+        os._exit(31)
+    return real_fsync(descriptor)
+
+publication.os.fsync = crashing_fsync
+
+def precheck():
+    if status == 'NOT_RUN':
+        raise ValueError('synthetic pre-outcome stop')
+
+def action():
+    if status == 'INVALID':
+        raise RuntimeError('synthetic post-started stop')
+    return [{'status': status}]
+
+publication.publish_synthetic_fixture_v2(
+    output,
+    authorization_digest='a' * 64,
+    fixture_action=action,
+    _pre_outcome_check=precheck,
+    _event_hook=hook,
+)
+"""
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = os.fspath(
+            Path(__file__).resolve().parents[1] / "src"
+        )
+        return subprocess.run(
+            [sys.executable, "-c", code, os.fspath(output), status],
+            env=environment,
+            check=False,
+        )
+
     def test_happy_path_is_flat_commit_last_and_verifies(self) -> None:
         durable_order: list[str] = []
 
@@ -238,6 +298,47 @@ class RegularFilePublicationV2Tests(unittest.TestCase):
         }
         self.assertEqual(calls, 0)
         self.assertEqual(after, before)
+
+    def test_namespace_reservation_collapses_ascii_case_aliases(self) -> None:
+        names = (
+            "Artifact.Commit.JSON",
+            "artifact.commit.json",
+        )
+        layouts = [
+            publication.RegularFileLayoutV2.from_output_path(self.root / name)
+            for name in names
+        ]
+        self.assertEqual(len({layout.output_namespace_digest for layout in layouts}), 1)
+        self.assertEqual(len({layout.output_path_digest for layout in layouts}), 2)
+        for attribute in (
+            "attempt_name",
+            "started_name",
+            "ready_name",
+            "not_run_name",
+            "invalid_name",
+            "records_name",
+            "manifest_name",
+        ):
+            self.assertEqual(
+                len({getattr(layout, attribute) for layout in layouts}),
+                1,
+            )
+
+    def test_non_ascii_output_basename_is_refused_before_action(self) -> None:
+        calls = 0
+
+        def action() -> list[dict[str, object]]:
+            nonlocal calls
+            calls += 1
+            return []
+
+        with self.assertRaises(publication.RegularFilePublicationV2NotRunError):
+            self._publish(
+                output=self.root / "Ａrtifact.commit.json",
+                fixture_action=action,
+            )
+        self.assertEqual(calls, 0)
+        self.assertEqual(list(self.root.iterdir()), [])
 
     def test_preexisting_output_is_preserved_before_attempt_or_action(self) -> None:
         self.output.write_bytes(b"foreign-output")
@@ -1555,6 +1656,121 @@ class RegularFilePublicationV2Tests(unittest.TestCase):
                 self._publish(fixture_action=action)
         self.assertEqual(calls, 0)
         self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_restart_inspector_forward_syncs_exact_prebarrier_terminals(self) -> None:
+        for status in ("NOT_RUN", "INVALID", "COMMITTED"):
+            with self.subTest(status=status):
+                case_root = self.root / status.lower()
+                case_root.mkdir()
+                output = case_root / "artifact.commit.json"
+                completed = self._crash_before_terminal_fsync(output, status)
+                self.assertEqual(completed.returncode, 31)
+
+                layout = publication.RegularFileLayoutV2.from_output_path(output)
+                terminal_path = case_root / {
+                    "NOT_RUN": layout.not_run_name,
+                    "INVALID": layout.invalid_name,
+                    "COMMITTED": layout.commit_name,
+                }[status]
+                terminal_stat = os.lstat(terminal_path)
+                terminal_identity = (terminal_stat.st_dev, terminal_stat.st_ino)
+                original_fsync = publication.os.fsync
+
+                def failing_terminal_fsync(descriptor: int) -> None:
+                    observed = os.fstat(descriptor)
+                    if (observed.st_dev, observed.st_ino) == terminal_identity:
+                        raise OSError(errno.EIO, "synthetic forward-sync failure")
+                    original_fsync(descriptor)
+
+                with mock.patch.object(
+                    publication.os,
+                    "fsync",
+                    side_effect=failing_terminal_fsync,
+                ):
+                    with self.assertRaises(
+                        publication.RegularFilePublicationV2AmbiguousError
+                    ):
+                        publication.inspect_synthetic_publication_v2(output)
+
+                terminal_syncs = 0
+
+                def recording_fsync(descriptor: int) -> None:
+                    nonlocal terminal_syncs
+                    observed = os.fstat(descriptor)
+                    if (observed.st_dev, observed.st_ino) == terminal_identity:
+                        terminal_syncs += 1
+                    original_fsync(descriptor)
+
+                with mock.patch.object(
+                    publication.os,
+                    "fsync",
+                    side_effect=recording_fsync,
+                ):
+                    inspected = publication.inspect_synthetic_publication_v2(output)
+                self.assertEqual(inspected["status"], status)
+                self.assertGreaterEqual(terminal_syncs, 2)
+
+    def test_case_insensitive_output_alias_cannot_reexecute_authorization(self) -> None:
+        probe = self.root / "CaseSensitivityProbe"
+        alias = self.root / "casesensitivityprobe"
+        probe.write_bytes(b"probe")
+        try:
+            case_insensitive = alias.exists() and os.path.samefile(probe, alias)
+        finally:
+            probe.unlink()
+        if not case_insensitive:
+            self.skipTest("filesystem is case-sensitive")
+
+        first_output = self.root / "Artifact.Commit.JSON"
+        alias_output = self.root / "artifact.commit.json"
+        first_layout = publication.RegularFileLayoutV2.from_output_path(first_output)
+        alias_layout = publication.RegularFileLayoutV2.from_output_path(alias_output)
+        self.assertEqual(first_layout.attempt_name, alias_layout.attempt_name)
+
+        code = """
+import os
+import sys
+from qmc_bmgs.experiments.countdown_thompson_regular_file_publication_v2 import publish_synthetic_fixture_v2
+
+def hook(event, context):
+    if event == 'after_started':
+        os._exit(17)
+
+publish_synthetic_fixture_v2(
+    sys.argv[1],
+    authorization_digest='a' * 64,
+    fixture_action=lambda: [{'must_not': 'return'}],
+    _event_hook=hook,
+)
+"""
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = os.fspath(
+            Path(__file__).resolve().parents[1] / "src"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", code, os.fspath(first_output)],
+            env=environment,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 17)
+
+        calls = 0
+
+        def action() -> list[dict[str, object]]:
+            nonlocal calls
+            calls += 1
+            return []
+
+        with self.assertRaises(publication.RegularFilePublicationV2NotRunError):
+            self._publish(
+                output=alias_output,
+                authorization=AUTHORIZATION_B,
+                fixture_action=action,
+            )
+        self.assertEqual(calls, 0)
+        self.assertFalse(first_output.exists())
+        with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
+            publication.inspect_synthetic_publication_v2(first_output)
 
     def test_crash_after_started_spends_authorization_without_reexecution(self) -> None:
         code = """

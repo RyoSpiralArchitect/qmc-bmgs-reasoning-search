@@ -241,6 +241,10 @@ def _snapshot_output_path(output_path: Path | str) -> Path:
         raise RegularFilePublicationV2NotRunError(
             "output path contains an invalid lexical component"
         )
+    if not candidate.name.isascii():
+        raise RegularFilePublicationV2NotRunError(
+            "output basename must be ASCII for stable namespace alias closure"
+        )
     return candidate
 
 
@@ -250,6 +254,7 @@ class RegularFileLayoutV2:
 
     output_path: Path
     output_path_digest: str
+    output_namespace_digest: str
     attempt_name: str
     started_name: str
     ready_name: str
@@ -263,10 +268,13 @@ class RegularFileLayoutV2:
     def from_output_path(cls, output_path: Path | str) -> RegularFileLayoutV2:
         output = _snapshot_output_path(output_path)
         output_digest = _sha256_bytes(os.fsencode(os.fspath(output)))
-        prefix = f".qmc-bmgs-v2-{output_digest}"
+        namespace_name = output.name.lower()
+        namespace_digest = _sha256_bytes(os.fsencode(namespace_name))
+        prefix = f".qmc-bmgs-v2-{namespace_digest}"
         layout = cls(
             output_path=output,
             output_path_digest=output_digest,
+            output_namespace_digest=namespace_digest,
             attempt_name=f"{prefix}.attempt.json",
             started_name=f"{prefix}.started.json",
             ready_name=f"{prefix}.ready-to-commit.json",
@@ -1567,6 +1575,56 @@ def _read_bounded_regular_file_at(
         _close_best_effort(descriptor)
 
 
+def _forward_sync_exact_regular_file_at(
+    parent: _PinnedParent,
+    name: str,
+) -> None:
+    """Re-establish durability without changing file bytes or namespace."""
+
+    descriptor = -1
+    try:
+        before = os.stat(name, dir_fd=parent.descriptor, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_uid != os.geteuid()
+        ):
+            raise RegularFilePublicationV2AmbiguousError(
+                f"{name} is not an exact private regular file for forward sync"
+            )
+        flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+        descriptor = os.open(name, flags, dir_fd=parent.descriptor)
+        opened = os.fstat(descriptor)
+        signature = _stable_file_signature(opened)
+        if signature != _stable_file_signature(before):
+            raise RegularFilePublicationV2AmbiguousError(
+                f"{name} changed while it was opened for forward sync"
+            )
+        os.fsync(descriptor)
+        after_descriptor = os.fstat(descriptor)
+        after_path = os.stat(
+            name,
+            dir_fd=parent.descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            _stable_file_signature(after_descriptor) != signature
+            or _stable_file_signature(after_path) != signature
+        ):
+            raise RegularFilePublicationV2AmbiguousError(
+                f"{name} changed across its forward durability barrier"
+            )
+    except RegularFilePublicationV2AmbiguousError:
+        raise
+    except OSError as error:
+        raise RegularFilePublicationV2AmbiguousError(
+            f"{name} could not be forward-synchronized exactly"
+        ) from error
+    finally:
+        _close_best_effort(descriptor)
+
+
 def _read_canonical_object_at(
     parent: _PinnedParent,
     name: str,
@@ -2001,6 +2059,38 @@ def _inspect_payload_once(
     }
 
 
+def _terminal_forward_sync_names(
+    parent: _PinnedParent,
+    layout: RegularFileLayoutV2,
+    result: Mapping[str, Any],
+) -> tuple[str, ...]:
+    status = result.get("status")
+    if status == "UNRESERVED":
+        return ()
+    if status == "NOT_RUN":
+        return (layout.attempt_name, layout.not_run_name)
+    if status == "INVALID":
+        names = [layout.attempt_name, layout.started_name]
+        if _name_exists(parent, layout.ready_name):
+            names.extend(
+                (layout.records_name, layout.manifest_name, layout.ready_name)
+            )
+        names.append(layout.invalid_name)
+        return tuple(names)
+    if status == "COMMITTED":
+        return (
+            layout.attempt_name,
+            layout.started_name,
+            layout.records_name,
+            layout.manifest_name,
+            layout.ready_name,
+            layout.commit_name,
+        )
+    raise RegularFilePublicationV2AmbiguousError(
+        "validated publication has no known terminal durability state"
+    )
+
+
 def _inspect_once(
     parent: _PinnedParent,
     layout: RegularFileLayoutV2,
@@ -2013,6 +2103,11 @@ def _inspect_once(
     before_parent = _parent_generation(parent)
     before_reserved = _reserved_generation(parent, layout.reserved_names)
     result = _inspect_payload_once(parent, layout, expected_authorization_digest)
+    sync_names = _terminal_forward_sync_names(parent, layout, result)
+    for name in sync_names:
+        _forward_sync_exact_regular_file_at(parent, name)
+    if sync_names:
+        parent.fsync()
     after_reserved = _reserved_generation(parent, layout.reserved_names)
     after_parent = _parent_generation(parent)
     parent.assert_path()
@@ -2028,7 +2123,7 @@ def inspect_synthetic_publication_v2(
     *,
     authorization_digest: str | None = None,
 ) -> dict[str, Any]:
-    """Validate one terminal synthetic v2 collective without mutating it."""
+    """Validate and forward-sync one exact terminal synthetic v2 collective."""
 
     _require_posix_capabilities()
     layout = RegularFileLayoutV2.from_output_path(output_path)

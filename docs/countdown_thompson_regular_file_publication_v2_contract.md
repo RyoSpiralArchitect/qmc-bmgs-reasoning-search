@@ -15,19 +15,27 @@ For an absolute output path `P/A`, v2 uses one flat namespace in the already
 existing, non-symlink parent `P`:
 
 ```text
-P/.qmc-bmgs-v2-<sha256(output path)>.attempt.json
-P/.qmc-bmgs-v2-<sha256(output path)>.started.json
-P/.qmc-bmgs-v2-<sha256(output path)>.ready-to-commit.json
-P/.qmc-bmgs-v2-<sha256(output path)>.not-run.json
-P/.qmc-bmgs-v2-<sha256(output path)>.invalid.json
-P/.qmc-bmgs-v2-<sha256(output path)>.records.jsonl
-P/.qmc-bmgs-v2-<sha256(output path)>.manifest.json
+P/.qmc-bmgs-v2-<sha256(lowercase ASCII basename)>.attempt.json
+P/.qmc-bmgs-v2-<sha256(lowercase ASCII basename)>.started.json
+P/.qmc-bmgs-v2-<sha256(lowercase ASCII basename)>.ready-to-commit.json
+P/.qmc-bmgs-v2-<sha256(lowercase ASCII basename)>.not-run.json
+P/.qmc-bmgs-v2-<sha256(lowercase ASCII basename)>.invalid.json
+P/.qmc-bmgs-v2-<sha256(lowercase ASCII basename)>.records.jsonl
+P/.qmc-bmgs-v2-<sha256(lowercase ASCII basename)>.manifest.json
 P/A                                                     # commit receipt, last
 ```
 
-The attempt name depends on the exact output path, not the authorization
-digest. An output path is therefore single-use across all authorizations. A
-retry requires a new reviewed output path.
+The output basename must be ASCII. The attempt name depends on a conservative
+lowercase digest of that basename within its pinned parent, not the
+authorization digest. The exact lexical output path retains a separate
+provenance digest. Case-only and parent-path aliases that reach the same
+directory therefore contend on the same sidecar reservation, while Unicode
+filename-equivalence rules cannot create an unmodelled alias because non-ASCII
+basenames are refused before parent access. This deliberately over-collapses
+case variants on case-sensitive filesystems: denial of service is safer than
+executing twice through a filesystem alias. A reserved output namespace is
+single-use across all authorizations; a retry requires a new reviewed output
+name.
 
 Every protocol file is created directly at its final name with:
 
@@ -90,8 +98,12 @@ Monotonic boundaries:
   retained terminal descriptor exists, and the complete exact snapshot still
   runs. Any mutation made before the exception therefore remains AMBIGUOUS.
 - A process restart may validate an exact terminal collective, but it may not
-  reclaim or resume a non-terminal reservation. The authorization remains
-  spent and the state is AMBIGUOUS.
+  reclaim or resume a non-terminal reservation. Before returning a recovered
+  terminal, the verifier reopens every authoritative member, proves its stable
+  generation across `fsync(file_fd)`, then `fsync`s the parent and repeats the
+  full snapshot. Thus visible pre-barrier bytes are forward-completed rather
+  than mistaken for evidence that the interrupted publisher's barrier returned.
+  The authorization remains spent and a non-terminal state is AMBIGUOUS.
 
 ## Implemented evidence
 
@@ -99,7 +111,8 @@ The phase-1 module provides:
 
 - a synthetic-only publisher whose outcome callback is invoked only after the
   exact STARTED boundary;
-- a read-only terminal collective verifier;
+- a byte- and namespace-nonmutating terminal verifier that forward-syncs exact
+  terminal files and their parent before returning recovered authority;
 - a `--self-test` CLI with no `--plan` or `--run` surface;
 - adversarial regressions for reservation races, first-stat substitution,
   restrictive `umask`, permission widening, foreign entry types, short writes,
@@ -107,7 +120,8 @@ The phase-1 module provides:
   mutation, byte-identical name replacement, terminal-hook failure and
   mutation, conflicting terminal receipts, READY-backed INVALID closure,
   verifier producer-image bounds, descriptor cleanup, parent pivot, subprocess
-  crash, and a two-process reservation race.
+  crashes before each terminal barrier, case-insensitive output aliases, and a
+  two-process reservation race.
 
 The existing v1 schemas, directory publisher, analyzer, and production entry
 point are unchanged. The v1 fixture publisher remains private and the real

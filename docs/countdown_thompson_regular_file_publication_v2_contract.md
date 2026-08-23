@@ -3,6 +3,9 @@
 Status: implemented and verified for non-diagnostic synthetic fixtures only.
 Production diagnostic execution remains disabled.
 
+Wire revision: `v2r2`. The superseded pre-release `.qmc-bmgs-v2-` namespace is
+not adopted or migrated by this revision.
+
 ## Question
 
 Can the diagnostic publisher obtain exact attempt and artifact authority without
@@ -15,27 +18,40 @@ For an absolute output path `P/A`, v2 uses one flat namespace in the already
 existing, non-symlink parent `P`:
 
 ```text
-P/.qmc-bmgs-v2-<sha256(lowercase ASCII basename)>.attempt.json
-P/.qmc-bmgs-v2-<sha256(lowercase ASCII basename)>.started.json
-P/.qmc-bmgs-v2-<sha256(lowercase ASCII basename)>.ready-to-commit.json
-P/.qmc-bmgs-v2-<sha256(lowercase ASCII basename)>.not-run.json
-P/.qmc-bmgs-v2-<sha256(lowercase ASCII basename)>.invalid.json
-P/.qmc-bmgs-v2-<sha256(lowercase ASCII basename)>.records.jsonl
-P/.qmc-bmgs-v2-<sha256(lowercase ASCII basename)>.manifest.json
+P/.qmc-bmgs-v2r2-<sha256(lowercase ASCII basename)>.attempt.json
+P/.qmc-bmgs-v2r2-<sha256(lowercase ASCII basename)>.started.json
+P/.qmc-bmgs-v2r2-<sha256(lowercase ASCII basename)>.ready-to-commit.json
+P/.qmc-bmgs-v2r2-<sha256(lowercase ASCII basename)>.not-run.json
+P/.qmc-bmgs-v2r2-<sha256(lowercase ASCII basename)>.invalid.json
+P/.qmc-bmgs-v2r2-<sha256(lowercase ASCII basename)>.records.jsonl
+P/.qmc-bmgs-v2r2-<sha256(lowercase ASCII basename)>.manifest.json
 P/A                                                     # commit receipt, last
 ```
 
-The output basename must be ASCII. The attempt name depends on a conservative
-lowercase digest of that basename within its pinned parent, not the
-authorization digest. The exact lexical output path retains a separate
-provenance digest. Case-only and parent-path aliases that reach the same
-directory therefore contend on the same sidecar reservation, while Unicode
-filename-equivalence rules cannot create an unmodelled alias because non-ASCII
-basenames are refused before parent access. This deliberately over-collapses
-case variants on case-sensitive filesystems: denial of service is safer than
-executing twice through a filesystem alias. A reserved output namespace is
-single-use across all authorizations; a retry requires a new reviewed output
-name.
+The output basename must be ASCII and its lowercase spelling may not begin
+`.qmc-bmgs-`; that namespace is permanently reserved for protocol authority
+files. The attempt name depends on a conservative lowercase digest of the
+basename within its pinned parent, not the authorization digest. The exact
+lexical output path retains a separate provenance digest. Case-only and
+parent-path aliases that reach the same directory therefore contend on the same
+sidecar reservation, while commit names cannot alias another output's internal
+sidecar. Unicode filename-equivalence rules cannot create an unmodelled output
+alias because non-ASCII basenames are refused before parent access. This
+deliberately over-collapses case variants on case-sensitive filesystems: denial
+of service is safer than executing twice through a filesystem alias. A reserved
+output namespace is single-use across all authorizations; a retry requires a
+new reviewed output name.
+
+`v2r2` also performs a stable descriptor-bound directory scan before ownership,
+before STARTED/callback boundaries, during every terminal proof, and during
+restart inspection. Any entry whose lowercase name begins the superseded
+`.qmc-bmgs-v2-` prefix blocks every output in that parent, regardless of the
+entry's type, suffix, or bytes. It is never adopted, renamed, removed, or
+forward-synchronized. This directory-wide fence prevents an old exact-path
+reservation from being overlooked through a parent or basename alias. Running
+a superseded publisher concurrently is outside the transition contract: all
+older publisher processes must be quiescent before a parent is used with
+`v2r2`.
 
 Every protocol file is created directly at its final name with:
 
@@ -120,8 +136,9 @@ The phase-1 module provides:
   mutation, byte-identical name replacement, terminal-hook failure and
   mutation, conflicting terminal receipts, READY-backed INVALID closure,
   verifier producer-image bounds, descriptor cleanup, parent pivot, subprocess
-  crashes before each terminal barrier, case-insensitive output aliases, and a
-  two-process reservation race.
+  crashes before each terminal barrier, case-insensitive output aliases,
+  commit/sidecar overlap, superseded-namespace refusal, and a two-process
+  reservation race.
 
 The existing v1 schemas, directory publisher, analyzer, and production entry
 point are unchanged. The v1 fixture publisher remains private and the real
@@ -139,16 +156,18 @@ Observed:
 Not established:
 
 - authorization of the sealed 240-cell diagnostic;
-- compatibility with the existing v1 analyzer or authorizations;
+- compatibility with the existing v1 analyzer, authorizations, or the
+  superseded pre-release regular-file namespace;
 - correctness on NFS, SMB, FUSE, or other unqualified filesystems;
 - power-loss guarantees beyond the host filesystem's `fsync` contract;
-- protection from a malicious kernel, root, or a same-UID process that already
-  holds writable descriptors;
+- protection from a malicious kernel or root, or any untrusted process running
+  under the publisher's effective UID with access to the output namespace or
+  retained descriptors;
 - any scientific result, direction, quality, or performance claim.
 
 Production integration requires a separate authorization schema that binds
-`publication_backend=posix_regular_files/v2` and
-`artifact_layout=flat_commit_root/v2`, a production v2 analyzer, source/seal
+`publication_backend=posix_regular_files/v2r2` and
+`artifact_layout=flat_commit_root/v2r2`, a production v2r2 analyzer, source/seal
 closure integration, platform/filesystem qualification, and a fresh exact-head
 authority review.
 
@@ -156,9 +175,16 @@ authority review.
 
 - local POSIX `openat(O_EXCL)`, inode/link count, regular-file `fsync`, and
   directory `fsync` behave according to the host filesystem contract;
+- for accepted ASCII basenames, any filesystem name alias has the same
+  lowercase ASCII spelling; filesystems with trailing-dot/space folding, 8.3
+  aliases, or other equivalence rules are unqualified;
+- all superseded publisher binaries and processes are quiescent before `v2r2`
+  uses a parent directory;
 - inode metadata generation does not perform an undetectable ABA inside one
   collective proof interval;
-- denial of service is allowed: interference may force AMBIGUOUS, but must not
+- all same-UID processes with namespace access are part of the trusted computing
+  base; within that boundary, interference may force AMBIGUOUS but must not
   produce a false COMMITTED result;
 - exact terminal bytes can be integrity-validated after restart, but retained
-  descriptor provenance ends with the publishing process.
+  descriptor provenance ends with the publishing process, so inspection proves
+  structural consistency and durability rather than creator authentication.

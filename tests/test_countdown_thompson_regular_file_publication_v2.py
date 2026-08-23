@@ -324,6 +324,68 @@ publication.publish_synthetic_fixture_v2(
                 1,
             )
 
+    def test_protocol_prefix_is_refused_before_parent_access(self) -> None:
+        missing_parent = self.root / "must-not-be-opened"
+        for basename in (
+            ".QMC-BMGS-V2-legacy.attempt.json",
+            ".qmc-bmgs-v2r2-current.started.json",
+            ".QmC-BmGs-future-authority",
+        ):
+            with self.subTest(basename=basename):
+                calls = 0
+
+                def action() -> list[dict[str, object]]:
+                    nonlocal calls
+                    calls += 1
+                    return []
+
+                with self.assertRaises(
+                    publication.RegularFilePublicationV2NotRunError
+                ):
+                    self._publish(
+                        output=missing_parent / basename,
+                        fixture_action=action,
+                    )
+                self.assertEqual(calls, 0)
+                self.assertFalse(missing_parent.exists())
+
+    def test_every_internal_sidecar_is_forbidden_as_an_output(self) -> None:
+        layout = publication.RegularFileLayoutV2.from_output_path(self.output)
+        sidecars = {
+            role: name for role, name in layout.names.items() if role != "commit"
+        }
+        self.assertTrue(sidecars)
+        for role, name in sidecars.items():
+            for candidate in (name, name.upper()):
+                with self.subTest(role=role, candidate=candidate):
+                    with self.assertRaises(
+                        publication.RegularFilePublicationV2NotRunError
+                    ):
+                        publication.RegularFileLayoutV2.from_output_path(
+                            self.root / candidate
+                        )
+
+    def test_cross_layout_commit_sidecar_overlap_is_refused_before_started(
+        self,
+    ) -> None:
+        first = publication.RegularFileLayoutV2.from_output_path(
+            self.root / "alpha.json"
+        )
+        calls = 0
+
+        def action() -> list[dict[str, object]]:
+            nonlocal calls
+            calls += 1
+            return []
+
+        with self.assertRaises(publication.RegularFilePublicationV2NotRunError):
+            self._publish(
+                output=self.root / first.started_name,
+                fixture_action=action,
+            )
+        self.assertEqual(calls, 0)
+        self.assertEqual(list(self.root.iterdir()), [])
+
     def test_non_ascii_output_basename_is_refused_before_action(self) -> None:
         calls = 0
 
@@ -339,6 +401,217 @@ publication.publish_synthetic_fixture_v2(
             )
         self.assertEqual(calls, 0)
         self.assertEqual(list(self.root.iterdir()), [])
+
+        with self.assertRaises(publication.RegularFilePublicationV2NotRunError):
+            publication.inspect_synthetic_publication_v2(
+                self.root / "Ａrtifact.commit.json"
+            )
+
+    def test_superseded_exact_path_states_are_never_reexecuted(self) -> None:
+        terminal_suffixes = {
+            "NOT_RUN": "not-run.json",
+            "INVALID": "invalid.json",
+            "STARTED": "started.json",
+            "COMMITTED": "ready-to-commit.json",
+        }
+        for status, suffix in terminal_suffixes.items():
+            with self.subTest(status=status):
+                case_root = self.root / status.lower()
+                case_root.mkdir()
+                output = case_root / "artifact.commit.json"
+                exact_digest = publication._sha256_bytes(
+                    os.fsencode(os.fspath(output))
+                )
+                old_prefix = (
+                    f"{publication._LEGACY_INTERNAL_NAME_PREFIX}{exact_digest}"
+                )
+                old_attempt = case_root / f"{old_prefix}.attempt.json"
+                old_terminal = case_root / f"{old_prefix}.{suffix}"
+                old_attempt.write_bytes(b"superseded-attempt")
+                old_terminal.write_bytes(b"superseded-terminal")
+                if status == "COMMITTED":
+                    output.write_bytes(b"superseded-commit")
+                before = {
+                    path.name: path.read_bytes()
+                    for path in (old_attempt, old_terminal)
+                }
+                calls = 0
+
+                def action() -> list[dict[str, object]]:
+                    nonlocal calls
+                    calls += 1
+                    return []
+
+                with self.assertRaises(
+                    publication.RegularFilePublicationV2NotRunError
+                ):
+                    self._publish(output=output, fixture_action=action)
+                self.assertEqual(calls, 0)
+                self.assertEqual(
+                    {
+                        path.name: path.read_bytes()
+                        for path in (old_attempt, old_terminal)
+                    },
+                    before,
+                )
+                with self.assertRaises(
+                    publication.RegularFilePublicationV2AmbiguousError
+                ):
+                    publication.inspect_synthetic_publication_v2(output)
+
+    def test_any_superseded_entry_type_blocks_the_entire_parent(self) -> None:
+        entry_kinds = ("regular", "directory", "symlink", "fifo", "socket")
+        for kind in entry_kinds:
+            with self.subTest(kind=kind):
+                case_root = self.root / kind
+                case_root.mkdir()
+                legacy = case_root / (
+                    f"{publication._LEGACY_INTERNAL_NAME_PREFIX}{kind}.garbage"
+                )
+                bound_socket: socket.socket | None = None
+                if kind == "regular":
+                    legacy.write_bytes(b"foreign")
+                elif kind == "directory":
+                    legacy.mkdir()
+                elif kind == "symlink":
+                    legacy.symlink_to("missing")
+                elif kind == "fifo":
+                    os.mkfifo(legacy)
+                else:
+                    bound_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    bound_socket.bind(os.fspath(legacy))
+                calls = 0
+
+                def action() -> list[dict[str, object]]:
+                    nonlocal calls
+                    calls += 1
+                    return []
+
+                try:
+                    output = case_root / "unrelated-output.json"
+                    with self.assertRaises(
+                        publication.RegularFilePublicationV2NotRunError
+                    ):
+                        self._publish(output=output, fixture_action=action)
+                    self.assertEqual(calls, 0)
+                    self.assertTrue(os.path.lexists(legacy))
+                    with self.assertRaises(
+                        publication.RegularFilePublicationV2AmbiguousError
+                    ):
+                        publication.inspect_synthetic_publication_v2(output)
+                finally:
+                    if bound_socket is not None:
+                        bound_socket.close()
+
+    def test_new_revision_does_not_trigger_its_legacy_fence(self) -> None:
+        first = self.root / "first.json"
+        second = self.root / "second.json"
+        self.assertEqual(self._publish(output=first)["status"], "COMMITTED")
+        self.assertEqual(self._publish(output=second)["status"], "COMMITTED")
+        self.assertEqual(
+            publication.inspect_synthetic_publication_v2(first)["status"],
+            "COMMITTED",
+        )
+        self.assertEqual(
+            publication.inspect_synthetic_publication_v2(second)["status"],
+            "COMMITTED",
+        )
+
+    def test_parent_generation_change_during_legacy_scan_is_not_run(self) -> None:
+        original_listdir = publication.os.listdir
+        raced = False
+        calls = 0
+
+        def racing_listdir(descriptor: int) -> list[str]:
+            nonlocal raced
+            if not raced:
+                raced = True
+                transient = self.root / "transient-entry"
+                transient.write_bytes(b"race")
+                transient.unlink()
+            return original_listdir(descriptor)
+
+        def action() -> list[dict[str, object]]:
+            nonlocal calls
+            calls += 1
+            return []
+
+        with mock.patch.object(publication.os, "listdir", side_effect=racing_listdir):
+            with self.assertRaises(publication.RegularFilePublicationV2NotRunError):
+                self._publish(fixture_action=action)
+        self.assertTrue(raced)
+        self.assertEqual(calls, 0)
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_legacy_entry_injected_during_preflight_parent_fsync_is_not_run(
+        self,
+    ) -> None:
+        original_fsync = publication._PinnedParent.fsync
+        legacy = self.root / ".QMC-BMGS-V2-injected.invalid.json"
+        injected = False
+        calls = 0
+
+        def injecting_fsync(parent: object) -> None:
+            nonlocal injected
+            original_fsync(parent)
+            if not injected:
+                injected = True
+                legacy.write_bytes(b"superseded")
+
+        def action() -> list[dict[str, object]]:
+            nonlocal calls
+            calls += 1
+            return []
+
+        with mock.patch.object(
+            publication._PinnedParent,
+            "fsync",
+            autospec=True,
+            side_effect=injecting_fsync,
+        ):
+            with self.assertRaises(publication.RegularFilePublicationV2NotRunError):
+                self._publish(fixture_action=action)
+        self.assertTrue(injected)
+        self.assertEqual(calls, 0)
+        self.assertEqual(list(self.root.iterdir()), [legacy])
+
+    def test_legacy_entry_injected_before_started_is_ambiguous_without_action(
+        self,
+    ) -> None:
+        calls = 0
+        legacy = self.root / (
+            f"{publication._LEGACY_INTERNAL_NAME_PREFIX}injected.attempt.json"
+        )
+
+        def hook(event: str, _context: object) -> None:
+            if event == "before_started":
+                legacy.write_bytes(b"superseded")
+
+        def action() -> list[dict[str, object]]:
+            nonlocal calls
+            calls += 1
+            return []
+
+        with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
+            self._publish(fixture_action=action, event_hook=hook)
+        self.assertEqual(calls, 0)
+        self.assertTrue(legacy.exists())
+
+    def test_legacy_entry_blocks_restart_before_forward_sync(self) -> None:
+        self.assertEqual(self._publish()["status"], "COMMITTED")
+        legacy = self.root / (
+            f"{publication._LEGACY_INTERNAL_NAME_PREFIX}late.invalid.json"
+        )
+        legacy.write_bytes(b"superseded")
+        with mock.patch.object(
+            publication,
+            "_forward_sync_exact_regular_file_at",
+        ) as forward_sync:
+            with self.assertRaises(
+                publication.RegularFilePublicationV2AmbiguousError
+            ):
+                publication.inspect_synthetic_publication_v2(self.output)
+        forward_sync.assert_not_called()
 
     def test_preexisting_output_is_preserved_before_attempt_or_action(self) -> None:
         self.output.write_bytes(b"foreign-output")

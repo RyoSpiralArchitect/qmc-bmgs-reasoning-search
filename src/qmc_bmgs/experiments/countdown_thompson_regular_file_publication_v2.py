@@ -31,14 +31,18 @@ from qmc_bmgs.substrate.trace import (
 )
 
 
-PUBLICATION_BACKEND = "posix_regular_files/v2"
-ARTIFACT_LAYOUT = "flat_commit_root/v2"
-FIXTURE_KIND = "nondiagnostic_synthetic_publication_v2"
-ATTEMPT_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-attempt/v2"
-PHASE_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-phase/v2"
-RECORD_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-record/v2"
-MANIFEST_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-manifest/v2"
-COMMIT_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-commit/v2"
+PUBLICATION_BACKEND = "posix_regular_files/v2r2"
+ARTIFACT_LAYOUT = "flat_commit_root/v2r2"
+FIXTURE_KIND = "nondiagnostic_synthetic_publication_v2r2"
+ATTEMPT_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-attempt/v2r2"
+PHASE_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-phase/v2r2"
+RECORD_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-record/v2r2"
+MANIFEST_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-manifest/v2r2"
+COMMIT_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-commit/v2r2"
+
+_RESERVED_OUTPUT_PREFIX = ".qmc-bmgs-"
+_INTERNAL_NAME_PREFIX = ".qmc-bmgs-v2r2-"
+_LEGACY_INTERNAL_NAME_PREFIX = ".qmc-bmgs-v2-"
 
 _MAX_CONTROL_BYTES = 1 << 20
 _MAX_RECORDS_BYTES = 16 << 20
@@ -245,6 +249,10 @@ def _snapshot_output_path(output_path: Path | str) -> Path:
         raise RegularFilePublicationV2NotRunError(
             "output basename must be ASCII for stable namespace alias closure"
         )
+    if candidate.name.lower().startswith(_RESERVED_OUTPUT_PREFIX):
+        raise RegularFilePublicationV2NotRunError(
+            "output basename collides with the reserved protocol namespace"
+        )
     return candidate
 
 
@@ -270,7 +278,7 @@ class RegularFileLayoutV2:
         output_digest = _sha256_bytes(os.fsencode(os.fspath(output)))
         namespace_name = output.name.lower()
         namespace_digest = _sha256_bytes(os.fsencode(namespace_name))
-        prefix = f".qmc-bmgs-v2-{namespace_digest}"
+        prefix = f"{_INTERNAL_NAME_PREFIX}{namespace_digest}"
         layout = cls(
             output_path=output,
             output_path_digest=output_digest,
@@ -757,6 +765,35 @@ def _parent_generation(parent: _PinnedParent) -> tuple[int, ...]:
     return _stable_file_signature(observed)
 
 
+def _assert_no_legacy_namespace(parent: _PinnedParent) -> None:
+    """Refuse an unqualified transition from the superseded v2 namespace."""
+
+    parent.assert_path()
+    before = _parent_generation(parent)
+    try:
+        entries = os.listdir(parent.descriptor)
+    except (OSError, TypeError) as error:
+        raise RegularFilePublicationV2AmbiguousError(
+            "superseded publication namespace could not be scanned"
+        ) from error
+    parent.assert_path()
+    after = _parent_generation(parent)
+    if before != after:
+        raise RegularFilePublicationV2AmbiguousError(
+            "output parent changed during superseded namespace scan"
+        )
+    if any(type(name) is not str for name in entries):
+        raise RegularFilePublicationV2AmbiguousError(
+            "superseded publication namespace returned a non-text entry"
+        )
+    if any(
+        name.lower().startswith(_LEGACY_INTERNAL_NAME_PREFIX) for name in entries
+    ):
+        raise RegularFilePublicationV2AmbiguousError(
+            "superseded v2 publication authority exists in the output parent"
+        )
+
+
 def _reserved_generation(
     parent: _PinnedParent,
     names: Sequence[str],
@@ -1054,6 +1091,7 @@ def _collective_snapshot(
         if terminal_receipt is None or terminal_receipt.descriptor < 0:
             raise
     session.parent.assert_path()
+    _assert_no_legacy_namespace(session.parent)
     participating_names = tuple(owned.name for owned in required) + tuple(absent)
     before_parent = _parent_generation(session.parent)
     before_reserved = _reserved_generation(session.parent, participating_names)
@@ -1062,6 +1100,7 @@ def _collective_snapshot(
     for name in absent:
         _assert_name_absent(session.parent, name)
     session.parent.fsync()
+    _assert_no_legacy_namespace(session.parent)
     for owned in required:
         _assert_owned_exact(session.parent, owned)
     for name in absent:
@@ -1276,8 +1315,10 @@ def publish_synthetic_fixture_v2(
     try:
         try:
             _validate_layout_against_parent(parent, layout)
+            _assert_no_legacy_namespace(parent)
             parent.fsync()
             parent.assert_path()
+            _assert_no_legacy_namespace(parent)
             _preflight_reserved_names_absent(parent, layout.reserved_names)
         except RegularFilePublicationV2NotRunError:
             raise
@@ -1327,6 +1368,7 @@ def publish_synthetic_fixture_v2(
         except BaseException as error:
             _publish_not_run(session, attempt_payload, error)
         try:
+            _assert_no_legacy_namespace(parent)
             session.started_file = session.create_authority(
                 layout.started_name,
                 started_payload,
@@ -1367,6 +1409,12 @@ def publish_synthetic_fixture_v2(
         try:
             try:
                 _emit(_event_hook, "after_started", name=layout.started_name)
+            except BaseException as outcome_error:
+                raise _FixtureOutcomeError(
+                    "synthetic outcome hook failed after STARTED"
+                ) from outcome_error
+            _assert_no_legacy_namespace(parent)
+            try:
                 raw_records = fixture_action()
                 frozen_records, records_bytes = _freeze_synthetic_records(raw_records)
             except BaseException as outcome_error:
@@ -2100,6 +2148,7 @@ def _inspect_once(
     tuple[tuple[int, ...], tuple[tuple[str, tuple[int, ...] | None], ...]],
 ]:
     parent.assert_path()
+    _assert_no_legacy_namespace(parent)
     before_parent = _parent_generation(parent)
     before_reserved = _reserved_generation(parent, layout.reserved_names)
     result = _inspect_payload_once(parent, layout, expected_authorization_digest)
@@ -2108,6 +2157,7 @@ def _inspect_once(
         _forward_sync_exact_regular_file_at(parent, name)
     if sync_names:
         parent.fsync()
+    _assert_no_legacy_namespace(parent)
     after_reserved = _reserved_generation(parent, layout.reserved_names)
     after_parent = _parent_generation(parent)
     parent.assert_path()

@@ -225,7 +225,7 @@ def _require_posix_capabilities() -> None:
 def _snapshot_output_path(output_path: Path | str) -> Path:
     try:
         raw = os.fspath(output_path)
-    except TypeError as error:
+    except BaseException as error:
         raise RegularFilePublicationV2NotRunError(
             "output path is not path-like"
         ) from error
@@ -233,11 +233,14 @@ def _snapshot_output_path(output_path: Path | str) -> Path:
         raise RegularFilePublicationV2NotRunError(
             "output path must be a non-empty text path"
         )
-    candidate = Path(raw)
-    if not candidate.is_absolute():
+    if not os.path.isabs(raw):
         raise RegularFilePublicationV2NotRunError("output path must be absolute")
-    normalized = Path(os.path.normpath(raw))
-    if candidate != normalized or candidate.name in {"", ".", ".."}:
+    if raw.startswith("//") or raw != os.path.normpath(raw):
+        raise RegularFilePublicationV2NotRunError(
+            "output path must be lexical, normalized, and name a file"
+        )
+    candidate = Path(raw)
+    if candidate.name in {"", ".", ".."}:
         raise RegularFilePublicationV2NotRunError(
             "output path must be lexical, normalized, and name a file"
         )
@@ -1681,7 +1684,13 @@ def _read_canonical_object_at(
     try:
         parsed = strict_json_loads(raw.decode("utf-8"))
         canonical = _canonical_bytes(parsed) if type(parsed) is dict else None
-    except (RecursionError, UnicodeDecodeError, TraceValidationError) as error:
+    except (
+        RecursionError,
+        TypeError,
+        UnicodeDecodeError,
+        ValueError,
+        TraceValidationError,
+    ) as error:
         raise RegularFilePublicationV2AmbiguousError(
             f"{name} is not strict canonical JSON"
         ) from error
@@ -1843,13 +1852,20 @@ def _validate_records_and_manifest(
             )
         try:
             parsed = strict_json_loads(line[:-1].decode("utf-8"))
-        except (RecursionError, UnicodeDecodeError, TraceValidationError) as error:
+            canonical = _canonical_bytes(parsed) if type(parsed) is dict else None
+        except (
+            RecursionError,
+            TypeError,
+            UnicodeDecodeError,
+            ValueError,
+            TraceValidationError,
+        ) as error:
             raise RegularFilePublicationV2AmbiguousError(
                 "records file contains invalid strict JSON"
             ) from error
         if (
             type(parsed) is not dict
-            or _canonical_bytes(parsed) != line
+            or canonical != line
             or set(parsed)
             != {"fixture_kind", "payload", "record_index", "schema_version"}
             or parsed.get("fixture_kind") != FIXTURE_KIND

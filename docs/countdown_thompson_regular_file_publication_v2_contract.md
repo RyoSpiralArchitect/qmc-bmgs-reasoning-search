@@ -30,11 +30,14 @@ P/A                                                     # commit receipt, last
 
 The output basename must be ASCII and its lowercase spelling may not begin
 `.qmc-bmgs-`; that namespace is permanently reserved for protocol authority
-files. The attempt name depends on a conservative lowercase digest of the
-basename within its pinned parent, not the authorization digest. The exact
-lexical output path retains a separate provenance digest. Case-only and
-parent-path aliases that reach the same directory therefore contend on the same
-sidecar reservation, while commit names cannot alias another output's internal
+files. Before constructing a `Path`, the raw text must be absolute and exactly
+equal to its `normpath` spelling; trailing separators, `/.`, `/./`, `..`, and
+duplicate separators are refused before parent access or callback execution.
+The attempt name depends on a conservative lowercase digest of the basename
+within its pinned parent, not the authorization digest. The exact lexical output
+path retains a separate provenance digest. Case-only and parent-path aliases
+that reach the same directory therefore contend on the same sidecar
+reservation, while commit names cannot alias another output's internal
 sidecar. Unicode filename-equivalence rules cannot create an unmodelled output
 alias because non-ASCII basenames are refused before parent access. This
 deliberately over-collapses case variants on case-sensitive filesystems: denial
@@ -137,8 +140,9 @@ The phase-1 module provides:
   mutation, conflicting terminal receipts, READY-backed INVALID closure,
   verifier producer-image bounds, descriptor cleanup, parent pivot, subprocess
   crashes before each terminal barrier, case-insensitive output aliases,
-  commit/sidecar overlap, superseded-namespace refusal, and a two-process
-  reservation race.
+  commit/sidecar overlap, raw-path normalization aliases, path-like exception
+  status impersonation, non-finite persisted JSON, superseded-namespace refusal,
+  and a two-process reservation race.
 
 The existing v1 schemas, directory publisher, analyzer, and production entry
 point are unchanged. The v1 fixture publisher remains private and the real

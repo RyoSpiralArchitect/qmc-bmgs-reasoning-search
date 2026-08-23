@@ -349,6 +349,81 @@ publication.publish_synthetic_fixture_v2(
                 self.assertEqual(calls, 0)
                 self.assertFalse(missing_parent.exists())
 
+    def test_raw_unnormalized_paths_are_refused_before_parent_or_action(self) -> None:
+        raw_paths = (
+            f"{self.root}/created-as-file/.",
+            f"{self.root}/embedded/./artifact.json",
+            f"{self.root}//duplicate-separator.json",
+            f"{self.root}/trailing-separator.json/",
+            f"//{os.fspath(self.root).lstrip('/')}/double-leading.json",
+        )
+        for raw in raw_paths:
+            with self.subTest(raw=raw):
+                calls = 0
+
+                def action() -> list[dict[str, object]]:
+                    nonlocal calls
+                    calls += 1
+                    return []
+
+                with self.assertRaises(
+                    publication.RegularFilePublicationV2NotRunError
+                ):
+                    publication.publish_synthetic_fixture_v2(
+                        raw,
+                        authorization_digest=AUTHORIZATION_A,
+                        fixture_action=action,
+                    )
+                with self.assertRaises(
+                    publication.RegularFilePublicationV2NotRunError
+                ):
+                    publication.inspect_synthetic_publication_v2(raw)
+                self.assertEqual(calls, 0)
+                self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_pathlike_exceptions_cannot_impersonate_public_status(self) -> None:
+        exception_types = (
+            publication.RegularFilePublicationV2NotRunError,
+            publication.RegularFilePublicationV2InvalidError,
+            publication.RegularFilePublicationV2AmbiguousError,
+            KeyboardInterrupt,
+        )
+        for exception_type in exception_types:
+            with self.subTest(exception_type=exception_type.__name__):
+                calls = 0
+
+                class AdversarialPath:
+                    def __fspath__(self) -> str:
+                        raise exception_type("caller-controlled path failure")
+
+                def action() -> list[dict[str, object]]:
+                    nonlocal calls
+                    calls += 1
+                    return []
+
+                with self.assertRaises(
+                    publication.RegularFilePublicationV2NotRunError
+                ) as published:
+                    publication.publish_synthetic_fixture_v2(
+                        AdversarialPath(),
+                        authorization_digest=AUTHORIZATION_A,
+                        fixture_action=action,
+                    )
+                self.assertIs(
+                    type(published.exception),
+                    publication.RegularFilePublicationV2NotRunError,
+                )
+                with self.assertRaises(
+                    publication.RegularFilePublicationV2NotRunError
+                ) as inspected:
+                    publication.inspect_synthetic_publication_v2(AdversarialPath())
+                self.assertIs(
+                    type(inspected.exception),
+                    publication.RegularFilePublicationV2NotRunError,
+                )
+                self.assertEqual(calls, 0)
+                self.assertEqual(list(self.root.iterdir()), [])
+
     def test_every_internal_sidecar_is_forbidden_as_an_output(self) -> None:
         layout = publication.RegularFileLayoutV2.from_output_path(self.output)
         sidecars = {
@@ -1680,6 +1755,36 @@ publication.publish_synthetic_fixture_v2(
                     publication.RegularFilePublicationV2AmbiguousError
                 ):
                     publication.inspect_synthetic_publication_v2(output)
+
+    def test_inspector_types_nonfinite_control_and_record_json_as_ambiguous(
+        self,
+    ) -> None:
+        control_root = self.root / "control"
+        control_root.mkdir()
+        control_output = control_root / "artifact.json"
+        control_layout = publication.RegularFileLayoutV2.from_output_path(
+            control_output
+        )
+        control_path = control_root / control_layout.attempt_name
+        control_path.write_bytes(b'{"x":1e999}\n')
+        control_path.chmod(0o600)
+        with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
+            publication.inspect_synthetic_publication_v2(control_output)
+
+        records_root = self.root / "records"
+        records_root.mkdir()
+        records_output = records_root / "artifact.json"
+        self.assertEqual(
+            self._publish(output=records_output)["status"],
+            "COMMITTED",
+        )
+        records_layout = publication.RegularFileLayoutV2.from_output_path(
+            records_output
+        )
+        records_path = records_root / records_layout.records_name
+        records_path.write_bytes(b'{"x":1e999}\n')
+        with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
+            publication.inspect_synthetic_publication_v2(records_output)
 
     def test_inspector_rejects_non_integer_record_metadata(self) -> None:
         frame = {

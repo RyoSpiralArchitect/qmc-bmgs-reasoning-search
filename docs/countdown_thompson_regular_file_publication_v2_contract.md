@@ -115,7 +115,8 @@ Monotonic boundaries:
 - A private observation hook cannot retract an already owned NOT_RUN, INVALID,
   or COMMITTED receipt. Its exception is ignored only after the corresponding
   retained terminal descriptor exists, and the complete exact snapshot still
-  runs. Any mutation made before the exception therefore remains AMBIGUOUS.
+  runs. Any mutation made before the exception therefore remains AMBIGUOUS for
+  the in-process publisher.
 - A process restart may validate an exact terminal collective, but it may not
   reclaim or resume a non-terminal reservation. Before returning a recovered
   terminal, the verifier reopens every authoritative member, proves its stable
@@ -141,8 +142,9 @@ The phase-1 module provides:
   verifier producer-image bounds, descriptor cleanup, parent pivot, subprocess
   crashes before each terminal barrier, case-insensitive output aliases,
   commit/sidecar overlap, raw-path normalization aliases, path-like exception
-  status impersonation, non-finite persisted JSON, superseded-namespace refusal,
-  and a two-process reservation race.
+  status impersonation, non-finite persisted JSON, pure and mutating post-barrier
+  terminal observers, superseded-namespace refusal, and a two-process
+  reservation race.
 
 The existing v1 schemas, directory publisher, analyzer, and production entry
 point are unchanged. The v1 fixture publisher remains private and the real

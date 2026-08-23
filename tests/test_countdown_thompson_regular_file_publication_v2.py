@@ -161,6 +161,19 @@ class RegularFilePublicationV2Tests(unittest.TestCase):
         finally:
             os.close(descriptor)
 
+    def _rewrite_same_bytes_and_fsync(self, path: Path) -> None:
+        descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+        try:
+            size = os.fstat(descriptor).st_size
+            raw = os.pread(descriptor, size, 0)
+            self.assertEqual(len(raw), size)
+            os.ftruncate(descriptor, 0)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            self.assertEqual(os.write(descriptor, raw), len(raw))
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
     def _crash_before_terminal_fsync(
         self,
         output: Path,
@@ -906,6 +919,167 @@ publication.publish_synthetic_fixture_v2(
             "COMMITTED",
         )
 
+    def test_post_barrier_terminal_observer_failure_preserves_exact_status(
+        self,
+    ) -> None:
+        for status in ("NOT_RUN", "INVALID", "COMMITTED"):
+            for event_name in ("after_file_fsync", "after_parent_fsync"):
+                with self.subTest(status=status, event_name=event_name):
+                    case_root = self.root / f"pure-{status.lower()}-{event_name}"
+                    case_root.mkdir()
+                    output = case_root / "artifact.json"
+                    layout = publication.RegularFileLayoutV2.from_output_path(output)
+                    terminal_name = {
+                        "NOT_RUN": layout.not_run_name,
+                        "INVALID": layout.invalid_name,
+                        "COMMITTED": layout.commit_name,
+                    }[status]
+                    hook_calls = 0
+
+                    def hook(
+                        event: str,
+                        context: publication.Mapping[str, object],
+                    ) -> None:
+                        nonlocal hook_calls
+                        if event == event_name and context["name"] == terminal_name:
+                            hook_calls += 1
+                            raise RuntimeError("persistent terminal observer failure")
+
+                    if status == "NOT_RUN":
+                        with self.assertRaises(
+                            publication.RegularFilePublicationV2NotRunError
+                        ):
+                            self._publish(
+                                output=output,
+                                pre_outcome_check=lambda: (_ for _ in ()).throw(
+                                    ValueError("stop")
+                                ),
+                                event_hook=hook,
+                            )
+                    elif status == "INVALID":
+                        with self.assertRaises(
+                            publication.RegularFilePublicationV2InvalidError
+                        ):
+                            self._publish(
+                                output=output,
+                                fixture_action=lambda: (_ for _ in ()).throw(
+                                    RuntimeError("stop")
+                                ),
+                                event_hook=hook,
+                            )
+                    else:
+                        self.assertEqual(
+                            self._publish(output=output, event_hook=hook)["status"],
+                            "COMMITTED",
+                        )
+                    self.assertGreaterEqual(hook_calls, 2)
+                    self.assertEqual(
+                        publication.inspect_synthetic_publication_v2(output)["status"],
+                        status,
+                    )
+
+    def test_post_barrier_same_byte_mutation_is_in_process_ambiguous(self) -> None:
+        for status in ("NOT_RUN", "INVALID", "COMMITTED"):
+            for event_name in ("after_file_fsync", "after_parent_fsync"):
+                with self.subTest(status=status, event_name=event_name):
+                    case_root = self.root / f"mutate-{status.lower()}-{event_name}"
+                    case_root.mkdir()
+                    output = case_root / "artifact.json"
+                    layout = publication.RegularFileLayoutV2.from_output_path(output)
+                    terminal_name = {
+                        "NOT_RUN": layout.not_run_name,
+                        "INVALID": layout.invalid_name,
+                        "COMMITTED": layout.commit_name,
+                    }[status]
+                    mutated = False
+
+                    def hook(
+                        event: str,
+                        context: publication.Mapping[str, object],
+                    ) -> None:
+                        nonlocal mutated
+                        if event == event_name and context["name"] == terminal_name:
+                            if not mutated:
+                                mutated = True
+                                self._rewrite_same_bytes_and_fsync(
+                                    case_root / terminal_name
+                                )
+                            raise RuntimeError("mutating terminal observer failure")
+
+                    kwargs: dict[str, object] = {
+                        "output": output,
+                        "event_hook": hook,
+                    }
+                    if status == "NOT_RUN":
+                        kwargs["pre_outcome_check"] = lambda: (
+                            _ for _ in ()
+                        ).throw(ValueError("stop"))
+                    elif status == "INVALID":
+                        kwargs["fixture_action"] = lambda: (
+                            _ for _ in ()
+                        ).throw(RuntimeError("stop"))
+                    with self.assertRaises(
+                        publication.RegularFilePublicationV2AmbiguousError
+                    ):
+                        self._publish(**kwargs)
+                    self.assertTrue(mutated)
+                    self.assertEqual(
+                        publication.inspect_synthetic_publication_v2(output)["status"],
+                        status,
+                    )
+
+    def test_reconciled_observer_same_byte_mutation_is_ambiguous(self) -> None:
+        for status in ("NOT_RUN", "INVALID", "COMMITTED"):
+            for event_name in ("after_file_fsync", "after_parent_fsync"):
+                with self.subTest(status=status, event_name=event_name):
+                    case_root = self.root / f"reconciled-{status.lower()}-{event_name}"
+                    case_root.mkdir()
+                    output = case_root / "artifact.json"
+                    layout = publication.RegularFileLayoutV2.from_output_path(output)
+                    terminal_name = {
+                        "NOT_RUN": layout.not_run_name,
+                        "INVALID": layout.invalid_name,
+                        "COMMITTED": layout.commit_name,
+                    }[status]
+                    observed_phases: list[bool] = []
+
+                    def hook(
+                        event: str,
+                        context: publication.Mapping[str, object],
+                    ) -> None:
+                        if event != event_name or context["name"] != terminal_name:
+                            return
+                        reconciled = context["reconciled"]
+                        self.assertIs(type(reconciled), bool)
+                        observed_phases.append(reconciled)
+                        if reconciled is True:
+                            self._rewrite_same_bytes_and_fsync(
+                                case_root / terminal_name
+                            )
+                        raise RuntimeError("terminal observer failure")
+
+                    kwargs: dict[str, object] = {
+                        "output": output,
+                        "event_hook": hook,
+                    }
+                    if status == "NOT_RUN":
+                        kwargs["pre_outcome_check"] = lambda: (
+                            _ for _ in ()
+                        ).throw(ValueError("stop"))
+                    elif status == "INVALID":
+                        kwargs["fixture_action"] = lambda: (
+                            _ for _ in ()
+                        ).throw(RuntimeError("stop"))
+                    with self.assertRaises(
+                        publication.RegularFilePublicationV2AmbiguousError
+                    ):
+                        self._publish(**kwargs)
+                    self.assertEqual(observed_phases, [False, True])
+                    self.assertEqual(
+                        publication.inspect_synthetic_publication_v2(output)["status"],
+                        status,
+                    )
+
     def test_every_reserved_name_refuses_foreign_entry_types_without_mutation(self) -> None:
         layout = publication.RegularFileLayoutV2.from_output_path(self.output)
         foreign_types = ("regular", "directory", "symlink", "fifo")
@@ -1051,7 +1225,7 @@ publication.publish_synthetic_fixture_v2(
 
         with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
             self._publish(fixture_action=action, event_hook=hook)
-        self.assertGreaterEqual(mutations, 2)
+        self.assertGreaterEqual(mutations, 1)
         self.assertEqual(calls, 0)
 
     def test_mutation_before_fsync_returns_is_never_adopted_as_durable(self) -> None:

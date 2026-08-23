@@ -559,6 +559,11 @@ def _try_reconcile_created_file(
             != owned.expected
         ):
             return False
+        if (
+            owned.signature is not None
+            and _stable_file_signature(opened) != owned.signature
+        ):
+            return False
         to_sync = os.fstat(owned.descriptor)
         if (
             not stat.S_ISREG(to_sync.st_mode)
@@ -584,9 +589,19 @@ def _try_reconcile_created_file(
         ):
             return False
         durable_signature = generation_to_sync
-        _emit(hook, "after_file_fsync", name=owned.name, reconciled=True)
+        try:
+            _emit(hook, "after_file_fsync", name=owned.name, reconciled=True)
+        except _EventHookError:
+            # A private observer cannot retract a barrier.  The exact proof
+            # below still detects any mutation made before it raised.
+            pass
         os.fsync(parent.descriptor)
-        _emit(hook, "after_parent_fsync", name=owned.name, reconciled=True)
+        try:
+            _emit(hook, "after_parent_fsync", name=owned.name, reconciled=True)
+        except _EventHookError:
+            # Reconciliation authority comes from the retained descriptor and
+            # repeated exact proof, never from observer success.
+            pass
         final = os.fstat(owned.descriptor)
         if (
             not stat.S_ISREG(final.st_mode)
@@ -704,6 +719,10 @@ def _exclusive_create_exact(
                 f"newly created file lost its private durable identity: {name}"
             )
         durable_signature = generation_to_sync
+        # Once the file barrier has returned and its generation is reproved,
+        # reconciliation may retry the parent barrier but may not adopt a later
+        # byte-identical generation created by an observer.
+        owned.signature = durable_signature
         _emit(hook, "after_file_fsync", name=name, reconciled=False)
         os.fsync(parent.descriptor)
         _emit(hook, "after_parent_fsync", name=name, reconciled=False)

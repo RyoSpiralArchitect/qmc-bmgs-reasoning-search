@@ -115,6 +115,7 @@ PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_track_a_canary_runner --
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_track_a_canary_analysis --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_diagnostic_runner --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_diagnostic_analysis --self-test
+PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_regular_file_publication_v2 --self-test
 python scripts/validate.py
 ```
 
@@ -149,6 +150,7 @@ qmc-bmgs-countdown-track-a-search --self-test
 qmc-bmgs-countdown-track-a-canary-manifest --self-test
 qmc-bmgs-countdown-track-a-canary-runner --self-test
 qmc-bmgs-countdown-track-a-canary-analysis --self-test
+qmc-bmgs-countdown-thompson-publication-v2 --self-test
 ```
 
 ## Anthropic Countdown development runner
@@ -388,7 +390,23 @@ PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_diagnostic_runn
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_diagnostic_analysis --self-test
 ```
 
-実行時はclean source checkoutからmodule invocationを使い、`--repository-root .`を明示する。
+production runnerは、portable POSIXの`mkdir`後にdescriptor authorityを取得するまでの
+raceを閉じられないため、現在もsealed inputやoutput filesystemへ触れる前にfail-closedする。
+次のpublication substrateとして、固定名のregular fileを`openat(O_EXCL)`で直接取得し、
+出力path自体を最後のcommit receiptにするflat v2を非diagnostic fixtureだけで実装した。
+これはpublication mechanicsの証拠であり、240-cell diagnosticの実行許可や科学的結果ではない。
+設計、不変条件、残余仮定、production移行条件は
+[`docs/countdown_thompson_regular_file_publication_v2_contract.md`](docs/countdown_thompson_regular_file_publication_v2_contract.md)
+に固定している。
+
+```bash
+PYTHONPATH=src python -m \
+  qmc_bmgs.experiments.countdown_thompson_regular_file_publication_v2 \
+  --self-test
+```
+
+将来production integrationを再承認した実行時は、clean source checkoutからmodule invocationを使い、
+`--repository-root .`を明示する。
 plan、別PRでのauthorization review、1回限りのrun、独立analysisの順序と完全なコマンドは
 [`docs/countdown_thompson_diagnostic_execution_contract.md`](docs/countdown_thompson_diagnostic_execution_contract.md)
 に固定した。通常の拒否は`NOT_RUN`/`INVALID`、directory durabilityとexact rollbackの両方が

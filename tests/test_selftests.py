@@ -39,6 +39,9 @@ from qmc_bmgs.experiments.countdown_openai_dev import (
 from qmc_bmgs.experiments.countdown_thompson_source_ablation import (
     _run_self_test as countdown_thompson_source_self_test,
 )
+from qmc_bmgs.experiments.countdown_thompson_regular_file_publication_v2 import (
+    _run_self_test as countdown_thompson_publication_v2_self_test,
+)
 from qmc_bmgs.experiments.d4_noise_sweep import _self_test as d4_self_test
 from qmc_bmgs.experiments.fixed_verifier_budget import (
     _self_test as fixed_verifier_self_test,
@@ -81,6 +84,9 @@ class RepositorySelfTests(unittest.TestCase):
 
     def test_countdown_thompson_source_self_test(self) -> None:
         countdown_thompson_source_self_test()
+
+    def test_countdown_thompson_publication_v2_self_test(self) -> None:
+        countdown_thompson_publication_v2_self_test()
 
     def test_countdown_calibration_grid_self_test(self) -> None:
         countdown_calibration_grid_self_test()

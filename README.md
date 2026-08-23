@@ -113,6 +113,8 @@ PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_track_a_substrate --self
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_track_a_search --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_track_a_canary_runner --self-test
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_track_a_canary_analysis --self-test
+PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_diagnostic_runner --self-test
+PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_diagnostic_analysis --self-test
 python scripts/validate.py
 ```
 
@@ -377,7 +379,32 @@ seal digestは
 これはtask予約、240-cell schedule、分析順序とengineering gateの同一性だけを証明する。
 契約は
 [`docs/countdown_thompson_diagnostic_contract.md`](docs/countdown_thompson_diagnostic_contract.md)
-に固定した。v2/v3/v4のどれもbase searchとしてgreedy/beamを上回れなければ、locked-128は
+に固定した。runner/analyzerはsource checkoutのGit履歴とsource closureをauthorityにするため、
+packaged console entrypointは設けない。自己診断は非diagnostic fixtureだけを使い、sealed bundle、
+task、proposal、search record、outcomeを開かない。
+
+```bash
+PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_diagnostic_runner --self-test
+PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_diagnostic_analysis --self-test
+```
+
+実行時はclean source checkoutからmodule invocationを使い、`--repository-root .`を明示する。
+plan、別PRでのauthorization review、1回限りのrun、独立analysisの順序と完全なコマンドは
+[`docs/countdown_thompson_diagnostic_execution_contract.md`](docs/countdown_thompson_diagnostic_execution_contract.md)
+に固定した。通常の拒否は`NOT_RUN`/`INVALID`、directory durabilityとexact rollbackの両方が
+証明不能なI/O障害は`PUBLICATION_STATE_AMBIGUOUS`として分離し、残存fileをevidenceに使わない。
+attempt予約のparent fsync失敗は、public nameからinode/bytes検証済みretained tombstoneへの
+atomic移動、parent fsync、public authority不在の再確認まで閉じた場合だけ`NOT_RUN`とする。
+authorization candidateとrun artifactの出力parentは事前に作成済みのstable directoryを要求し、
+runner自身は未同期のancestorを暗黙作成しない。
+summaryもstableなnon-symlink ancestry・inode・canonical bytes・parent fsyncをすべて確認する。
+relocated artifactの解析は、元の`authorized_output_path`が現存しdescriptorでpinできる場合だけ
+許可し、両artifactの厳密3-file byte receipt一致もpublication前に検証する。exact rollback不能な
+移動済みcopyは`INVALID`ではなくambiguityとして保持する。artifact memberはnon-regularを
+open前に拒否し、v1上限（commit 1 MiB / manifest 8 MiB / records 256 MiB）内でexact EOFまで
+bounded readする。historical byte receiptはvalidated sizeに従いstreaming hashで照合し、summary
+durability barrier後にもhistorical/relocated両receiptを集合的に再確認する。
+v2/v3/v4のどれもbase searchとしてgreedy/beamを上回れなければ、locked-128は
 開かず`STOP_REPAIR_NO_LOCKED_128_RUN`とする。
 
 自然言語reasoningへの一般化や一般的なQMC優位は、まだ主張しません。

@@ -65,6 +65,8 @@ def main() -> None:
         "qmc_bmgs.experiments.countdown_track_a_canary_manifest",
         "qmc_bmgs.experiments.countdown_track_a_canary_runner",
         "qmc_bmgs.experiments.countdown_track_a_canary_analysis",
+        "qmc_bmgs.experiments.countdown_thompson_diagnostic_runner",
+        "qmc_bmgs.experiments.countdown_thompson_diagnostic_analysis",
     ):
         _run([sys.executable, "-m", module, "--self-test"], cwd=outside)
     print("repository validation: PASS")

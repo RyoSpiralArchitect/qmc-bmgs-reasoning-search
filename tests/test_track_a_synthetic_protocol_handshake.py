@@ -189,6 +189,10 @@ def _synthetic_preflight(
             runtime_qualification_digest=sha256_json(qualification),
             build=_build_attestation(repository_root),
             output_path=output.resolve(),
+            publication_backend=runner._SYNTHETIC_PUBLICATION_BACKEND,
+            synthetic_fixture_digest=(
+                runner._SYNTHETIC_HANDSHAKE_FIXTURE_CONTENT_DIGEST
+            ),
         ),
         cell,
     )
@@ -280,7 +284,6 @@ def _publish_fixture(
     bundle_path = root / "sealed-bundle-never-opened"
     preflight, cell = _synthetic_preflight(repository_root, artifact)
     with (
-        patch.object(runner, "EXPECTED_CELL_COUNT", 1),
         patch.object(runner, "_recheck_source_closure"),
         patch.object(
             runner,
@@ -331,6 +334,31 @@ def _analyze_fixture(
     replay = analysis.replay_countdown_track_a_search_bytes
     with (
         patch.object(analysis, "EXPECTED_CELL_COUNT", 1),
+        patch.object(
+            analysis,
+            "_RUN_CLAIM_BOUNDARY",
+            runner._SYNTHETIC_RUN_CLAIM_BOUNDARY,
+        ),
+        patch.object(
+            analysis,
+            "_AUTHORIZATION_SCHEMA_VERSION",
+            runner._SYNTHETIC_AUTHORIZATION_SCHEMA_VERSION,
+        ),
+        patch.object(
+            analysis,
+            "_AUTHORIZATION_SCOPE",
+            runner._SYNTHETIC_AUTHORIZATION_SCOPE,
+        ),
+        patch.object(
+            analysis,
+            "_AUTHORIZATION_CLAIM_BOUNDARY",
+            runner._SYNTHETIC_AUTHORIZATION_CLAIM_BOUNDARY,
+        ),
+        patch.object(
+            analysis,
+            "_AUTHORIZATION_FIELDS",
+            analysis._AUTHORIZATION_FIELDS | {"synthetic_fixture_digest"},
+        ),
         patch.object(
             analysis,
             "verify_countdown_thompson_diagnostic_bundle",
@@ -437,10 +465,45 @@ def _terminal_attempt_receipt(
 
 
 class CountdownThompsonDiagnosticProtocolHandshakeTests(unittest.TestCase):
+    def test_fixture_claim_is_explicitly_nondiagnostic(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="qmc-bmgs-synthetic-claim-boundary-"
+        ) as temporary:
+            fixture = _publish_fixture(self.repository_root, Path(temporary))
+            manifest = _read_object(fixture.artifact / "manifest.json")
+            self.assertEqual(
+                manifest["claim_boundary"],
+                runner._SYNTHETIC_RUN_CLAIM_BOUNDARY,
+            )
+            authorization = fixture.authorization
+            self.assertEqual(
+                authorization["schema_version"],
+                runner._SYNTHETIC_AUTHORIZATION_SCHEMA_VERSION,
+            )
+            self.assertEqual(
+                authorization["authorization_scope"],
+                runner._SYNTHETIC_AUTHORIZATION_SCOPE,
+            )
+            self.assertEqual(
+                authorization["synthetic_fixture_digest"],
+                runner._SYNTHETIC_HANDSHAKE_FIXTURE_CONTENT_DIGEST,
+            )
+            self.assertEqual(
+                authorization["claim_boundary"],
+                runner._SYNTHETIC_AUTHORIZATION_CLAIM_BOUNDARY,
+            )
+            self.assertEqual(authorization["cell_count"], 1)
+            self.assertEqual(manifest["execution_authorization"], authorization)
+            with self.assertRaisesRegex(
+                analysis.DiagnosticAnalysisError,
+                "runner manifest claim boundary drifted",
+            ):
+                analysis._preflight_run_manifest(manifest)
+
     def setUp(self) -> None:
         self.repository_root = Path(__file__).resolve().parents[1]
 
-    def test_diagnostic_runner_artifact_passes_diagnostic_analyzer_replay(
+    def test_synthetic_runner_artifact_passes_fixture_analyzer_replay(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory(
@@ -542,9 +605,12 @@ class CountdownThompsonDiagnosticProtocolHandshakeTests(unittest.TestCase):
             ("invalid.json", "INVALID"),
             ("not_run.json", "NOT_RUN"),
         ):
-            with self.subTest(filename=filename), tempfile.TemporaryDirectory(
-                prefix="qmc-bmgs-synthetic-attempt-conflict-"
-            ) as temporary:
+            with (
+                self.subTest(filename=filename),
+                tempfile.TemporaryDirectory(
+                    prefix="qmc-bmgs-synthetic-attempt-conflict-"
+                ) as temporary,
+            ):
                 fixture = _publish_fixture(self.repository_root, Path(temporary))
                 manifest = _read_object(fixture.artifact / "manifest.json")
                 attempt = fixture.artifact.parent / str(

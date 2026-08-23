@@ -33,6 +33,7 @@ from typing import Any, Callable, Mapping, Sequence, TypedDict
 
 from qmc_bmgs.benchmarks.countdown import CountdownTask
 from qmc_bmgs.experiments.countdown_thompson_diagnostic_manifest import (
+    BUNDLE_FILENAMES,
     BUNDLE_ID,
     EXPECTED_CELL_COUNT,
     DiagnosticCell,
@@ -68,6 +69,7 @@ ARTIFACT_COMMIT_SCHEMA_VERSION = (
 SUMMARY_FILENAME = "summary.json"
 RUN_ARTIFACT_FILENAMES = ("commit.json", "manifest.json", "records.jsonl")
 _ArtifactReceipt = tuple[tuple[str, int, str], ...]
+_BundleReceipt = tuple[tuple[str, int, str], ...]
 _COMMITTED_ATTEMPT_FILENAMES = (
     "pre_outcome.json",
     "started.json",
@@ -81,6 +83,7 @@ _RUN_ARTIFACT_MEMBER_BYTE_CAPS_V1 = (
 )
 _ARTIFACT_READ_CHUNK_BYTES = 1024 * 1024
 _ATTEMPT_RECEIPT_BYTE_CAP_V1 = 8 * 1024 * 1024
+_BUNDLE_MEMBER_BYTE_CAP_V1 = 8 * 1024 * 1024
 # The runner accepts reviewed authorization as a control file under the same
 # 8 MiB ceiling.  Keep that v1 compatibility boundary explicit here so an
 # unreviewed oversized file is rejected before provenance inspection.
@@ -299,6 +302,14 @@ _AUTHORIZATION_FIELDS = {
     "schema_version",
 }
 _TELEMETRY_ROLE = "descriptive_only_excluded_from_search_core_identity_and_gates"
+_AUTHORIZATION_SCHEMA_VERSION = (
+    "qmc-bmgs-countdown-thompson-diagnostic-execution-authorization/v1"
+)
+_AUTHORIZATION_SCOPE = "one_exact_complete_240_cell_diagnostic_run"
+_AUTHORIZATION_CLAIM_BOUNDARY = (
+    "execution authority only; this engineering diagnostic grants no "
+    "method-superiority or locked-128 execution authority"
+)
 _RUN_CLAIM_BOUNDARY = (
     "engineering diagnostic artifact; byte replay applies only to the embedded "
     "search core, telemetry is volatile, and no inferential, superiority, or "
@@ -350,13 +361,18 @@ def _stdlib_strict_json_object(raw: bytes, label: str) -> dict[str, Any]:
             object_pairs_hook=reject_duplicate_keys,
             parse_constant=reject_constant,
         )
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+    except (
+        RecursionError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ValueError,
+    ) as error:
         raise DiagnosticAnalysisError(f"{label} is not strict UTF-8 JSON") from error
     if type(parsed) is not dict:
         raise DiagnosticAnalysisError(f"{label} must be a JSON object")
     try:
         canonical = (_stdlib_canonical_json(parsed) + "\n").encode("utf-8")
-    except (TypeError, ValueError) as error:
+    except (RecursionError, TypeError, ValueError) as error:
         raise DiagnosticAnalysisError(
             f"{label} is not finite canonical JSON"
         ) from error
@@ -386,7 +402,7 @@ def _same_json(left: Any, right: Any) -> bool:
 
     try:
         return canonical_json(left) == canonical_json(right)
-    except (TraceValidationError, TypeError, ValueError):
+    except (RecursionError, TraceValidationError, TypeError, ValueError):
         return False
 
 
@@ -441,9 +457,7 @@ def _read_exact_regular_file_extent(
             payload.extend(chunk)
             remaining -= len(chunk)
         if os.read(file_descriptor, 1):
-            raise DiagnosticAnalysisError(
-                f"{label} grew beyond its declared byte size"
-            )
+            raise DiagnosticAnalysisError(f"{label} grew beyond its declared byte size")
     except BlockingIOError as error:
         raise DiagnosticAnalysisError(
             f"{label} did not provide bounded regular-file bytes"
@@ -481,19 +495,15 @@ def _read_regular_file_nofollow(
                 if max_bytes is not None
                 else ""
             )
-            raise DiagnosticAnalysisError(
-                f"{label} must be a regular file{boundary}"
-            )
+            raise DiagnosticAnalysisError(f"{label} must be a regular file{boundary}")
         descriptor = os.open(
             candidate,
             os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
         )
         opened = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or _regular_file_stable_state(opened)
-            != _regular_file_stable_state(before)
-        ):
+        if not stat.S_ISREG(opened.st_mode) or _regular_file_stable_state(
+            opened
+        ) != _regular_file_stable_state(before):
             raise DiagnosticAnalysisError(
                 f"{label} changed before descriptor acquisition"
             )
@@ -1040,15 +1050,242 @@ def _read_artifact_receipt_from_descriptor(
     return first
 
 
+def _validate_bundle_member_size(
+    filename: str,
+    value: object,
+    label: str,
+) -> int:
+    """Apply a bundle-only bound without changing runner artifact caps."""
+
+    if filename not in BUNDLE_FILENAMES:
+        raise DiagnosticAnalysisError(f"unknown diagnostic bundle member: {filename}")
+    if type(value) is not int or value < 0 or value > _BUNDLE_MEMBER_BYTE_CAP_V1:
+        raise DiagnosticAnalysisError(
+            f"{label} member must be a plain non-negative size within the v1 "
+            f"byte cap of {_BUNDLE_MEMBER_BYTE_CAP_V1}: {filename}"
+        )
+    return value
+
+
+def _assert_bundle_directory_closure(directory_fd: int, label: str) -> None:
+    expected = set(BUNDLE_FILENAMES)
+    names: set[str] = set()
+    try:
+        if not stat.S_ISDIR(os.fstat(directory_fd).st_mode):
+            raise DiagnosticAnalysisError(f"{label} must be a regular directory")
+        with os.scandir(directory_fd) as entries:
+            for entry in entries:
+                name = entry.name
+                if name not in expected or name in names:
+                    raise DiagnosticAnalysisError(f"{label} directory closure drifted")
+                names.add(name)
+    except DiagnosticAnalysisError:
+        raise
+    except OSError as error:
+        raise DiagnosticAnalysisError(f"{label} could not be observed") from error
+    if names != expected:
+        raise DiagnosticAnalysisError(f"{label} directory closure drifted")
+
+
+def _validated_bundle_receipt(
+    value: object,
+    label: str,
+) -> _BundleReceipt:
+    if type(value) is not tuple or len(value) != len(BUNDLE_FILENAMES):
+        raise DiagnosticAnalysisError(f"{label} byte receipt is unavailable")
+    receipt: list[tuple[str, int, str]] = []
+    for expected_filename, member in zip(BUNDLE_FILENAMES, value, strict=True):
+        if type(member) is not tuple or len(member) != 3:
+            raise DiagnosticAnalysisError(f"{label} byte receipt is invalid")
+        filename, byte_count, digest = member
+        if filename != expected_filename or not _is_sha256(digest):
+            raise DiagnosticAnalysisError(f"{label} byte receipt is invalid")
+        receipt.append(
+            (
+                filename,
+                _validate_bundle_member_size(filename, byte_count, label),
+                digest,
+            )
+        )
+    return tuple(receipt)
+
+
+def _read_bundle_receipt_once_from_descriptor(
+    directory_fd: int,
+    label: str,
+) -> _BundleReceipt:
+    """Stream one exact, bounded bundle closure through its pinned root fd."""
+
+    if (
+        os.name != "posix"
+        or not hasattr(os, "O_NOFOLLOW")
+        or not hasattr(os, "O_NONBLOCK")
+    ):
+        raise DiagnosticAnalysisError(
+            f"{label} validation requires POSIX descriptor-bound reads"
+        )
+    pinned_members: list[tuple[str, int, os.stat_result]] = []
+    try:
+        before_directory = os.fstat(directory_fd)
+        if not stat.S_ISDIR(before_directory.st_mode):
+            raise DiagnosticAnalysisError(f"{label} must be a regular directory")
+        directory_generation = _artifact_member_stable_state(before_directory)
+        _assert_bundle_directory_closure(directory_fd, label)
+        for filename in BUNDLE_FILENAMES:
+            try:
+                named_before = os.stat(
+                    filename,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+            except OSError as error:
+                raise DiagnosticAnalysisError(
+                    f"{label} member could not be observed: {filename}"
+                ) from error
+            if not stat.S_ISREG(named_before.st_mode):
+                raise DiagnosticAnalysisError(
+                    f"{label} member is not regular: {filename}"
+                )
+            named_size = _validate_bundle_member_size(
+                filename,
+                named_before.st_size,
+                label,
+            )
+            member_fd = -1
+            try:
+                member_fd = os.open(
+                    filename,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    dir_fd=directory_fd,
+                )
+                opened = os.fstat(member_fd)
+                opened_size = _validate_bundle_member_size(
+                    filename,
+                    opened.st_size,
+                    label,
+                )
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or _artifact_member_stable_state(opened)
+                    != _artifact_member_stable_state(named_before)
+                    or opened_size != named_size
+                ):
+                    raise DiagnosticAnalysisError(
+                        f"{label} member changed before descriptor acquisition: "
+                        f"{filename}"
+                    )
+                pinned_members.append((filename, member_fd, opened))
+                member_fd = -1
+            finally:
+                _close_descriptor_best_effort(member_fd)
+
+        observed: list[tuple[str, int, str]] = []
+        for filename, member_fd, opened in pinned_members:
+            os.lseek(member_fd, 0, os.SEEK_SET)
+            remaining = opened.st_size
+            hasher = hashlib.sha256()
+            while remaining:
+                chunk = os.read(
+                    member_fd,
+                    min(remaining, _ARTIFACT_READ_CHUNK_BYTES),
+                )
+                if not chunk:
+                    raise DiagnosticAnalysisError(
+                        f"{label} member ended before its declared byte size: "
+                        f"{filename}"
+                    )
+                remaining -= len(chunk)
+                hasher.update(chunk)
+            if os.read(member_fd, 1):
+                raise DiagnosticAnalysisError(
+                    f"{label} member grew beyond its declared byte size: {filename}"
+                )
+            if _artifact_member_stable_state(
+                os.fstat(member_fd)
+            ) != _artifact_member_stable_state(opened):
+                raise DiagnosticAnalysisError(
+                    f"{label} member changed during bounded read: {filename}"
+                )
+            observed.append((filename, opened.st_size, hasher.hexdigest()))
+
+        _assert_bundle_directory_closure(directory_fd, label)
+        for filename, member_fd, opened in pinned_members:
+            try:
+                named_after = os.stat(
+                    filename,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+            except OSError as error:
+                raise DiagnosticAnalysisError(
+                    f"{label} member name could not be reobserved: {filename}"
+                ) from error
+            expected_state = _artifact_member_stable_state(opened)
+            if (
+                _artifact_member_stable_state(os.fstat(member_fd)) != expected_state
+                or not stat.S_ISREG(named_after.st_mode)
+                or _artifact_member_stable_state(named_after) != expected_state
+            ):
+                raise DiagnosticAnalysisError(
+                    f"{label} member name changed after bounded receipt: {filename}"
+                )
+        if (
+            _artifact_member_stable_state(os.fstat(directory_fd))
+            != directory_generation
+        ):
+            raise DiagnosticAnalysisError(
+                f"{label} directory changed during bounded receipt"
+            )
+        return tuple(observed)
+    except DiagnosticAnalysisError:
+        raise
+    except OSError as error:
+        raise DiagnosticAnalysisError(
+            f"{label} bounded receipt could not be completed"
+        ) from error
+    finally:
+        for _filename, member_fd, _opened in pinned_members:
+            _close_descriptor_best_effort(member_fd)
+
+
+def _read_bundle_receipt_from_descriptor(
+    directory_fd: int,
+    label: str,
+    expected_receipt: _BundleReceipt | None = None,
+) -> _BundleReceipt:
+    """Require two identical exact bundle receipts, optionally against a baseline."""
+
+    expected = (
+        _validated_bundle_receipt(expected_receipt, label)
+        if expected_receipt is not None
+        else None
+    )
+    first = _read_bundle_receipt_once_from_descriptor(directory_fd, label)
+    if expected is not None and first != expected:
+        raise DiagnosticAnalysisError(
+            f"{label} bytes differ from the pre-validation bundle"
+        )
+    second = _read_bundle_receipt_once_from_descriptor(directory_fd, label)
+    if second != first:
+        raise DiagnosticAnalysisError(f"{label} changed during descriptor snapshot")
+    return first
+
+
 def _strict_json_object(raw: bytes, label: str) -> dict[str, Any]:
     try:
         text = raw.decode("utf-8")
         parsed = strict_json_loads(text)
-    except (UnicodeDecodeError, TraceValidationError) as error:
+    except (RecursionError, UnicodeDecodeError, TraceValidationError) as error:
         raise DiagnosticAnalysisError(f"{label} is not strict UTF-8 JSON") from error
     if type(parsed) is not dict:
         raise DiagnosticAnalysisError(f"{label} must be a JSON object")
-    if _canonical_bytes(parsed) != raw:
+    try:
+        canonical = _canonical_bytes(parsed)
+    except (RecursionError, TraceValidationError, TypeError, ValueError) as error:
+        raise DiagnosticAnalysisError(
+            f"{label} is not finite canonical JSON"
+        ) from error
+    if canonical != raw:
         raise DiagnosticAnalysisError(f"{label} bytes are not canonical")
     return parsed
 
@@ -1062,8 +1299,7 @@ def _validate_attempt_member_size(
         raise DiagnosticAnalysisError(f"{label} has an unknown member: {filename}")
     if type(value) is not int or value < 0:
         raise DiagnosticAnalysisError(
-            f"{label} member byte size is not a plain non-negative integer: "
-            f"{filename}"
+            f"{label} member byte size is not a plain non-negative integer: {filename}"
         )
     if value > _ATTEMPT_RECEIPT_BYTE_CAP_V1:
         raise DiagnosticAnalysisError(
@@ -1087,9 +1323,7 @@ def _assert_committed_attempt_directory_closure(
             for entry in entries:
                 name = entry.name
                 if name not in expected or name in names:
-                    raise DiagnosticAnalysisError(
-                        f"{label} directory closure drifted"
-                    )
+                    raise DiagnosticAnalysisError(f"{label} directory closure drifted")
                 names.add(name)
     except DiagnosticAnalysisError:
         raise
@@ -1300,6 +1534,7 @@ def _revalidate_attempt_authority_after_topology(
         raise DiagnosticAnalysisError(
             f"{label} bytes differ from the validated committed attempt"
         )
+    _assert_pinned_protected_roots(protected_roots)
     return final_receipt
 
 
@@ -1426,8 +1661,7 @@ def _read_historical_attempt_state(
         pinned = _pin_protected_roots((candidate,))
     except DiagnosticAnalysisError as error:
         raise DiagnosticAnalysisError(
-            "historical committed attempt must exist as a stable non-symlink "
-            "directory"
+            "historical committed attempt must exist as a stable non-symlink directory"
         ) from error
     try:
         _assert_pinned_protected_roots(pinned)
@@ -1478,15 +1712,9 @@ def _preflight_authorization(
     runtime = authorization["runtime_qualification"]
     output = authorization["output_path"]
     if (
-        authorization["schema_version"]
-        != "qmc-bmgs-countdown-thompson-diagnostic-execution-authorization/v1"
-        or authorization["authorization_scope"]
-        != "one_exact_complete_240_cell_diagnostic_run"
-        or authorization["claim_boundary"]
-        != (
-            "execution authority only; this engineering diagnostic grants no "
-            "method-superiority or locked-128 execution authority"
-        )
+        authorization["schema_version"] != _AUTHORIZATION_SCHEMA_VERSION
+        or authorization["authorization_scope"] != _AUTHORIZATION_SCOPE
+        or authorization["claim_boundary"] != _AUTHORIZATION_CLAIM_BOUNDARY
         or authorization["deterministic_digest"] != _stdlib_sha256_json(core)
         or authorization["deterministic_digest"]
         != manifest.get("execution_authorization_digest")
@@ -1568,11 +1796,26 @@ def _strict_jsonl(raw: bytes) -> tuple[dict[str, Any], ...]:
         try:
             text = raw_line.decode("utf-8")
             parsed = strict_json_loads(text)
-        except (UnicodeDecodeError, TraceValidationError) as error:
+        except (RecursionError, UnicodeDecodeError, TraceValidationError) as error:
             raise DiagnosticAnalysisError(
                 f"records.jsonl line {line_number} is not strict JSON"
             ) from error
-        if type(parsed) is not dict or _canonical_bytes(parsed) != raw_line:
+        if type(parsed) is not dict:
+            raise DiagnosticAnalysisError(
+                f"records.jsonl line {line_number} is not a canonical object"
+            )
+        try:
+            canonical = _canonical_bytes(parsed)
+        except (
+            RecursionError,
+            TraceValidationError,
+            TypeError,
+            ValueError,
+        ) as error:
+            raise DiagnosticAnalysisError(
+                f"records.jsonl line {line_number} is not a canonical object"
+            ) from error
+        if canonical != raw_line:
             raise DiagnosticAnalysisError(
                 f"records.jsonl line {line_number} is not a canonical object"
             )
@@ -2227,15 +2470,9 @@ def _validate_run_manifest(
         authorization["deterministic_digest"] != sha256_json(authorization_core)
         or authorization["deterministic_digest"]
         != payload["execution_authorization_digest"]
-        or authorization["schema_version"]
-        != "qmc-bmgs-countdown-thompson-diagnostic-execution-authorization/v1"
-        or authorization["authorization_scope"]
-        != "one_exact_complete_240_cell_diagnostic_run"
-        or authorization["claim_boundary"]
-        != (
-            "execution authority only; this engineering diagnostic grants no "
-            "method-superiority or locked-128 execution authority"
-        )
+        or authorization["schema_version"] != _AUTHORIZATION_SCHEMA_VERSION
+        or authorization["authorization_scope"] != _AUTHORIZATION_SCOPE
+        or authorization["claim_boundary"] != _AUTHORIZATION_CLAIM_BOUNDARY
         or authorization["bundle_id"] != bundle_id
         or authorization["diagnostic_seal_digest"] != bundle.seal_digest
         or type(authorization["cell_count"]) is not int
@@ -2677,9 +2914,7 @@ def _validate_artifact(
             authorization_path,
             authorization_digest,
             repository_root=repository_root,
-            retain_historical_attempt_authority=(
-                attempt_authority_owner is not None
-            ),
+            retain_historical_attempt_authority=(attempt_authority_owner is not None),
             authority_cleanup=authority_cleanup,
         )
     finally:
@@ -2745,13 +2980,10 @@ def _validate_artifact_unmanaged(
     )
     historical_attempt_path = _historical_attempt_path(preflight_manifest)
     try:
-        historical_attempt_roots = _pin_protected_roots(
-            (historical_attempt_path,)
-        )
+        historical_attempt_roots = _pin_protected_roots((historical_attempt_path,))
     except DiagnosticAnalysisError as error:
         raise DiagnosticAnalysisError(
-            "historical committed attempt must exist as a stable non-symlink "
-            "directory"
+            "historical committed attempt must exist as a stable non-symlink directory"
         ) from error
     authority_cleanup.callback(
         _close_pinned_protected_roots,
@@ -2769,7 +3001,7 @@ def _validate_artifact_unmanaged(
             repository_root=repository,
         )
         expected_cells = iter_countdown_thompson_diagnostic_cells(bundle)
-    except (OSError, TraceValidationError, ValueError) as error:
+    except (OSError, RecursionError, TraceValidationError, ValueError) as error:
         raise DiagnosticAnalysisError(
             "diagnostic bundle verification failed"
         ) from error
@@ -2874,9 +3106,7 @@ def _validate_artifact_unmanaged(
         "historical committed attempt",
     )
     retained_authority = (
-        historical_attempt_roots[0]
-        if retain_historical_attempt_authority
-        else None
+        historical_attempt_roots[0] if retain_historical_attempt_authority else None
     )
     validated = _ValidatedRun(
         bundle,
@@ -2907,8 +3137,7 @@ def _validated_historical_attempt_authority(
     expected_attempt_path = _historical_attempt_path(validated.manifest)
     if (
         not isinstance(attempt_path_value, Path)
-        or Path(os.path.abspath(os.fspath(attempt_path_value)))
-        != expected_attempt_path
+        or Path(os.path.abspath(os.fspath(attempt_path_value))) != expected_attempt_path
         or attempt_authority.authority_path != expected_attempt_path
     ):
         raise DiagnosticAnalysisError(
@@ -3502,6 +3731,21 @@ def analyze_countdown_thompson_diagnostic_artifact(
     """Validate every cell, then emit the preregistered engineering result."""
 
     with ExitStack() as authority_cleanup:
+        source_roots = _pin_protected_roots(
+            (Path(artifact_dir), Path(bundle_dir)),
+        )
+        authority_cleanup.callback(
+            _close_pinned_protected_roots,
+            source_roots,
+        )
+        artifact_authority, bundle_authority = source_roots
+        bundle_receipt, bundle_validation_generation = (
+            _capture_bundle_validation_baseline(
+                bundle_authority,
+                source_roots,
+            )
+        )
+        _assert_pinned_protected_roots(source_roots)
         validated = _validate_artifact(
             Path(artifact_dir),
             Path(bundle_dir),
@@ -3510,16 +3754,73 @@ def analyze_countdown_thompson_diagnostic_artifact(
             repository_root=repository_root,
             attempt_authority_owner=authority_cleanup,
         )
-        attempt_authority, attempt_receipt = (
-            _validated_historical_attempt_authority(validated)
+        _assert_pinned_protected_roots(source_roots)
+        validated_artifact_receipt = _validated_artifact_receipt(
+            getattr(validated, "artifact_receipt", ()),
+            "validated runner artifact",
+        )
+        attempt_authority, attempt_receipt = _validated_historical_attempt_authority(
+            validated
         )
         summary = _build_summary(validated)
+        protected_roots = (*source_roots, attempt_authority)
+        authority_specs = (
+            (
+                artifact_authority,
+                RUN_ARTIFACT_FILENAMES,
+                "validated runner artifact",
+            ),
+            (
+                bundle_authority,
+                BUNDLE_FILENAMES,
+                "verified diagnostic bundle",
+            ),
+            (
+                attempt_authority,
+                _COMMITTED_ATTEMPT_FILENAMES,
+                "historical committed attempt",
+            ),
+        )
+        before_generation = _capture_pinned_authority_generation(
+            authority_specs,
+            protected_roots,
+        )
+        if before_generation[1] != bundle_validation_generation:
+            raise DiagnosticAnalysisError(
+                "source authority generation changed after validation: "
+                "diagnostic bundle"
+            )
+        _read_artifact_receipt_from_descriptor(
+            artifact_authority.descriptor,
+            "validated runner artifact",
+            validated_artifact_receipt,
+        )
+        _read_bundle_receipt_from_descriptor(
+            bundle_authority.descriptor,
+            "verified diagnostic bundle",
+            bundle_receipt,
+        )
         _revalidate_attempt_authority_after_topology(
             attempt_authority,
             attempt_receipt,
-            (attempt_authority,),
+            protected_roots,
             "historical committed attempt",
         )
+        after_generation = _capture_pinned_authority_generation(
+            authority_specs,
+            protected_roots,
+        )
+        if after_generation != before_generation:
+            raise DiagnosticAnalysisError(
+                "artifact, bundle, and attempt authorities changed during "
+                "collective proof"
+            )
+        if after_generation[1] != bundle_validation_generation:
+            raise DiagnosticAnalysisError(
+                "source authority generation changed after validation: "
+                "diagnostic bundle"
+            )
+        _assert_pinned_protected_roots(protected_roots)
         return summary
 
 
@@ -3770,6 +4071,246 @@ def _assert_pinned_protected_roots(
                     pass
 
 
+_PathGeneration = tuple[tuple[str, tuple[int, ...]], ...]
+_AuthorityDirectoryGeneration = tuple[
+    _PathGeneration,
+    _PathGeneration,
+    tuple[int, ...],
+    tuple[tuple[str, tuple[int, ...]], ...],
+]
+_AuthorityGeneration = tuple[_AuthorityDirectoryGeneration, ...]
+
+
+def _directory_stable_state(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _capture_raw_path_generation(
+    path: Path,
+    expected_identity: tuple[int, int],
+    label: str,
+) -> _PathGeneration:
+    """Capture every lexical path component plus the final target identity."""
+
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    current = Path(absolute.anchor)
+    captured: list[tuple[str, tuple[int, ...]]] = []
+    descriptor = -1
+    try:
+        captured.append(
+            (
+                os.fspath(current),
+                _directory_stable_state(os.lstat(current)),
+            )
+        )
+        for component in absolute.parts[1:]:
+            current /= component
+            captured.append(
+                (
+                    os.fspath(current),
+                    _directory_stable_state(os.lstat(current)),
+                )
+            )
+        descriptor, opened = _open_protected_root_authority(
+            absolute,
+            label,
+        )
+        if (opened.st_dev, opened.st_ino) != expected_identity:
+            raise DiagnosticAnalysisError(f"{label} path identity changed")
+        return tuple(captured)
+    except DiagnosticAnalysisError:
+        raise
+    except OSError as error:
+        raise DiagnosticAnalysisError(f"{label} path generation changed") from error
+    finally:
+        _close_descriptor_best_effort(descriptor)
+
+
+_ProtectedPathGeneration = tuple[_PathGeneration, _PathGeneration]
+
+
+def _capture_protected_path_generations(
+    protected_roots: Sequence[_PinnedProtectedRoot],
+) -> tuple[_ProtectedPathGeneration, ...]:
+    """Capture raw and canonical namespace generations for every source root."""
+
+    return tuple(
+        (
+            _capture_raw_path_generation(
+                protected.authority_path,
+                protected.identity,
+                f"protected root {index} raw authority",
+            ),
+            _capture_raw_path_generation(
+                protected.path,
+                protected.identity,
+                f"protected root {index} canonical authority",
+            ),
+        )
+        for index, protected in enumerate(protected_roots)
+    )
+
+
+def _path_generation_identities(
+    generations: Sequence[_ProtectedPathGeneration],
+) -> frozenset[tuple[int, int]]:
+    """Return every inode identity named by raw and canonical source paths."""
+
+    return frozenset(
+        (state[0], state[1])
+        for raw_generation, canonical_generation in generations
+        for generation in (raw_generation, canonical_generation)
+        for _path, state in generation
+    )
+
+
+def _capture_pinned_authority_generation(
+    authorities: Sequence[tuple[_PinnedProtectedRoot, tuple[str, ...], str]],
+    protected_roots: Sequence[_PinnedProtectedRoot],
+) -> _AuthorityGeneration:
+    """Capture one non-ABA namespace/member generation for each authority.
+
+    The receipt readers prove expected bytes. This companion token binds
+    those proofs across independently mutable directories: under the existing
+    POSIX stable-state assumption, an in-place write, replacement, or link
+    change advances at least one mtime/ctime-bearing generation component.
+    """
+
+    _assert_pinned_protected_roots(protected_roots)
+    captured: list[_AuthorityDirectoryGeneration] = []
+    try:
+        for authority, filenames, label in authorities:
+            raw_path_generation = _capture_raw_path_generation(
+                authority.authority_path,
+                authority.identity,
+                f"{label} raw authority",
+            )
+            canonical_path_generation = _capture_raw_path_generation(
+                authority.path,
+                authority.identity,
+                f"{label} canonical authority",
+            )
+            before_directory = os.fstat(authority.descriptor)
+            if not stat.S_ISDIR(before_directory.st_mode):
+                raise DiagnosticAnalysisError(f"{label} must be a regular directory")
+            expected_names = set(filenames)
+            with os.scandir(authority.descriptor) as entries:
+                observed_names = tuple(entry.name for entry in entries)
+            if (
+                len(observed_names) != len(expected_names)
+                or set(observed_names) != expected_names
+            ):
+                raise DiagnosticAnalysisError(f"{label} directory closure drifted")
+
+            member_states: list[tuple[str, tuple[int, ...]]] = []
+            for filename in filenames:
+                observed = os.stat(
+                    filename,
+                    dir_fd=authority.descriptor,
+                    follow_symlinks=False,
+                )
+                if not stat.S_ISREG(observed.st_mode):
+                    raise DiagnosticAnalysisError(
+                        f"{label} member is not regular: {filename}"
+                    )
+                member_states.append(
+                    (filename, _artifact_member_stable_state(observed))
+                )
+
+            after_directory = os.fstat(authority.descriptor)
+            directory_generation = _directory_stable_state(before_directory)
+            if _directory_stable_state(after_directory) != directory_generation:
+                raise DiagnosticAnalysisError(
+                    f"{label} directory changed during generation capture"
+                )
+            for filename, expected_state in member_states:
+                reobserved = os.stat(
+                    filename,
+                    dir_fd=authority.descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    not stat.S_ISREG(reobserved.st_mode)
+                    or _artifact_member_stable_state(reobserved) != expected_state
+                ):
+                    raise DiagnosticAnalysisError(
+                        f"{label} member changed during generation capture: {filename}"
+                    )
+            if (
+                _capture_raw_path_generation(
+                    authority.authority_path,
+                    authority.identity,
+                    f"{label} raw authority",
+                )
+                != raw_path_generation
+                or _capture_raw_path_generation(
+                    authority.path,
+                    authority.identity,
+                    f"{label} canonical authority",
+                )
+                != canonical_path_generation
+            ):
+                raise DiagnosticAnalysisError(
+                    f"{label} path changed during generation capture"
+                )
+            captured.append(
+                (
+                    raw_path_generation,
+                    canonical_path_generation,
+                    directory_generation,
+                    tuple(member_states),
+                )
+            )
+    except DiagnosticAnalysisError:
+        raise
+    except OSError as error:
+        raise DiagnosticAnalysisError(
+            "authority generation could not be captured"
+        ) from error
+    _assert_pinned_protected_roots(protected_roots)
+    return tuple(captured)
+
+
+def _capture_bundle_validation_baseline(
+    bundle_authority: _PinnedProtectedRoot,
+    protected_roots: Sequence[_PinnedProtectedRoot],
+) -> tuple[_BundleReceipt, _AuthorityDirectoryGeneration]:
+    """Bind exact bundle bytes to one raw/canonical pre-validation generation."""
+
+    bundle_specs = (
+        (
+            bundle_authority,
+            BUNDLE_FILENAMES,
+            "verified diagnostic bundle",
+        ),
+    )
+    before_generation = _capture_pinned_authority_generation(
+        bundle_specs,
+        protected_roots,
+    )
+    receipt = _read_bundle_receipt_from_descriptor(
+        bundle_authority.descriptor,
+        "verified diagnostic bundle",
+    )
+    after_generation = _capture_pinned_authority_generation(
+        bundle_specs,
+        protected_roots,
+    )
+    if after_generation != before_generation:
+        raise DiagnosticAnalysisError(
+            "diagnostic bundle changed during pre-validation collective proof"
+        )
+    return receipt, after_generation[0]
+
+
 def _directory_ancestry_from_fd(
     directory_fd: int,
     label: str,
@@ -3836,21 +4377,39 @@ def _assert_summary_publication_topology(
     if not protected_roots:
         return
     try:
+        parent = os.fstat(parent_fd)
+        if not stat.S_ISDIR(parent.st_mode):
+            raise DiagnosticAnalysisError("summary parent is not a directory")
+        parent_identity = (parent.st_dev, parent.st_ino)
         protected_identities = {protected.identity for protected in protected_roots}
         ancestry_before = _directory_ancestry_from_fd(parent_fd, "summary parent")
         if protected_identities.intersection(ancestry_before):
             raise DiagnosticAnalysisError(
                 "summary parent real ancestry intersects a protected root"
             )
+        protected_paths_before = _capture_protected_path_generations(protected_roots)
+        if parent_identity in _path_generation_identities(protected_paths_before):
+            raise DiagnosticAnalysisError(
+                "summary parent is a protected source-path ancestor"
+            )
         _assert_pinned_protected_roots(protected_roots)
         ancestry_after = _directory_ancestry_from_fd(parent_fd, "summary parent")
+        protected_paths_after = _capture_protected_path_generations(protected_roots)
         if ancestry_after != ancestry_before:
             raise DiagnosticAnalysisError(
                 "summary parent real ancestry changed during topology proof"
             )
+        if protected_paths_after != protected_paths_before:
+            raise DiagnosticAnalysisError(
+                "protected source paths changed during topology proof"
+            )
         if protected_identities.intersection(ancestry_after):
             raise DiagnosticAnalysisError(
                 "summary parent real ancestry intersects a protected root"
+            )
+        if parent_identity in _path_generation_identities(protected_paths_after):
+            raise DiagnosticAnalysisError(
+                "summary parent is a protected source-path ancestor"
             )
     except DiagnosticAnalysisPublicationAmbiguousError:
         raise
@@ -4590,6 +5149,101 @@ def _atomic_write_no_replace(
             raise
         post_durability_check_completed = True
 
+    def observe_exact_summary_generation() -> tuple[
+        _PathGeneration,
+        tuple[int, ...],
+        tuple[int, ...],
+    ]:
+        """Bind one exact payload proof to parent and inode generations."""
+
+        if (
+            staged_identity is None
+            or parent_identity is None
+            or parent_fd < 0
+            or file_descriptor < 0
+        ):
+            raise DiagnosticAnalysisPublicationAmbiguousError(
+                "summary publication durability and rollback are ambiguous; "
+                "the destination must not be used as diagnostic evidence"
+            )
+        parent_before = os.fstat(parent_fd)
+        inode_before = os.fstat(file_descriptor)
+        parent_path_generation = _capture_raw_path_generation(
+            destination.parent,
+            parent_identity,
+            "summary parent authority",
+        )
+        parent_generation = _directory_stable_state(parent_before)
+        inode_generation = _summary_inode_stable_state(inode_before)
+        _assert_raw_directory_identity(
+            destination.parent,
+            parent_identity,
+            "summary parent during mandatory post-durability check",
+        )
+        if not _summary_publication_is_exact(
+            destination,
+            parent_fd,
+            parent_identity,
+            staged_identity,
+            payload,
+        ):
+            raise DiagnosticAnalysisError(
+                "summary destination changed during mandatory post-durability proof"
+            )
+        inode_after = os.fstat(file_descriptor)
+        parent_after = os.fstat(parent_fd)
+        if (
+            _summary_inode_stable_state(inode_after) != inode_generation
+            or _directory_stable_state(parent_after) != parent_generation
+        ):
+            raise DiagnosticAnalysisError(
+                "summary destination generation changed during mandatory proof"
+            )
+        if (
+            _capture_raw_path_generation(
+                destination.parent,
+                parent_identity,
+                "summary parent authority",
+            )
+            != parent_path_generation
+        ):
+            raise DiagnosticAnalysisError(
+                "summary parent path changed during mandatory proof"
+            )
+        _assert_raw_directory_identity(
+            destination.parent,
+            parent_identity,
+            "summary parent after mandatory post-durability check",
+        )
+        return parent_path_generation, parent_generation, inode_generation
+
+    def complete_mandatory_commit_check() -> None:
+        nonlocal post_durability_check_failed
+
+        try:
+            # S0 is captured by the caller before publication. D0 is captured
+            # here after the directory durability barrier, then the mandatory
+            # callback rechecks S0 and the final observations recheck D0. With
+            # non-ABA mtime/ctime generations, S0-D0-S1-D1 contains a real
+            # interval in which source authorities and destination are exact.
+            pre_sync_generation = observe_exact_summary_generation()
+            os.fsync(file_descriptor)
+            durable_generation = observe_exact_summary_generation()
+            if durable_generation != pre_sync_generation:
+                raise DiagnosticAnalysisError(
+                    "summary destination changed during final file durability barrier"
+                )
+            run_mandatory_post_durability_check()
+            for _observation in range(2):
+                if observe_exact_summary_generation() != durable_generation:
+                    raise DiagnosticAnalysisError(
+                        "summary destination generation changed after mandatory "
+                        "post-durability check"
+                    )
+        except BaseException:
+            post_durability_check_failed = True
+            raise
+
     try:
         # These descriptors were acquired before validation.  Revalidate their
         # names before touching any attacker-pivotable destination path.
@@ -4733,7 +5387,7 @@ def _atomic_write_no_replace(
             raise DiagnosticAnalysisError(
                 "summary destination changed during final topology proof"
             )
-        run_mandatory_post_durability_check()
+        complete_mandatory_commit_check()
         if not post_durability_check_completed:
             raise DiagnosticAnalysisPublicationAmbiguousError(
                 "summary publication durability and rollback are ambiguous; "
@@ -4764,7 +5418,7 @@ def _atomic_write_no_replace(
             )
             if committed:
                 try:
-                    run_mandatory_post_durability_check()
+                    complete_mandatory_commit_check()
                 except BaseException as recovery_error:
                     raise_after_failed_post_durability_check(recovery_error)
                 if not post_durability_check_completed:
@@ -4808,6 +5462,13 @@ def write_countdown_thompson_diagnostic_summary(
             _close_pinned_protected_roots,
             protected_roots,
         )
+        artifact_authority, bundle_authority = protected_roots
+        bundle_receipt, bundle_validation_generation = (
+            _capture_bundle_validation_baseline(
+                bundle_authority,
+                protected_roots,
+            )
+        )
         _assert_pinned_protected_roots(protected_roots)
         validated = _validate_artifact(
             Path(artifact_dir),
@@ -4848,9 +5509,8 @@ def write_countdown_thompson_diagnostic_summary(
         )
         protected_roots = (*protected_roots, *historical_roots)
         historical_canonical = historical_roots[0].path
-        if (
-            destination == historical_canonical
-            or destination.is_relative_to(historical_canonical)
+        if destination == historical_canonical or destination.is_relative_to(
+            historical_canonical
         ):
             raise DiagnosticAnalysisError(
                 "summary destination cannot modify the historical authorized artifact"
@@ -4868,8 +5528,42 @@ def write_countdown_thompson_diagnostic_summary(
             getattr(validated, "artifact_receipt", ()),
             "validated runner artifact",
         )
+        authority_specs = (
+            (
+                historical_roots[0],
+                RUN_ARTIFACT_FILENAMES,
+                "historical committed artifact",
+            ),
+            (
+                artifact_authority,
+                RUN_ARTIFACT_FILENAMES,
+                "relocated validated artifact",
+            ),
+            (
+                bundle_authority,
+                BUNDLE_FILENAMES,
+                "verified diagnostic bundle",
+            ),
+            (
+                attempt_authority,
+                _COMMITTED_ATTEMPT_FILENAMES,
+                "historical committed attempt",
+            ),
+        )
+        source_generation: _AuthorityGeneration | None = None
 
         def revalidate_authority_receipts() -> None:
+            nonlocal source_generation
+
+            before_generation = _capture_pinned_authority_generation(
+                authority_specs,
+                protected_roots,
+            )
+            if before_generation[2] != bundle_validation_generation:
+                raise DiagnosticAnalysisError(
+                    "source authority generation changed after validation: "
+                    "diagnostic bundle"
+                )
             _assert_pinned_protected_roots(protected_roots)
             _read_artifact_receipt_from_descriptor(
                 historical_roots[0].descriptor,
@@ -4877,9 +5571,14 @@ def write_countdown_thompson_diagnostic_summary(
                 validated_receipt,
             )
             _read_artifact_receipt_from_descriptor(
-                protected_roots[0].descriptor,
+                artifact_authority.descriptor,
                 "relocated validated artifact",
                 validated_receipt,
+            )
+            _read_bundle_receipt_from_descriptor(
+                bundle_authority.descriptor,
+                "verified diagnostic bundle",
+                bundle_receipt,
             )
             _revalidate_attempt_authority_after_topology(
                 attempt_authority,
@@ -4887,6 +5586,24 @@ def write_countdown_thompson_diagnostic_summary(
                 protected_roots,
                 "historical committed attempt",
             )
+            after_generation = _capture_pinned_authority_generation(
+                authority_specs,
+                protected_roots,
+            )
+            if after_generation != before_generation:
+                raise DiagnosticAnalysisError(
+                    "summary source authorities changed during collective proof"
+                )
+            if after_generation[2] != bundle_validation_generation:
+                raise DiagnosticAnalysisError(
+                    "source authority generation changed after validation: "
+                    "diagnostic bundle"
+                )
+            if source_generation is not None and after_generation != source_generation:
+                raise DiagnosticAnalysisError(
+                    "summary source authority generation changed after validation"
+                )
+            source_generation = after_generation
 
         revalidate_authority_receipts()
         _assert_pinned_protected_roots(protected_roots)
@@ -5005,9 +5722,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise DiagnosticAnalysisError(
                     f"--analyze is missing required arguments: {', '.join(missing)}"
                 )
-            requested_output = Path(
-                os.path.abspath(os.fspath(arguments.output))
-            )
+            requested_output = Path(os.path.abspath(os.fspath(arguments.output)))
             summary = write_countdown_thompson_diagnostic_summary(
                 arguments.analyze,
                 arguments.bundle,
@@ -5046,6 +5761,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         DiagnosticAnalysisError,
         FileExistsError,
         OSError,
+        RecursionError,
         ValueError,
     ) as error:
         print(canonical_json(_invalid_cli_result(str(error))))

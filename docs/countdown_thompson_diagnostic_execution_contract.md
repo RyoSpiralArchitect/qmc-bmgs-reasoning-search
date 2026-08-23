@@ -186,9 +186,18 @@ durability barrier.
 ## Stage 4: independent analysis
 
 Choose a new summary path that does not exist and cannot modify the run artifact
-or sealed bundle. From the same reviewed source checkout, run:
+or sealed bundle. Its parent must already exist as a stable non-symlink
+directory and must not be any raw or canonical path component of the run
+artifact, relocated artifact, sealed bundle, or committed attempt. In
+particular, do not place the summary directly beside one of those protected
+sources: inserting the summary would change that source path generation.
+
+Create a dedicated publication directory before analysis starts, then run from
+the same reviewed source checkout:
 
 ```bash
+mkdir \
+  /absolute/outside/repository/countdown_thompson_diagnostic_v1_summary_publication
 PYTHONPATH=src python -m \
   qmc_bmgs.experiments.countdown_thompson_diagnostic_analysis \
   --analyze \
@@ -198,7 +207,7 @@ PYTHONPATH=src python -m \
     docs/preregistrations/countdown_thompson_diagnostic_v1_execution_authorization.json \
   --authorization-digest <64-character-lowercase-sha256> \
   --output \
-    /absolute/outside/repository/countdown_thompson_diagnostic_v1_summary.json \
+    /absolute/outside/repository/countdown_thompson_diagnostic_v1_summary_publication/countdown_thompson_diagnostic_v1_summary.json \
   --repository-root .
 ```
 
@@ -232,6 +241,11 @@ accepted only after inode, canonical bytes, stable non-symlink ancestry, and
 the parent barrier all close. Rollback atomically moves an exact summary into a
 retained quarantine; a moved exact summary that cannot be revoked is ambiguous,
 not `INVALID`.
+
+The dedicated summary publication directory must remain outside every protected
+source path. A summary placed directly in a protected source parent is rejected
+before staging, even when the destination filename itself is outside the
+artifact and bundle directories.
 
 The summary decision is exactly one of:
 

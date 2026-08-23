@@ -100,6 +100,19 @@ def _write_synthetic_artifact_members(
     return analysis._artifact_snapshot_receipt(snapshot)
 
 
+def _write_synthetic_bundle_members(
+    directory: Path,
+    marker: bytes = b"synthetic-bundle",
+) -> analysis._BundleReceipt:
+    directory.mkdir(parents=True, exist_ok=True)
+    receipt: list[tuple[str, int, str]] = []
+    for filename in analysis.BUNDLE_FILENAMES:
+        payload = marker + b":" + filename.encode("ascii") + b"\n"
+        (directory / filename).write_bytes(payload)
+        receipt.append((filename, len(payload), analysis._sha256_bytes(payload)))
+    return tuple(receipt)
+
+
 def _write_synthetic_committed_attempt(
     historical_artifact: Path,
 ) -> tuple[dict[str, object], Path, analysis._AttemptStateReceipt]:
@@ -117,9 +130,7 @@ def _write_synthetic_committed_attempt(
         "phase": "STARTED",
         "reviewed_authorization_revision": "d" * 40,
         "runner_build_digest": "e" * 64,
-        "schema_version": (
-            "qmc-bmgs-countdown-thompson-diagnostic-attempt-marker/v1"
-        ),
+        "schema_version": ("qmc-bmgs-countdown-thompson-diagnostic-attempt-marker/v1"),
         "search_build_digest": "f" * 64,
         "staging_path": str(staging),
         "status": "PENDING",
@@ -1305,9 +1316,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             root = Path(directory)
             historical = root / "artifact"
             historical.mkdir()
-            manifest, attempt, _receipt = _write_synthetic_committed_attempt(
-                historical
-            )
+            manifest, attempt, _receipt = _write_synthetic_committed_attempt(historical)
             target = attempt / "started.json"
             target_stat = target.stat()
             target_identity = (target_stat.st_dev, target_stat.st_ino)
@@ -1348,16 +1357,10 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             root = Path(directory)
             historical = root / "artifact"
             historical.mkdir()
-            manifest, attempt, _receipt = _write_synthetic_committed_attempt(
-                historical
-            )
+            manifest, attempt, _receipt = _write_synthetic_committed_attempt(historical)
             nesting = 10_000
             malicious = (
-                b'{"unexpected":'
-                + (b"[" * nesting)
-                + b"0"
-                + (b"]" * nesting)
-                + b"}\n"
+                b'{"unexpected":' + (b"[" * nesting) + b"0" + (b"]" * nesting) + b"}\n"
             )
             self.assertLess(
                 len(malicious),
@@ -1382,9 +1385,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             root = Path(directory)
             historical = root / "artifact"
             historical.mkdir()
-            manifest, attempt, _receipt = _write_synthetic_committed_attempt(
-                historical
-            )
+            manifest, attempt, _receipt = _write_synthetic_committed_attempt(historical)
             ready_path = attempt / "ready_to_commit.json"
             ready = analysis._strict_json_object(
                 ready_path.read_bytes(),
@@ -1405,14 +1406,54 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             ):
                 analysis._read_historical_attempt_state(attempt, manifest)
 
+    def test_bundle_receipt_is_bounded_and_requires_exact_closure(self) -> None:
+        for case in ("exact", "extra", "oversize"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                bundle = Path(directory) / "bundle"
+                expected = _write_synthetic_bundle_members(bundle)
+                if case == "extra":
+                    (bundle / "foreign.json").write_bytes(b"{}\n")
+                elif case == "oversize":
+                    with (bundle / analysis.BUNDLE_FILENAMES[0]).open("r+b") as handle:
+                        handle.truncate(analysis._BUNDLE_MEMBER_BYTE_CAP_V1 + 1)
+                pinned = analysis._pin_protected_roots((bundle,))
+                try:
+                    if case == "exact":
+                        self.assertEqual(
+                            analysis._read_bundle_receipt_from_descriptor(
+                                pinned[0].descriptor,
+                                "synthetic bundle",
+                                expected,
+                            ),
+                            expected,
+                        )
+                    else:
+                        with self.assertRaises(analysis.DiagnosticAnalysisError):
+                            analysis._read_bundle_receipt_from_descriptor(
+                                pinned[0].descriptor,
+                                "synthetic bundle",
+                            )
+                finally:
+                    analysis._close_pinned_protected_roots(pinned)
+
     def test_public_analyze_rejects_attempt_terminal_injected_during_build(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            artifact = root / "artifact"
+            artifact_receipt = _write_synthetic_artifact_members(
+                artifact,
+                b"validated-artifact",
+            )
+            bundle = root / "bundle"
+            _write_synthetic_bundle_members(bundle)
             historical = root / "historical-artifact"
             historical.mkdir()
-            validated = _synthetic_validated_authority(historical)
+            validated = _synthetic_validated_authority(
+                historical,
+                artifact_receipt,
+            )
             attempt = validated.historical_attempt_path
             attempt_descriptor = validated.historical_attempt_authority.descriptor
             injected = False
@@ -1440,8 +1481,8 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 ),
             ):
                 analysis.analyze_countdown_thompson_diagnostic_artifact(
-                    root / "artifact",
-                    root / "bundle",
+                    artifact,
+                    bundle,
                     root / "authorization.json",
                     "0" * 64,
                     repository_root=root,
@@ -1450,6 +1491,269 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             validate.assert_called_once()
             with self.assertRaises(OSError):
                 os.fstat(attempt_descriptor)
+
+    def test_public_analyze_rejects_artifact_drift_during_build(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "artifact"
+            artifact_receipt = _write_synthetic_artifact_members(
+                artifact,
+                b"validated-artifact",
+            )
+            bundle = root / "bundle"
+            _write_synthetic_bundle_members(bundle)
+            historical = root / "historical-artifact"
+            historical.mkdir()
+            validated = _synthetic_validated_authority(
+                historical,
+                artifact_receipt,
+            )
+            attempt_descriptor = validated.historical_attempt_authority.descriptor
+            records = artifact / "records.jsonl"
+            drifted = False
+
+            def build_then_drift(_validated: object) -> dict[str, str]:
+                nonlocal drifted
+                _mutate_file_preserving_size(records)
+                drifted = True
+                return {"schema_version": "synthetic/v1", "status": "PASS"}
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    side_effect=_owned_synthetic_validation(validated),
+                ) as validate,
+                patch.object(
+                    analysis,
+                    "_build_summary",
+                    side_effect=build_then_drift,
+                ),
+                self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "bytes differ from the validated runner artifact",
+                ),
+            ):
+                analysis.analyze_countdown_thompson_diagnostic_artifact(
+                    artifact,
+                    bundle,
+                    root / "authorization.json",
+                    "0" * 64,
+                    repository_root=root,
+                )
+            self.assertTrue(drifted)
+            validate.assert_called_once()
+            with self.assertRaises(OSError):
+                os.fstat(attempt_descriptor)
+
+    def test_public_analyze_rechecks_artifact_after_final_attempt_proof(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "artifact"
+            artifact_receipt = _write_synthetic_artifact_members(
+                artifact,
+                b"validated-artifact",
+            )
+            bundle = root / "bundle"
+            _write_synthetic_bundle_members(bundle)
+            historical = root / "historical-artifact"
+            historical.mkdir()
+            validated = _synthetic_validated_authority(
+                historical,
+                artifact_receipt,
+            )
+            attempt_descriptor = validated.historical_attempt_authority.descriptor
+            original_revalidate = analysis._revalidate_attempt_authority_after_topology
+            records = artifact / "records.jsonl"
+            drifted = False
+
+            def revalidate_then_drift(*args: object, **kwargs: object) -> None:
+                nonlocal drifted
+                original_revalidate(*args, **kwargs)
+                _mutate_file_preserving_size(records)
+                drifted = True
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    side_effect=_owned_synthetic_validation(validated),
+                ),
+                patch.object(
+                    analysis,
+                    "_build_summary",
+                    return_value={
+                        "schema_version": "synthetic/v1",
+                        "status": "PASS",
+                    },
+                ),
+                patch.object(
+                    analysis,
+                    "_revalidate_attempt_authority_after_topology",
+                    side_effect=revalidate_then_drift,
+                ),
+                self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "authorities changed during collective proof",
+                ),
+            ):
+                analysis.analyze_countdown_thompson_diagnostic_artifact(
+                    artifact,
+                    bundle,
+                    root / "authorization.json",
+                    "0" * 64,
+                    repository_root=root,
+                )
+            self.assertTrue(drifted)
+            with self.assertRaises(OSError):
+                os.fstat(attempt_descriptor)
+
+    def test_public_analyze_rejects_rotating_authority_generations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "artifact"
+            artifact_receipt = _write_synthetic_artifact_members(
+                artifact,
+                b"validated-artifact",
+            )
+            bundle = root / "bundle"
+            _write_synthetic_bundle_members(bundle)
+            historical = root / "historical-artifact"
+            historical.mkdir()
+            validated = _synthetic_validated_authority(
+                historical,
+                artifact_receipt,
+            )
+            attempt = validated.historical_attempt_path
+            attempt_member = attempt / "ready_to_commit.json"
+            artifact_member = artifact / "records.jsonl"
+            original_attempt = attempt_member.read_bytes()
+            original_artifact = artifact_member.read_bytes()
+            original_revalidate = analysis._revalidate_attempt_authority_after_topology
+
+            def build_with_attempt_invalid(_validated: object) -> dict[str, str]:
+                _mutate_file_preserving_size(attempt_member)
+                return {"schema_version": "synthetic/v1", "status": "PASS"}
+
+            def rotate_during_attempt_proof(
+                *args: object,
+                **kwargs: object,
+            ) -> None:
+                _mutate_file_preserving_size(artifact_member)
+                _mutate_file_preserving_size(attempt_member)
+                original_revalidate(*args, **kwargs)
+                _mutate_file_preserving_size(artifact_member)
+                _mutate_file_preserving_size(attempt_member)
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    side_effect=_owned_synthetic_validation(validated),
+                ),
+                patch.object(
+                    analysis,
+                    "_build_summary",
+                    side_effect=build_with_attempt_invalid,
+                ),
+                patch.object(
+                    analysis,
+                    "_revalidate_attempt_authority_after_topology",
+                    side_effect=rotate_during_attempt_proof,
+                ),
+                self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "authorities changed during collective proof",
+                ),
+            ):
+                analysis.analyze_countdown_thompson_diagnostic_artifact(
+                    artifact,
+                    bundle,
+                    root / "authorization.json",
+                    "0" * 64,
+                    repository_root=root,
+                )
+            self.assertEqual(artifact_member.read_bytes(), original_artifact)
+            self.assertNotEqual(attempt_member.read_bytes(), original_attempt)
+
+    def test_public_analyze_rejects_bundle_swap_restored_after_validation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "artifact"
+            artifact_receipt = _write_synthetic_artifact_members(
+                artifact,
+                b"validated-artifact",
+            )
+            bundle = root / "bundle"
+            original_bundle_receipt = _write_synthetic_bundle_members(bundle)
+            historical = root / "historical-artifact"
+            historical.mkdir()
+            validated = _synthetic_validated_authority(
+                historical,
+                artifact_receipt,
+            )
+            owned_validation = _owned_synthetic_validation(validated)
+            displaced = root / "bundle.original"
+            replacement = root / "bundle.replacement"
+            swapped = False
+
+            def validate_with_restored_swap(
+                *args: object,
+                **kwargs: object,
+            ) -> object:
+                nonlocal swapped
+                bundle.rename(displaced)
+                _write_synthetic_bundle_members(bundle, b"replacement-bundle")
+                bundle.rename(replacement)
+                displaced.rename(bundle)
+                swapped = True
+                return owned_validation(*args, **kwargs)
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    side_effect=validate_with_restored_swap,
+                ) as validate,
+                patch.object(
+                    analysis,
+                    "_build_summary",
+                    return_value={
+                        "schema_version": "synthetic/v1",
+                        "status": "PASS",
+                    },
+                ),
+                self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "source authority generation changed after validation: "
+                    "diagnostic bundle",
+                ),
+            ):
+                analysis.analyze_countdown_thompson_diagnostic_artifact(
+                    artifact,
+                    bundle,
+                    root / "authorization.json",
+                    "0" * 64,
+                    repository_root=root,
+                )
+            self.assertTrue(swapped)
+            validate.assert_called_once()
+            pinned = analysis._pin_protected_roots((bundle,))
+            try:
+                self.assertEqual(
+                    analysis._read_bundle_receipt_from_descriptor(
+                        pinned[0].descriptor,
+                        "restored synthetic bundle",
+                    ),
+                    original_bundle_receipt,
+                )
+            finally:
+                analysis._close_pinned_protected_roots(pinned)
+            self.assertTrue(replacement.is_dir())
 
     def _exercise_final_receipt_pass_replacement(self, target_label: str) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1468,7 +1772,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 artifact_receipt,
             )
             bundle = root / "bundle"
-            bundle.mkdir()
+            _write_synthetic_bundle_members(bundle)
             publication_parent = root / "publication-parent"
             publication_parent.mkdir()
             output = publication_parent / "summary.json"
@@ -1719,20 +2023,29 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 protected.stat().st_ino,
             )
             bundle = root / "bundle"
-            bundle.mkdir()
+            _write_synthetic_bundle_members(bundle)
             safe = root / "safe"
             (safe / "out").mkdir(parents=True)
             displaced_safe = root / "displaced-safe"
             output = safe / "out" / "summary.json"
             swapped = False
-            protected_revalidation_count = 0
+            validation_completed = False
             validated = _synthetic_validated_authority(protected.resolve())
+            owned_validation = _owned_synthetic_validation(validated)
+
+            def validate_then_mark(*args: object, **kwargs: object) -> object:
+                nonlocal validation_completed
+                result = owned_validation(*args, **kwargs)
+                validation_completed = True
+                return result
 
             def swap_before_revalidation(path: Path, label: str):
-                nonlocal protected_revalidation_count, swapped
-                if label == "protected root 0 after pinning":
-                    protected_revalidation_count += 1
-                if protected_revalidation_count == 2 and not swapped:
+                nonlocal swapped
+                if (
+                    label == "protected root 0 after pinning"
+                    and validation_completed
+                    and not swapped
+                ):
                     safe.rename(displaced_safe)
                     protected.rename(safe)
                     protected.mkdir()
@@ -1748,7 +2061,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 patch.object(
                     analysis,
                     "_validate_artifact",
-                    side_effect=_owned_synthetic_validation(validated),
+                    side_effect=validate_then_mark,
                 ) as validate,
                 patch.object(
                     analysis,
@@ -1790,7 +2103,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             relocated = root / "relocated-artifact"
             relocated.mkdir()
             bundle = root / "bundle"
-            bundle.mkdir()
+            _write_synthetic_bundle_members(bundle)
             output = historical / "summary.json"
             validated = _synthetic_validated_authority(historical.resolve())
 
@@ -1838,7 +2151,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             historical = root / "historical-artifact"
             historical.symlink_to(artifact, target_is_directory=True)
             bundle = root / "bundle"
-            bundle.mkdir()
+            _write_synthetic_bundle_members(bundle)
             publication_parent = root / "publication-parent"
             publication_parent.mkdir()
             output = publication_parent / "summary.json"
@@ -1897,7 +2210,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                         b"foreign-artifact",
                     )
                 bundle = root / "bundle"
-                bundle.mkdir()
+                _write_synthetic_bundle_members(bundle)
                 publication_parent = root / "publication-parent"
                 publication_parent.mkdir()
                 output = publication_parent / "summary.json"
@@ -1959,7 +2272,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             )
             self.assertEqual(historical_receipt, artifact_receipt)
             bundle = root / "bundle"
-            bundle.mkdir()
+            _write_synthetic_bundle_members(bundle)
             publication_parent = root / "publication-parent"
             publication_parent.mkdir()
             output = publication_parent / "summary.json"
@@ -1996,6 +2309,163 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             self.assertEqual(observed, summary)
             self.assertEqual(output.read_bytes(), analysis._canonical_bytes(summary))
 
+    def test_source_path_ancestor_summary_parent_is_rejected_before_write(
+        self,
+    ) -> None:
+        for case in ("canonical-sibling", "raw-alias-parent"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                real_parent = root / "real-source-parent"
+                artifact = real_parent / "relocated-artifact"
+                artifact_receipt = _write_synthetic_artifact_members(
+                    artifact,
+                    b"identical-artifact",
+                )
+                historical = root / "historical-parent" / "historical-artifact"
+                self.assertEqual(
+                    _write_synthetic_artifact_members(
+                        historical,
+                        b"identical-artifact",
+                    ),
+                    artifact_receipt,
+                )
+                bundle = root / "bundle-parent" / "bundle"
+                _write_synthetic_bundle_members(bundle)
+                if case == "canonical-sibling":
+                    artifact_argument = artifact
+                    publication_parent = real_parent
+                else:
+                    publication_parent = root / "raw-alias-parent"
+                    publication_parent.mkdir()
+                    source_alias = publication_parent / "source-alias"
+                    source_alias.symlink_to(real_parent, target_is_directory=True)
+                    artifact_argument = source_alias / artifact.name
+                output = publication_parent / "summary.json"
+                before_entries = tuple(
+                    sorted(path.name for path in publication_parent.iterdir())
+                )
+
+                with (
+                    patch.object(
+                        analysis,
+                        "_validate_artifact",
+                        side_effect=_owned_synthetic_validation(
+                            _synthetic_validated_authority(
+                                historical,
+                                artifact_receipt,
+                            )
+                        ),
+                    ),
+                    patch.object(
+                        analysis,
+                        "_build_summary",
+                        return_value={
+                            "schema_version": "synthetic/v1",
+                            "status": "PASS",
+                        },
+                    ),
+                    self.assertRaisesRegex(
+                        analysis.DiagnosticAnalysisError,
+                        "summary parent is a protected source-path ancestor",
+                    ),
+                ):
+                    analysis.write_countdown_thompson_diagnostic_summary(
+                        artifact_argument,
+                        bundle,
+                        root / "authorization.json",
+                        "0" * 64,
+                        output,
+                        repository_root=root,
+                    )
+
+                self.assertFalse(output.exists())
+                self.assertEqual(
+                    tuple(sorted(path.name for path in publication_parent.iterdir())),
+                    before_entries,
+                )
+
+    def test_durable_summary_rejects_bundle_mutation_before_final_check(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "relocated-artifact"
+            artifact_receipt = _write_synthetic_artifact_members(
+                artifact,
+                b"identical-artifact",
+            )
+            historical = root / "historical-artifact"
+            self.assertEqual(
+                _write_synthetic_artifact_members(
+                    historical,
+                    b"identical-artifact",
+                ),
+                artifact_receipt,
+            )
+            bundle = root / "bundle"
+            _write_synthetic_bundle_members(bundle)
+            bundle_member = bundle / "analysis.json"
+            publication_parent = root / "publication-parent"
+            publication_parent.mkdir()
+            output = publication_parent / "summary.json"
+            mutated = False
+
+            def mutate_before_final_check(
+                _path: Path,
+                _payload: bytes,
+                *,
+                protected_roots: tuple[analysis._PinnedProtectedRoot, ...],
+                post_durability_check: object,
+            ) -> None:
+                nonlocal mutated
+                self.assertTrue(callable(post_durability_check))
+                analysis._assert_pinned_protected_roots(protected_roots)
+                _mutate_file_preserving_size(bundle_member)
+                mutated = True
+                post_durability_check()  # type: ignore[operator]
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    side_effect=_owned_synthetic_validation(
+                        _synthetic_validated_authority(
+                            historical,
+                            artifact_receipt,
+                        )
+                    ),
+                ),
+                patch.object(
+                    analysis,
+                    "_build_summary",
+                    return_value={
+                        "schema_version": "synthetic/v1",
+                        "status": "PASS",
+                    },
+                ),
+                patch.object(
+                    analysis,
+                    "_atomic_write_no_replace",
+                    side_effect=mutate_before_final_check,
+                ) as atomic_write,
+                self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "source authority generation changed after validation: "
+                    "diagnostic bundle",
+                ),
+            ):
+                analysis.write_countdown_thompson_diagnostic_summary(
+                    artifact,
+                    bundle,
+                    root / "authorization.json",
+                    "0" * 64,
+                    output,
+                    repository_root=root,
+                )
+            self.assertTrue(mutated)
+            atomic_write.assert_called_once()
+            self.assertFalse(output.exists())
+
     def test_byte_identical_attempt_directory_replacement_after_validation_is_rejected(
         self,
     ) -> None:
@@ -2021,13 +2491,15 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             attempt = validated.historical_attempt_path
             displaced = root / "displaced-attempt"
             bundle = root / "bundle"
-            bundle.mkdir()
+            _write_synthetic_bundle_members(bundle)
             publication_parent = root / "publication-parent"
             publication_parent.mkdir()
             output = publication_parent / "summary.json"
             replaced = False
 
-            def replace_with_byte_identical_attempt(_validated: object) -> dict[str, str]:
+            def replace_with_byte_identical_attempt(
+                _validated: object,
+            ) -> dict[str, str]:
                 nonlocal replaced
                 attempt.rename(displaced)
                 attempt.mkdir()
@@ -2065,11 +2537,82 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                     )
             self.assertTrue(replaced)
             self.assertEqual(
-                tuple((attempt / name).read_bytes() for name in analysis._COMMITTED_ATTEMPT_FILENAMES),
-                tuple((displaced / name).read_bytes() for name in analysis._COMMITTED_ATTEMPT_FILENAMES),
+                tuple(
+                    (attempt / name).read_bytes()
+                    for name in analysis._COMMITTED_ATTEMPT_FILENAMES
+                ),
+                tuple(
+                    (displaced / name).read_bytes()
+                    for name in analysis._COMMITTED_ATTEMPT_FILENAMES
+                ),
             )
             atomic_write.assert_not_called()
             self.assertFalse(output.exists())
+
+    def test_final_attempt_read_cannot_hide_byte_identical_raw_path_swap(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            historical = root / "historical-artifact"
+            historical.mkdir()
+            _manifest, attempt, receipt = _write_synthetic_committed_attempt(historical)
+            displaced = root / "displaced-attempt"
+            pinned = analysis._pin_protected_roots((attempt,))
+            original_read_once = analysis._read_attempt_state_once_from_descriptor
+            read_count = 0
+            swapped = False
+
+            def swap_after_final_read(
+                directory_fd: int,
+                label: str,
+            ) -> tuple[dict[str, bytes], analysis._AttemptStateReceipt]:
+                nonlocal read_count, swapped
+                observed = original_read_once(directory_fd, label)
+                if directory_fd == pinned[0].descriptor:
+                    read_count += 1
+                    if read_count == 3:
+                        attempt.rename(displaced)
+                        attempt.mkdir()
+                        for filename in analysis._COMMITTED_ATTEMPT_FILENAMES:
+                            (attempt / filename).write_bytes(
+                                (displaced / filename).read_bytes()
+                            )
+                        swapped = True
+                return observed
+
+            try:
+                with (
+                    patch.object(
+                        analysis,
+                        "_read_attempt_state_once_from_descriptor",
+                        side_effect=swap_after_final_read,
+                    ),
+                    self.assertRaisesRegex(
+                        analysis.DiagnosticAnalysisError,
+                        "path identity changed",
+                    ),
+                ):
+                    analysis._revalidate_attempt_authority_after_topology(
+                        pinned[0],
+                        receipt,
+                        pinned,
+                        "historical committed attempt",
+                    )
+            finally:
+                analysis._close_pinned_protected_roots(pinned)
+            self.assertTrue(swapped)
+            self.assertEqual(read_count, 3)
+            self.assertEqual(
+                tuple(
+                    (attempt / name).read_bytes()
+                    for name in analysis._COMMITTED_ATTEMPT_FILENAMES
+                ),
+                tuple(
+                    (displaced / name).read_bytes()
+                    for name in analysis._COMMITTED_ATTEMPT_FILENAMES
+                ),
+            )
 
     def test_attempt_terminal_injection_before_publication_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2093,7 +2636,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             )
             attempt = validated.historical_attempt_path
             bundle = root / "bundle"
-            bundle.mkdir()
+            _write_synthetic_bundle_members(bundle)
             publication_parent = root / "publication-parent"
             publication_parent.mkdir()
             output = publication_parent / "summary.json"
@@ -2165,14 +2708,12 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             )
             attempt = validated.historical_attempt_path
             bundle = root / "bundle"
-            bundle.mkdir()
+            _write_synthetic_bundle_members(bundle)
             publication_parent = root / "publication-parent"
             publication_parent.mkdir()
             output = publication_parent / "summary.json"
             summary = {"schema_version": "synthetic/v1", "status": "PASS"}
-            original_read_attempt = (
-                analysis._read_attempt_state_receipt_from_descriptor
-            )
+            original_read_attempt = analysis._read_attempt_state_receipt_from_descriptor
             injected = False
 
             def inject_after_durable_receipt_read(
@@ -2250,7 +2791,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             )
             attempt = validated.historical_attempt_path
             bundle = root / "bundle"
-            bundle.mkdir()
+            _write_synthetic_bundle_members(bundle)
             publication_parent = root / "publication-parent"
             publication_parent.mkdir()
             output = publication_parent / "summary.json"
@@ -2318,7 +2859,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             )
             attempt = validated.historical_attempt_path
             bundle = root / "bundle"
-            bundle.mkdir()
+            _write_synthetic_bundle_members(bundle)
             publication_parent = root / "publication-parent"
             publication_parent.mkdir()
             parent_identity = (
@@ -2379,6 +2920,265 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             self.assertEqual(len(quarantines), 1)
             self.assertEqual(quarantines[0].read_bytes(), summary_bytes)
 
+    def test_rotating_source_and_summary_generations_revoke_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "relocated-artifact"
+            artifact_receipt = _write_synthetic_artifact_members(
+                artifact,
+                b"identical-artifact",
+            )
+            historical = root / "historical-artifact"
+            self.assertEqual(
+                _write_synthetic_artifact_members(
+                    historical,
+                    b"identical-artifact",
+                ),
+                artifact_receipt,
+            )
+            validated = _synthetic_validated_authority(
+                historical,
+                artifact_receipt,
+            )
+            attempt = validated.historical_attempt_path
+            attempt_member = attempt / "ready_to_commit.json"
+            relocated_member = artifact / "records.jsonl"
+            bundle = root / "bundle"
+            _write_synthetic_bundle_members(bundle)
+            publication_parent = root / "publication-parent"
+            publication_parent.mkdir()
+            output = publication_parent / "summary.json"
+            summary = {"schema_version": "synthetic/v1", "status": "PASS"}
+            summary_bytes = analysis._canonical_bytes(summary)
+            foreign_summary = bytes((summary_bytes[0] ^ 1,)) + summary_bytes[1:]
+            original_summary_exact = analysis._summary_publication_is_exact
+            original_revalidate = analysis._revalidate_attempt_authority_after_topology
+            attempt_proofs = 0
+            attempt_invalidated = False
+            rotation_completed = False
+
+            def invalidate_attempt_after_publication(*args: object) -> bool:
+                nonlocal attempt_invalidated
+                if output.exists() and not attempt_invalidated:
+                    _mutate_file_preserving_size(attempt_member)
+                    attempt_invalidated = True
+                return original_summary_exact(*args)
+
+            def rotate_during_postpublication_attempt(
+                *args: object,
+                **kwargs: object,
+            ) -> None:
+                nonlocal attempt_proofs, rotation_completed
+                attempt_proofs += 1
+                if attempt_proofs != 2:
+                    original_revalidate(*args, **kwargs)
+                    return
+                output.write_bytes(foreign_summary)
+                _mutate_file_preserving_size(attempt_member)
+                original_revalidate(*args, **kwargs)
+                output.write_bytes(summary_bytes)
+                _mutate_file_preserving_size(relocated_member)
+                rotation_completed = True
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    side_effect=_owned_synthetic_validation(validated),
+                ),
+                patch.object(analysis, "_build_summary", return_value=summary),
+                patch.object(
+                    analysis,
+                    "_summary_publication_is_exact",
+                    side_effect=invalidate_attempt_after_publication,
+                ),
+                patch.object(
+                    analysis,
+                    "_revalidate_attempt_authority_after_topology",
+                    side_effect=rotate_during_postpublication_attempt,
+                ),
+                self.assertRaises(analysis.DiagnosticAnalysisError) as raised,
+            ):
+                analysis.write_countdown_thompson_diagnostic_summary(
+                    artifact,
+                    bundle,
+                    root / "authorization.json",
+                    "0" * 64,
+                    output,
+                    repository_root=root,
+                )
+            self.assertIs(type(raised.exception), analysis.DiagnosticAnalysisError)
+            self.assertTrue(attempt_invalidated)
+            self.assertTrue(rotation_completed)
+            self.assertEqual(attempt_proofs, 2)
+            self.assertFalse(output.exists())
+            quarantines = tuple(
+                path
+                for path in publication_parent.iterdir()
+                if path.name.startswith(".summary.json.rollback-")
+            )
+            self.assertEqual(len(quarantines), 1)
+            self.assertEqual(quarantines[0].read_bytes(), summary_bytes)
+
+    def test_source_ancestor_away_and_back_revokes_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            relocated_parent = root / "relocated-parent"
+            artifact = relocated_parent / "artifact"
+            artifact_receipt = _write_synthetic_artifact_members(
+                artifact,
+                b"identical-artifact",
+            )
+            historical = root / "historical-artifact"
+            self.assertEqual(
+                _write_synthetic_artifact_members(
+                    historical,
+                    b"identical-artifact",
+                ),
+                artifact_receipt,
+            )
+            validated = _synthetic_validated_authority(
+                historical,
+                artifact_receipt,
+            )
+            bundle = root / "bundle"
+            _write_synthetic_bundle_members(bundle)
+            publication_parent = root / "publication-parent"
+            publication_parent.mkdir()
+            output = publication_parent / "summary.json"
+            summary = {"schema_version": "synthetic/v1", "status": "PASS"}
+            summary_bytes = analysis._canonical_bytes(summary)
+            displaced_parent = root / "relocated-parent-away"
+            original_summary_exact = analysis._summary_publication_is_exact
+            pivoted = False
+
+            def pivot_source_ancestor_after_publication(*args: object) -> bool:
+                nonlocal pivoted
+                if output.exists() and not pivoted:
+                    relocated_parent.rename(displaced_parent)
+                    displaced_parent.rename(relocated_parent)
+                    pivoted = True
+                return original_summary_exact(*args)
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    side_effect=_owned_synthetic_validation(validated),
+                ),
+                patch.object(analysis, "_build_summary", return_value=summary),
+                patch.object(
+                    analysis,
+                    "_summary_publication_is_exact",
+                    side_effect=pivot_source_ancestor_after_publication,
+                ),
+                self.assertRaisesRegex(
+                    analysis.DiagnosticAnalysisError,
+                    "source authority generation changed",
+                ),
+            ):
+                analysis.write_countdown_thompson_diagnostic_summary(
+                    artifact,
+                    bundle,
+                    root / "authorization.json",
+                    "0" * 64,
+                    output,
+                    repository_root=root,
+                )
+            self.assertTrue(pivoted)
+            self.assertFalse(output.exists())
+            quarantines = tuple(
+                path
+                for path in publication_parent.iterdir()
+                if path.name.startswith(".summary.json.rollback-")
+            )
+            self.assertEqual(len(quarantines), 1)
+            self.assertEqual(quarantines[0].read_bytes(), summary_bytes)
+
+    def test_final_collective_proof_resyncs_restored_summary_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "relocated-artifact"
+            artifact_receipt = _write_synthetic_artifact_members(
+                artifact,
+                b"identical-artifact",
+            )
+            historical = root / "historical-artifact"
+            self.assertEqual(
+                _write_synthetic_artifact_members(
+                    historical,
+                    b"identical-artifact",
+                ),
+                artifact_receipt,
+            )
+            validated = _synthetic_validated_authority(
+                historical,
+                artifact_receipt,
+            )
+            bundle = root / "bundle"
+            _write_synthetic_bundle_members(bundle)
+            publication_parent = root / "publication-parent"
+            publication_parent.mkdir()
+            output = publication_parent / "summary.json"
+            summary = {"schema_version": "synthetic/v1", "status": "PASS"}
+            summary_bytes = analysis._canonical_bytes(summary)
+            foreign_summary = bytes((summary_bytes[0] ^ 1,)) + summary_bytes[1:]
+            original_summary_exact = analysis._summary_publication_is_exact
+            original_fsync = analysis.os.fsync
+            restored_without_sync = False
+            summary_file_sync_count = 0
+
+            def count_summary_file_sync(descriptor: int) -> None:
+                nonlocal summary_file_sync_count
+                opened = analysis.os.fstat(descriptor)
+                if stat.S_ISREG(opened.st_mode):
+                    summary_file_sync_count += 1
+                original_fsync(descriptor)
+
+            def durably_write_foreign_then_restore(*args: object) -> bool:
+                nonlocal restored_without_sync
+                if output.exists() and not restored_without_sync:
+                    output.write_bytes(foreign_summary)
+                    descriptor = analysis.os.open(output, analysis.os.O_RDWR)
+                    try:
+                        original_fsync(descriptor)
+                    finally:
+                        analysis.os.close(descriptor)
+                    output.write_bytes(summary_bytes)
+                    restored_without_sync = True
+                return original_summary_exact(*args)
+
+            with (
+                patch.object(
+                    analysis,
+                    "_validate_artifact",
+                    side_effect=_owned_synthetic_validation(validated),
+                ),
+                patch.object(analysis, "_build_summary", return_value=summary),
+                patch.object(
+                    analysis,
+                    "_summary_publication_is_exact",
+                    side_effect=durably_write_foreign_then_restore,
+                ),
+                patch.object(
+                    analysis.os,
+                    "fsync",
+                    side_effect=count_summary_file_sync,
+                ),
+            ):
+                result = analysis.write_countdown_thompson_diagnostic_summary(
+                    artifact,
+                    bundle,
+                    root / "authorization.json",
+                    "0" * 64,
+                    output,
+                    repository_root=root,
+                )
+            self.assertEqual(result, summary)
+            self.assertTrue(restored_without_sync)
+            self.assertEqual(summary_file_sync_count, 2)
+            self.assertEqual(output.read_bytes(), summary_bytes)
+
     def _exercise_post_barrier_artifact_receipt_drift(
         self,
         *,
@@ -2402,7 +3202,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 artifact_receipt,
             )
             bundle = root / "bundle"
-            bundle.mkdir()
+            _write_synthetic_bundle_members(bundle)
             publication_parent = root / "publication-parent"
             publication_parent.mkdir()
             parent_identity = (
@@ -2538,7 +3338,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 b"same-directory-artifact",
             )
             bundle = root / "bundle"
-            bundle.mkdir()
+            _write_synthetic_bundle_members(bundle)
             publication_parent = root / "publication-parent"
             publication_parent.mkdir()
             output = publication_parent / "summary.json"
@@ -2555,9 +3355,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 post_durability_check: object,
             ) -> None:
                 self.assertEqual(len(protected_roots), 4)
-                artifact_pin, _bundle_pin, attempt_pin, historical_pin = (
-                    protected_roots
-                )
+                artifact_pin, _bundle_pin, attempt_pin, historical_pin = protected_roots
                 self.assertEqual(artifact_pin.identity, historical_pin.identity)
                 self.assertNotEqual(
                     artifact_pin.descriptor,
@@ -2614,7 +3412,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             artifact = root / "relocated-artifact"
             artifact.mkdir()
             bundle = root / "bundle"
-            bundle.mkdir()
+            _write_synthetic_bundle_members(bundle)
             historical = root / "historical-artifact"
             publication_parent = root / "publication-parent"
             publication_parent.mkdir()
@@ -3291,9 +4089,7 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             def interrupt_recovered_post_durability_check() -> None:
                 nonlocal check_calls
                 check_calls += 1
-                raise SystemExit(
-                    "synthetic recovered post-durability interruption"
-                )
+                raise SystemExit("synthetic recovered post-durability interruption")
 
             with patch.object(
                 analysis.os,
@@ -3322,6 +4118,76 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
             )
             self.assertEqual(len(quarantines), 1)
             self.assertEqual(quarantines[0].read_bytes(), payload)
+
+    def test_callback_same_inode_overwrite_is_never_committed_success(self) -> None:
+        payload = analysis._canonical_bytes(
+            {"schema_version": "synthetic/v1", "status": "PASS"}
+        )
+        foreign = payload.replace(b'"PASS"', b'"FAIL"')
+        self.assertEqual(len(foreign), len(payload))
+        original_rename = analysis._rename_noreplace_at
+
+        for recovery in (False, True):
+            with (
+                self.subTest(recovery=recovery),
+                tempfile.TemporaryDirectory(
+                    prefix="qmc-bmgs-summary-callback-overwrite-"
+                ) as directory,
+            ):
+                output = Path(directory) / "summary.json"
+                callback_calls = 0
+                before_identity: tuple[int, int] | None = None
+                after_identity: tuple[int, int] | None = None
+
+                def overwrite_same_inode() -> None:
+                    nonlocal callback_calls, before_identity, after_identity
+                    callback_calls += 1
+                    before = output.stat()
+                    before_identity = (before.st_dev, before.st_ino)
+                    descriptor = analysis.os.open(
+                        output,
+                        analysis.os.O_WRONLY | analysis.os.O_NOFOLLOW,
+                    )
+                    try:
+                        written = analysis.os.write(descriptor, foreign)
+                        self.assertEqual(written, len(foreign))
+                        analysis.os.fsync(descriptor)
+                    finally:
+                        analysis.os.close(descriptor)
+                    after = output.stat()
+                    after_identity = (after.st_dev, after.st_ino)
+
+                def rename_then_interrupt(*args: object) -> None:
+                    original_rename(*args)
+                    raise OSError("synthetic post-rename recovery trigger")
+
+                rename_patch = (
+                    patch.object(
+                        analysis,
+                        "_rename_noreplace_at",
+                        side_effect=rename_then_interrupt,
+                    )
+                    if recovery
+                    else patch.object(
+                        analysis,
+                        "_rename_noreplace_at",
+                        wraps=original_rename,
+                    )
+                )
+                with (
+                    rename_patch,
+                    self.assertRaises(
+                        analysis.DiagnosticAnalysisPublicationAmbiguousError,
+                    ),
+                ):
+                    analysis._atomic_write_no_replace(
+                        output,
+                        payload,
+                        post_durability_check=overwrite_same_inode,
+                    )
+                self.assertEqual(callback_calls, 1)
+                self.assertEqual(before_identity, after_identity)
+                self.assertEqual(output.read_bytes(), foreign)
 
     def test_summary_same_inode_corruption_is_never_success(self) -> None:
         payload = analysis._canonical_bytes(
@@ -3821,6 +4687,82 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 ):
                     analysis._atomic_write_no_replace(output, payload)
             self.assertEqual(output.read_bytes(), foreign)
+
+    def test_deep_untrusted_json_boundaries_are_typed_invalid(self) -> None:
+        nesting = 10_000
+        deep_object = (
+            b'{"nested":' + (b"[" * nesting) + b"0" + (b"]" * nesting) + b"}\n"
+        )
+        self.assertLess(len(deep_object), 8 * 1024 * 1024)
+        boundaries = (
+            (
+                "stdlib object",
+                lambda: analysis._stdlib_strict_json_object(
+                    deep_object,
+                    "synthetic deep manifest",
+                ),
+            ),
+            (
+                "project object",
+                lambda: analysis._strict_json_object(
+                    deep_object,
+                    "synthetic deep object",
+                ),
+            ),
+            ("project JSONL", lambda: analysis._strict_jsonl(deep_object)),
+        )
+        for label, boundary in boundaries:
+            with (
+                self.subTest(boundary=label),
+                self.assertRaises(
+                    analysis.DiagnosticAnalysisError,
+                ) as raised,
+            ):
+                boundary()
+            self.assertIs(type(raised.exception), analysis.DiagnosticAnalysisError)
+
+    def test_deep_manifest_cli_emits_canonical_invalid(self) -> None:
+        nesting = 10_000
+        deep_manifest = (
+            b'{"nested":' + (b"[" * nesting) + b"0" + (b"]" * nesting) + b"}\n"
+        )
+        self.assertLess(len(deep_manifest), 8 * 1024 * 1024)
+
+        with tempfile.TemporaryDirectory(
+            prefix="qmc-bmgs-deep-manifest-cli-"
+        ) as directory:
+            root = Path(directory)
+            artifact = root / "artifact"
+            artifact.mkdir()
+            (artifact / "manifest.json").write_bytes(deep_manifest)
+            bundle = root / "bundle"
+            bundle.mkdir()
+            output = root / "summary.json"
+            with patch("builtins.print") as printed:
+                status = analysis.main(
+                    [
+                        "--analyze",
+                        os.fspath(artifact),
+                        "--bundle",
+                        os.fspath(bundle),
+                        "--authorization-file",
+                        os.fspath(root / "authorization.json"),
+                        "--authorization-digest",
+                        "0" * 64,
+                        "--output",
+                        os.fspath(output),
+                        "--repository-root",
+                        os.fspath(root),
+                    ]
+                )
+            self.assertEqual(status, 2)
+            self.assertFalse(output.exists())
+            emitted = analysis.strict_json_loads(printed.call_args.args[0])
+            self.assertEqual(emitted["status"], "INVALID")
+            self.assertEqual(
+                emitted["claim_boundary"],
+                "no diagnostic result was emitted",
+            )
 
     def test_summary_publication_ambiguity_has_a_distinct_cli_status(self) -> None:
         with (

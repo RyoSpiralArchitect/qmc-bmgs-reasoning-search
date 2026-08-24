@@ -55,6 +55,7 @@ _MAX_RECORDS_BYTES = 16 << 20
 _MAX_SYNTHETIC_RECORDS = 10_000
 _READ_CHUNK_BYTES = 1 << 16
 _OWNER_NONCE_BYTES = 32
+_MAX_PARENT_IDENTITY_BITS = 256
 
 
 class RegularFilePublicationV2Error(RuntimeError):
@@ -366,8 +367,10 @@ def _freeze_expected_parent_binding(
             or set(component_keys) != {"st_dev", "st_ino"}
             or type(st_dev) is not int
             or st_dev < 0
+            or st_dev.bit_length() > _MAX_PARENT_IDENTITY_BITS
             or type(st_ino) is not int
             or st_ino < 0
+            or st_ino.bit_length() > _MAX_PARENT_IDENTITY_BITS
         ):
             raise RegularFilePublicationV2NotRunError(
                 "expected parent binding components must be plain identities"
@@ -375,7 +378,13 @@ def _freeze_expected_parent_binding(
         component_identities.append((st_dev, st_ino))
 
     core = _parent_binding_core(parent_path, component_identities)
-    if sha256_json(core) != digest:
+    try:
+        closed_digest = sha256_json(core)
+    except (RecursionError, TypeError, ValueError) as error:
+        raise RegularFilePublicationV2NotRunError(
+            "expected parent binding is not bounded canonical JSON"
+        ) from error
+    if closed_digest != digest:
         raise RegularFilePublicationV2NotRunError(
             "expected parent binding deterministic digest does not close"
         )
@@ -604,7 +613,10 @@ def build_synthetic_parent_binding_v2(
             )
         )
         parent.assert_path()
-        return result
+        return _freeze_expected_parent_binding(
+            result,
+            layout.output_path.parent,
+        )
     finally:
         parent.close()
 

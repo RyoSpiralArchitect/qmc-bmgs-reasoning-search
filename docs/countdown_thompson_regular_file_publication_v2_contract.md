@@ -65,8 +65,9 @@ The publisher and inspector also require an external, canonical parent binding:
 ```
 
 `component_identities` is the root-to-leaf sequence obtained by two matching
-component-wise `O_NOFOLLOW` walks. Booleans, subclasses, negative identities,
-non-canonical fields, path mismatch, and digest mismatch are rejected before
+component-wise `O_NOFOLLOW` walks. Identity integers are exact, nonnegative, and
+limited to 256 bits. Booleans, subclasses, oversized identities, non-canonical
+fields, path mismatch, and digest mismatch are rejected as NOT_RUN before
 filesystem access. The planning-only helper may snapshot this object, but an
 execution publisher must receive it from an authorization reviewed and stored
 outside `P`; execution must never regenerate its expected value from the live
@@ -172,11 +173,16 @@ Monotonic boundaries:
 - COMMITTED means the attempt, STARTED, records, manifest, READY, and output
   commit are exact in two collective snapshots, while NOT_RUN and INVALID are
   absent. Records and manifest without that commit are non-authoritative.
-- A private observation hook cannot retract an already owned NOT_RUN, INVALID,
-  or COMMITTED receipt. Its exception is ignored only after the corresponding
-  retained terminal descriptor exists, and the complete exact snapshot still
-  runs. Any mutation made before the exception therefore remains AMBIGUOUS for
-  the in-process publisher.
+- The private `after_file_fsync`, `after_parent_fsync`, and
+  `after_file_durable` observers are non-authoritative after a file descriptor
+  has been exclusively created. Their exception triggers a full reconciliation
+  of that retained descriptor: file and parent barriers, generation, bytes,
+  name, mode, ownership, and lexical parent are re-proved. If this succeeds,
+  publication may continue even when the file is ATTEMPT, STARTED, records,
+  MANIFEST, or READY. Mutation by the observer makes reconciliation fail closed.
+- A private observation hook also cannot retract an already owned NOT_RUN,
+  INVALID, or COMMITTED receipt. The complete terminal snapshot still runs, and
+  mutation made by the observer remains AMBIGUOUS for the in-process publisher.
 - A process restart may validate an exact terminal collective, but it may not
   reclaim or resume a non-terminal reservation. Before returning a recovered
   terminal, the verifier reopens every authoritative member, proves its stable
@@ -208,14 +214,15 @@ The phase-1 module provides:
   status impersonation, filesystem-encoding boundaries, generated-nonce format,
   non-finite persisted JSON, caller-owned record-container reentrancy, pinned
   parent observation faults, pure and mutating post-barrier terminal observers,
-  incremental record-byte refusal, parent-binding schema/digest/path/type
-  tampering, persisted self-reported binding mismatch, superseded v2 and v2r2
-  namespace refusal across all entry types and case, original-parent restore,
-  sequential parent replacement replay, a two-process reservation race, and a
-  two-process D1-to-D2 replacement race whose total callback count is at most
-  one under the same binding. A separate negative regression retains the wider
-  failure: the same opaque authorization digest plus a freshly captured D2
-  binding can invoke the callback a second time.
+  nonterminal durable-observer reconciliation, incremental record-byte refusal,
+  parent-binding schema/digest/path/type/magnitude tampering, persisted
+  self-reported binding mismatch, superseded v2 and v2r2 namespace refusal
+  across all entry types and case, original-parent restore, sequential parent
+  replacement replay, a two-process reservation race, and a two-process
+  D1-to-D2 replacement race whose total callback count is at most one under the
+  same binding. A separate negative regression retains the wider failure: the
+  same opaque authorization digest plus a freshly captured D2 binding can invoke
+  the callback a second time.
 
 The existing v1 schemas, directory publisher, analyzer, and production entry
 point are unchanged. The v1 fixture publisher remains private and the real

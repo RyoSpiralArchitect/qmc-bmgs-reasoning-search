@@ -418,6 +418,12 @@ publication.publish_synthetic_fixture_v2(
         digest_tamper = json.loads(publication.canonical_json(self.parent_binding))
         digest_tamper["deterministic_digest"] = "0" * 64
 
+        oversized_identity = json.loads(
+            publication.canonical_json(self.parent_binding)
+        )
+        oversized_identity["component_identities"][-1]["st_ino"] = 10**5000
+        oversized_identity["deterministic_digest"] = "0" * 64
+
         bool_identity = json.loads(publication.canonical_json(self.parent_binding))
         bool_identity["component_identities"][-1]["st_ino"] = True
         bool_core = dict(bool_identity)
@@ -457,6 +463,7 @@ publication.publish_synthetic_fixture_v2(
             None,
             {},
             digest_tamper,
+            oversized_identity,
             bool_identity,
             path_mismatch,
             StatefulBinding(self.parent_binding),
@@ -1299,6 +1306,52 @@ publication.publish_synthetic_fixture_v2(
             self._inspect(self.output)["status"],
             "COMMITTED",
         )
+
+    def test_nonterminal_durable_observer_failure_reconciles_and_commits(
+        self,
+    ) -> None:
+        for role in ("attempt", "started", "records", "manifest", "ready"):
+            with self.subTest(role=role):
+                case_root = self.root / f"nonterminal-{role}"
+                case_root.mkdir()
+                output = case_root / "artifact.json"
+                layout = publication.RegularFileLayoutV2.from_output_path(output)
+                target_name = layout.names[role]
+                durable_failures = 0
+                reconciliation_events: list[str] = []
+
+                def hook(
+                    event: str,
+                    context: publication.Mapping[str, object],
+                ) -> None:
+                    nonlocal durable_failures
+                    if context.get("name") != target_name:
+                        return
+                    if (
+                        event in {"after_file_fsync", "after_parent_fsync"}
+                        and context.get("reconciled") is True
+                    ):
+                        reconciliation_events.append(event)
+                    if event == "after_file_durable" and durable_failures == 0:
+                        durable_failures += 1
+                        raise RuntimeError(
+                            "non-authoritative nonterminal observer failure"
+                        )
+
+                self.assertEqual(
+                    self._publish(
+                        output=output,
+                        fixture_action=lambda: [],
+                        event_hook=hook,
+                    )["status"],
+                    "COMMITTED",
+                )
+                self.assertEqual(durable_failures, 1)
+                self.assertEqual(
+                    reconciliation_events,
+                    ["after_file_fsync", "after_parent_fsync"],
+                )
+                self.assertEqual(self._inspect(output)["status"], "COMMITTED")
 
     def test_post_barrier_terminal_observer_failure_preserves_exact_status(
         self,

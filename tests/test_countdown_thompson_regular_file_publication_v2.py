@@ -78,6 +78,7 @@ class RegularFilePublicationV2Tests(unittest.TestCase):
         output: Path,
         record_frames: list[dict[str, object]],
         *,
+        owner_nonce: str | None = None,
         manifest_record_overrides: dict[str, object] | None = None,
         ready_overrides: dict[str, object] | None = None,
     ) -> None:
@@ -85,7 +86,11 @@ class RegularFilePublicationV2Tests(unittest.TestCase):
         attempt = publication._attempt_payload(
             layout,
             AUTHORIZATION_A,
-            "1" * (2 * publication._OWNER_NONCE_BYTES),
+            (
+                owner_nonce
+                if owner_nonce is not None
+                else "1" * (2 * publication._OWNER_NONCE_BYTES)
+            ),
         )
         started = publication._phase_payload(
             attempt,
@@ -393,6 +398,64 @@ publication.publish_synthetic_fixture_v2(
                     publication.inspect_synthetic_publication_v2(raw)
                 self.assertEqual(calls, 0)
                 self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_unencodable_text_path_is_not_run_before_parent_access(self) -> None:
+        raw = f"{self.root}/bad-\ud800/artifact.json"
+        calls = 0
+
+        def action() -> list[dict[str, object]]:
+            nonlocal calls
+            calls += 1
+            return []
+
+        with mock.patch.object(
+            publication._PinnedParent,
+            "open",
+            side_effect=AssertionError("parent must not be accessed"),
+        ) as parent_open:
+            with self.assertRaises(publication.RegularFilePublicationV2NotRunError):
+                publication.publish_synthetic_fixture_v2(
+                    raw,
+                    authorization_digest=AUTHORIZATION_A,
+                    fixture_action=action,
+                )
+            with self.assertRaises(publication.RegularFilePublicationV2NotRunError):
+                publication.inspect_synthetic_publication_v2(raw)
+        parent_open.assert_not_called()
+        self.assertEqual(calls, 0)
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_surrogateescape_parent_reaches_filesystem_boundary(self) -> None:
+        encoded_parent = os.fsencode(self.root) + b"/parent-\xff"
+        decoded_parent = os.fsdecode(encoded_parent)
+        self.assertEqual(os.fsencode(decoded_parent), encoded_parent)
+        output = f"{decoded_parent}/artifact.json"
+        self.assertEqual(
+            os.fsencode(publication._snapshot_output_path(output)),
+            encoded_parent + b"/artifact.json",
+        )
+        calls = 0
+
+        def action() -> list[dict[str, object]]:
+            nonlocal calls
+            calls += 1
+            return []
+
+        with mock.patch.object(
+            publication._PinnedParent,
+            "open",
+            side_effect=publication.RegularFilePublicationV2NotRunError(
+                "synthetic filesystem refusal"
+            ),
+        ) as parent_open:
+            with self.assertRaises(publication.RegularFilePublicationV2NotRunError):
+                publication.publish_synthetic_fixture_v2(
+                    output,
+                    authorization_digest=AUTHORIZATION_A,
+                    fixture_action=action,
+                )
+        parent_open.assert_called_once()
+        self.assertEqual(calls, 0)
 
     def test_pathlike_exceptions_cannot_impersonate_public_status(self) -> None:
         exception_types = (
@@ -758,6 +821,62 @@ publication.publish_synthetic_fixture_v2(
                 self._publish(fixture_action=action)
         self.assertEqual(calls, 0)
         self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_invalid_generated_nonce_is_not_run_before_attempt(self) -> None:
+        class NonceSubclass(str):
+            pass
+
+        invalid_nonces = (
+            None,
+            b"a" * (2 * publication._OWNER_NONCE_BYTES),
+            "a" * (2 * publication._OWNER_NONCE_BYTES - 1),
+            "a" * (2 * publication._OWNER_NONCE_BYTES + 1),
+            "A" * (2 * publication._OWNER_NONCE_BYTES),
+            "g" * (2 * publication._OWNER_NONCE_BYTES),
+            NonceSubclass("a" * (2 * publication._OWNER_NONCE_BYTES)),
+        )
+        for nonce in invalid_nonces:
+            with self.subTest(nonce_type=type(nonce).__name__, nonce=repr(nonce)):
+                calls = 0
+
+                def action() -> list[dict[str, object]]:
+                    nonlocal calls
+                    calls += 1
+                    return []
+
+                with mock.patch.object(
+                    publication.secrets,
+                    "token_hex",
+                    return_value=nonce,
+                ):
+                    with self.assertRaises(
+                        publication.RegularFilePublicationV2NotRunError
+                    ):
+                        self._publish(fixture_action=action)
+                self.assertEqual(calls, 0)
+                self.assertEqual(list(self.root.iterdir()), [])
+                self.assertEqual(
+                    publication.inspect_synthetic_publication_v2(self.output)[
+                        "status"
+                    ],
+                    "UNRESERVED",
+                )
+
+    def test_inspector_rejects_persisted_invalid_owner_nonce(self) -> None:
+        frame = {
+            "fixture_kind": publication.FIXTURE_KIND,
+            "payload": {},
+            "record_index": 0,
+            "schema_version": publication.RECORD_SCHEMA_VERSION,
+        }
+        with mock.patch.object(publication, "_is_owner_nonce", return_value=True):
+            self._install_forged_committed_collective(
+                self.output,
+                [frame],
+                owner_nonce="A" * (2 * publication._OWNER_NONCE_BYTES),
+            )
+        with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
+            publication.inspect_synthetic_publication_v2(self.output)
 
     def test_started_payload_failure_terminalizes_not_run(self) -> None:
         original_phase_payload = publication._phase_payload
@@ -1888,6 +2007,112 @@ publication.publish_synthetic_fixture_v2(
         finally:
             parent.close()
 
+    def test_reentrant_append_cannot_escape_fixture_snapshot_limit(self) -> None:
+        records: list[dict[str, object]] = [{}]
+
+        class AppendOnIteration(list):
+            def __init__(self) -> None:
+                super().__init__(["frozen"])
+                self.triggered = False
+
+            def __iter__(self):
+                if not self.triggered:
+                    self.triggered = True
+                    records.append({"late": True})
+                return super().__iter__()
+
+        records[0] = {"nested": AppendOnIteration()}
+        with mock.patch.object(publication, "_MAX_SYNTHETIC_RECORDS", 1):
+            published = self._publish(fixture_action=lambda: records)
+            self.assertEqual(published["status"], "COMMITTED")
+            self.assertEqual(len(records), 2)
+            layout = publication.RegularFileLayoutV2.from_output_path(self.output)
+            lines = (self.root / layout.records_name).read_bytes().splitlines()
+            self.assertEqual(len(lines), 1)
+            frame = publication.strict_json_loads(lines[0].decode("utf-8"))
+            self.assertEqual(frame["record_index"], 0)
+            self.assertEqual(frame["payload"], {"nested": ["frozen"]})
+            self.assertEqual(
+                publication.inspect_synthetic_publication_v2(self.output)["status"],
+                "COMMITTED",
+            )
+
+    def test_oversized_fixture_snapshot_terminalizes_invalid(self) -> None:
+        collections = {
+            "list": [{}, {}],
+            "tuple": ({}, {}),
+        }
+        for label, records in collections.items():
+            with self.subTest(label=label):
+                case_root = self.root / label
+                case_root.mkdir()
+                output = case_root / "artifact.json"
+                with mock.patch.object(publication, "_MAX_SYNTHETIC_RECORDS", 1):
+                    with self.assertRaises(
+                        publication.RegularFilePublicationV2InvalidError
+                    ):
+                        self._publish(
+                            output=output,
+                            fixture_action=lambda records=records: records,
+                        )
+                    self.assertEqual(
+                        publication.inspect_synthetic_publication_v2(output)[
+                            "status"
+                        ],
+                        "INVALID",
+                    )
+
+    def test_fixture_collection_subclasses_are_rejected_without_magic(self) -> None:
+        magic_calls: list[str] = []
+
+        class HostileList(list):
+            def __len__(self):
+                magic_calls.append("list-len")
+                return super().__len__()
+
+            def __iter__(self):
+                magic_calls.append("list-iter")
+                return super().__iter__()
+
+            def __getitem__(self, item):
+                magic_calls.append("list-getitem")
+                return super().__getitem__(item)
+
+        class HostileTuple(tuple):
+            def __len__(self):
+                magic_calls.append("tuple-len")
+                return super().__len__()
+
+            def __iter__(self):
+                magic_calls.append("tuple-iter")
+                return super().__iter__()
+
+            def __getitem__(self, item):
+                magic_calls.append("tuple-getitem")
+                return super().__getitem__(item)
+
+        collections = {
+            "list-subclass": HostileList([{}]),
+            "tuple-subclass": HostileTuple(({},)),
+        }
+        for label, records in collections.items():
+            with self.subTest(label=label):
+                case_root = self.root / label
+                case_root.mkdir()
+                output = case_root / "artifact.json"
+                with self.assertRaises(
+                    publication.RegularFilePublicationV2InvalidError
+                ):
+                    self._publish(
+                        output=output,
+                        fixture_action=lambda records=records: records,
+                    )
+                self.assertEqual(
+                    publication.inspect_synthetic_publication_v2(output)["status"],
+                    "INVALID",
+                )
+        self.assertEqual(magic_calls, [])
+
     def test_inspector_rejects_more_records_than_publisher_can_emit(self) -> None:
         frames = [
             {
@@ -2194,6 +2419,152 @@ publication.publish_synthetic_fixture_v2(
         with self.assertRaises(OSError) as observed:
             os.fstat(child_descriptors[0])
         self.assertEqual(observed.exception.errno, errno.EBADF)
+
+    def test_inspector_types_pinned_parent_fstat_failure_as_ambiguous(self) -> None:
+        self.assertEqual(self._publish()["status"], "COMMITTED")
+        original_parent_open = publication._PinnedParent.open
+        original_fstat = publication.os.fstat
+        pinned_parents: list[publication._PinnedParent] = []
+        failed = False
+
+        def tracking_parent_open(path: Path) -> publication._PinnedParent:
+            parent = original_parent_open(path)
+            pinned_parents.append(parent)
+            return parent
+
+        def failing_fstat(descriptor: int):
+            nonlocal failed
+            if (
+                pinned_parents
+                and not failed
+                and descriptor == pinned_parents[0].descriptor
+            ):
+                failed = True
+                raise OSError(errno.EIO, "synthetic pinned-parent fstat failure")
+            return original_fstat(descriptor)
+
+        with (
+            mock.patch.object(
+                publication._PinnedParent,
+                "open",
+                side_effect=tracking_parent_open,
+            ),
+            mock.patch.object(publication.os, "fstat", side_effect=failing_fstat),
+        ):
+            with self.assertRaises(
+                publication.RegularFilePublicationV2AmbiguousError
+            ):
+                publication.inspect_synthetic_publication_v2(self.output)
+        self.assertTrue(failed)
+        self.assertEqual(
+            publication.inspect_synthetic_publication_v2(self.output)["status"],
+            "COMMITTED",
+        )
+
+    def test_parent_fstat_failure_preserves_public_phase_taxonomy(self) -> None:
+        cases = (
+            (
+                "after_attempt",
+                publication.RegularFilePublicationV2NotRunError,
+                0,
+                "NOT_RUN",
+            ),
+            (
+                "after_started",
+                publication.RegularFilePublicationV2AmbiguousError,
+                0,
+                "AMBIGUOUS",
+            ),
+            (
+                "after_ready",
+                publication.RegularFilePublicationV2AmbiguousError,
+                1,
+                "AMBIGUOUS",
+            ),
+            (
+                "after_commit",
+                publication.RegularFilePublicationV2AmbiguousError,
+                1,
+                "COMMITTED",
+            ),
+        )
+        for arm_event, publish_error, expected_calls, restart_status in cases:
+            with self.subTest(arm_event=arm_event):
+                case_root = self.root / arm_event
+                case_root.mkdir()
+                output = case_root / "artifact.json"
+                original_parent_open = publication._PinnedParent.open
+                original_fstat = publication.os.fstat
+                pinned_parents: list[publication._PinnedParent] = []
+                armed = False
+                failed = False
+                calls = 0
+
+                def tracking_parent_open(path: Path) -> publication._PinnedParent:
+                    parent = original_parent_open(path)
+                    pinned_parents.append(parent)
+                    return parent
+
+                def failing_fstat(descriptor: int):
+                    nonlocal failed
+                    if (
+                        armed
+                        and pinned_parents
+                        and not failed
+                        and descriptor == pinned_parents[0].descriptor
+                    ):
+                        failed = True
+                        raise OSError(
+                            errno.EIO,
+                            "synthetic pinned-parent fstat failure",
+                        )
+                    return original_fstat(descriptor)
+
+                def action() -> list[dict[str, object]]:
+                    nonlocal calls
+                    calls += 1
+                    return []
+
+                def hook(
+                    event: str,
+                    context: publication.Mapping[str, object],
+                ) -> None:
+                    nonlocal armed
+                    if event == arm_event:
+                        armed = True
+
+                with (
+                    mock.patch.object(
+                        publication._PinnedParent,
+                        "open",
+                        side_effect=tracking_parent_open,
+                    ),
+                    mock.patch.object(
+                        publication.os,
+                        "fstat",
+                        side_effect=failing_fstat,
+                    ),
+                ):
+                    with self.assertRaises(publish_error):
+                        self._publish(
+                            output=output,
+                            fixture_action=action,
+                            event_hook=hook,
+                        )
+                self.assertTrue(failed)
+                self.assertEqual(calls, expected_calls)
+                if restart_status == "AMBIGUOUS":
+                    with self.assertRaises(
+                        publication.RegularFilePublicationV2AmbiguousError
+                    ):
+                        publication.inspect_synthetic_publication_v2(output)
+                else:
+                    self.assertEqual(
+                        publication.inspect_synthetic_publication_v2(output)[
+                            "status"
+                        ],
+                        restart_status,
+                    )
 
     def test_missing_required_flag_refuses_before_path_access(self) -> None:
         calls = 0

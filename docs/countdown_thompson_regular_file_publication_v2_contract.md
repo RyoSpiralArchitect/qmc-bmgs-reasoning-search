@@ -33,6 +33,11 @@ The output basename must be ASCII and its lowercase spelling may not begin
 files. Before constructing a `Path`, the raw text must be absolute and exactly
 equal to its `normpath` spelling; trailing separators, `/.`, `/./`, `..`, and
 duplicate separators are refused before parent access or callback execution.
+The complete text path must also be representable by the host filesystem
+encoding. Round-tripping POSIX `surrogateescape` parent components are not
+rejected by this text precheck and proceed to filesystem lookup; the host
+filesystem may still refuse unsupported byte sequences. Other unencodable text
+is refused before parent access.
 The attempt name depends on a conservative lowercase digest of the basename
 within its pinned parent, not the authorization digest. The exact lexical output
 path retains a separate provenance digest. Case-only and parent-path aliases
@@ -66,7 +71,9 @@ openat(parent_fd, name,
 
 The descriptor returned by that successful call is the only in-process
 ownership evidence. Matching bytes at a pre-existing name are never adopted.
-The descriptor is retained through terminal proof.
+The descriptor is retained through terminal proof. The generated owner nonce
+is checked against the same exact lowercase-hex predicate used by the restart
+verifier before the attempt name is opened.
 
 For each file, v2 requires:
 
@@ -87,6 +94,14 @@ For each file, v2 requires:
 Normal and recovery control flow never renames, replaces, unlinks, quarantines,
 reclaims, or cleans an authority name. Foreign files, directories, FIFOs,
 sockets, hardlinks, and symlinks are retained.
+
+The synthetic callback must return an exact built-in `list` or `tuple`. Before
+any record is serialized, the producer takes a private bounded membership
+snapshot of at most the configured limit plus one, validates the snapshot's
+own count, and never rereads the caller-owned outer collection. Each selected
+plain-dict record is then detached through canonical JSON and strict parsing.
+Thus reentrant or concurrent outer-list growth cannot make the producer emit a
+record count that the restart verifier rejects.
 
 ## State machine
 
@@ -142,9 +157,10 @@ The phase-1 module provides:
   verifier producer-image bounds, descriptor cleanup, parent pivot, subprocess
   crashes before each terminal barrier, case-insensitive output aliases,
   commit/sidecar overlap, raw-path normalization aliases, path-like exception
-  status impersonation, non-finite persisted JSON, pure and mutating post-barrier
-  terminal observers, superseded-namespace refusal, and a two-process
-  reservation race.
+  status impersonation, filesystem-encoding boundaries, generated-nonce format,
+  non-finite persisted JSON, caller-owned record-container reentrancy, pinned
+  parent observation faults, pure and mutating post-barrier terminal observers,
+  superseded-namespace refusal, and a two-process reservation race.
 
 The existing v1 schemas, directory publisher, analyzer, and production entry
 point are unchanged. The v1 fixture publisher remains private and the real

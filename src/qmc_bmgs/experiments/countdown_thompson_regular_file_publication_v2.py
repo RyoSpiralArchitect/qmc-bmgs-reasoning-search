@@ -103,7 +103,8 @@ class _EventHookError(RegularFilePublicationV2Error):
 
 
 _EventHook = Callable[[str, Mapping[str, Any]], None]
-_FixtureAction = Callable[[], Sequence[Mapping[str, Any]]]
+_FixtureRecords = list[dict[str, Any]] | tuple[dict[str, Any], ...]
+_FixtureAction = Callable[[], _FixtureRecords]
 _PreOutcomeCheck = Callable[[], None]
 
 
@@ -147,6 +148,14 @@ def _require_sha256(value: object, label: str) -> str:
             f"{label} must be lowercase SHA-256"
         )
     return value
+
+
+def _is_owner_nonce(value: object) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 2 * _OWNER_NONCE_BYTES
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _require_exact_digest(payload: Mapping[str, Any], label: str) -> str:
@@ -233,6 +242,12 @@ def _snapshot_output_path(output_path: Path | str) -> Path:
         raise RegularFilePublicationV2NotRunError(
             "output path must be a non-empty text path"
         )
+    try:
+        os.fsencode(raw)
+    except UnicodeEncodeError as error:
+        raise RegularFilePublicationV2NotRunError(
+            "output path is not representable by the filesystem encoding"
+        ) from error
     if not os.path.isabs(raw):
         raise RegularFilePublicationV2NotRunError("output path must be absolute")
     if raw.startswith("//") or raw != os.path.normpath(raw):
@@ -403,6 +418,10 @@ class _PinnedParent:
         except RegularFilePublicationV2NotRunError as error:
             raise RegularFilePublicationV2AmbiguousError(
                 "lexical output parent path is no longer provable"
+            ) from error
+        except OSError as error:
+            raise RegularFilePublicationV2AmbiguousError(
+                "pinned output parent descriptor is no longer provable"
             ) from error
         try:
             if observed_identities != self.component_identities:
@@ -884,8 +903,12 @@ def _validate_layout_against_parent(
 def _attempt_payload(
     layout: RegularFileLayoutV2,
     authorization_digest: str,
-    owner_nonce: str,
+    owner_nonce: object,
 ) -> dict[str, Any]:
+    if not _is_owner_nonce(owner_nonce):
+        raise RegularFilePublicationV2Error(
+            "owner nonce must be exact lowercase hexadecimal"
+        )
     return _with_digest(
         {
             "artifact_layout": ARTIFACT_LAYOUT,
@@ -936,15 +959,24 @@ def _phase_payload(
 
 
 def _freeze_synthetic_records(
-    records: Sequence[Mapping[str, Any]],
+    records: _FixtureRecords,
 ) -> tuple[list[dict[str, Any]], bytes]:
-    if type(records) not in {list, tuple} or len(records) > _MAX_SYNTHETIC_RECORDS:
+    if type(records) not in {list, tuple}:
+        raise RegularFilePublicationV2Error(
+            "synthetic fixture must return a bounded list or tuple of records"
+        )
+    records_snapshot = tuple(records[: _MAX_SYNTHETIC_RECORDS + 1])
+    if len(records_snapshot) > _MAX_SYNTHETIC_RECORDS:
         raise RegularFilePublicationV2Error(
             "synthetic fixture must return a bounded list or tuple of records"
         )
     frozen: list[dict[str, Any]] = []
     encoded: list[bytes] = []
-    for index, candidate in enumerate(records):
+    for index, candidate in enumerate(records_snapshot):
+        if index >= _MAX_SYNTHETIC_RECORDS:
+            raise RegularFilePublicationV2Error(
+                "synthetic fixture record snapshot exceeded its bounded limit"
+            )
         if type(candidate) is not dict:
             raise RegularFilePublicationV2Error(
                 "synthetic fixture records must be plain JSON objects"
@@ -1768,9 +1800,7 @@ def _validate_attempt_object(
         or attempt.get("names") != layout.names
         or attempt.get("output_path") != os.fspath(layout.output_path)
         or attempt.get("output_path_digest") != layout.output_path_digest
-        or type(owner_nonce) is not str
-        or len(owner_nonce) != 2 * _OWNER_NONCE_BYTES
-        or any(character not in "0123456789abcdef" for character in owner_nonce)
+        or not _is_owner_nonce(owner_nonce)
         or type(authorization) is not str
         or len(authorization) != 64
         or any(character not in "0123456789abcdef" for character in authorization)

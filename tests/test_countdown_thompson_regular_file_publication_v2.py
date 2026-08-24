@@ -164,6 +164,7 @@ class RegularFilePublicationV2Tests(unittest.TestCase):
         *,
         owner_nonce: str | None = None,
         parent_binding: dict[str, object] | None = None,
+        commit_record_overrides: dict[str, object] | None = None,
         manifest_record_overrides: dict[str, object] | None = None,
         ready_overrides: dict[str, object] | None = None,
     ) -> None:
@@ -231,6 +232,13 @@ class RegularFilePublicationV2Tests(unittest.TestCase):
             manifest,
             records_raw,
         )
+        if commit_record_overrides is not None:
+            commit_core = dict(commit)
+            del commit_core["deterministic_digest"]
+            commit_records = dict(commit_core["records"])
+            commit_records.update(commit_record_overrides)
+            commit_core["records"] = commit_records
+            commit = publication._with_digest(commit_core)
         payloads = {
             layout.attempt_name: publication._canonical_bytes(attempt),
             layout.started_name: publication._canonical_bytes(started),
@@ -528,6 +536,75 @@ publication.publish_synthetic_fixture_v2(
                 self.output,
                 expected_parent_binding=self.parent_binding,
             )
+
+    def test_persisted_parent_binding_requires_nested_digest_closure(self) -> None:
+        forged_binding = json.loads(
+            publication.canonical_json(self.parent_binding)
+        )
+        identity = forged_binding["component_identities"][-1]
+        identity["st_dev"] = float(identity["st_dev"])
+        self.assertEqual(forged_binding, self.parent_binding)
+
+        frame = {
+            "fixture_kind": publication.FIXTURE_KIND,
+            "payload": {"forged": "numeric-type-alias"},
+            "record_index": 0,
+            "schema_version": publication.RECORD_SCHEMA_VERSION,
+        }
+        self._install_forged_committed_collective(
+            self.output,
+            [frame],
+            parent_binding=forged_binding,
+        )
+
+        with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
+            self._inspect(
+                self.output,
+                expected_parent_binding=self.parent_binding,
+            )
+
+    def test_attempt_parent_binding_rejects_python_numeric_aliases(self) -> None:
+        layout = publication.RegularFileLayoutV2.from_output_path(self.output)
+        expected_binding = json.loads(
+            publication.canonical_json(self.parent_binding)
+        )
+        expected_binding["component_identities"][-1]["st_dev"] = 1
+        expected_core = dict(expected_binding)
+        expected_core.pop("deterministic_digest")
+        expected_binding = publication._with_digest(expected_core)
+
+        for label, alias in (("float", 1.0), ("bool", True)):
+            with self.subTest(label=label):
+                forged_binding = json.loads(
+                    publication.canonical_json(expected_binding)
+                )
+                forged_binding["component_identities"][-1]["st_dev"] = alias
+                self.assertEqual(forged_binding, expected_binding)
+                self.assertNotEqual(
+                    publication.sha256_json(
+                        {
+                            key: value
+                            for key, value in forged_binding.items()
+                            if key != "deterministic_digest"
+                        }
+                    ),
+                    forged_binding["deterministic_digest"],
+                )
+                attempt = publication._attempt_payload(
+                    layout,
+                    AUTHORIZATION_A,
+                    forged_binding,
+                    "1" * (2 * publication._OWNER_NONCE_BYTES),
+                )
+                with self.assertRaises(
+                    publication.RegularFilePublicationV2AmbiguousError
+                ):
+                    publication._validate_attempt_object(
+                        attempt,
+                        layout,
+                        AUTHORIZATION_A,
+                        expected_binding,
+                    )
 
     def test_restrictive_umask_still_publishes_exact_0600_collective(self) -> None:
         previous_umask = os.umask(0o777)
@@ -2565,6 +2642,9 @@ publication.publish_synthetic_fixture_v2(
             },
             "ready-byte-count-float": {
                 "ready_overrides": {"records_byte_count": float(byte_count)}
+            },
+            "commit-byte-count-float": {
+                "commit_record_overrides": {"byte_count": float(byte_count)}
             },
         }
         for label, overrides in cases.items():

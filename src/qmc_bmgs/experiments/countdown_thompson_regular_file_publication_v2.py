@@ -2025,6 +2025,21 @@ def _validate_attempt_object(
         raise RegularFilePublicationV2AmbiguousError(
             "attempt receipt keys do not match v2"
         )
+    try:
+        persisted_parent_binding = _freeze_expected_parent_binding(
+            attempt.get("output_parent_binding"),
+            layout.output_path.parent,
+        )
+    except RegularFilePublicationV2NotRunError as error:
+        raise RegularFilePublicationV2AmbiguousError(
+            "attempt receipt contains an invalid parent binding"
+        ) from error
+    if _canonical_bytes(persisted_parent_binding) != _canonical_bytes(
+        expected_parent_binding
+    ):
+        raise RegularFilePublicationV2AmbiguousError(
+            "attempt receipt parent binding is not the exact reviewed binding"
+        )
     owner_nonce = attempt.get("owner_nonce")
     authorization = attempt.get("authorization_digest")
     if (
@@ -2035,7 +2050,6 @@ def _validate_attempt_object(
         or attempt.get("phase") != "PRE_OUTCOME"
         or attempt.get("status") != "PENDING"
         or attempt.get("names") != layout.names
-        or attempt.get("output_parent_binding") != expected_parent_binding
         or attempt.get("output_parent_binding_digest")
         != expected_parent_binding.get("deterministic_digest")
         or attempt.get("output_path") != os.fspath(layout.output_path)
@@ -2419,7 +2433,7 @@ def _inspect_payload_once(
         manifest,
         records_raw,
     )
-    if commit != expected_commit:
+    if _canonical_bytes(commit) != _canonical_bytes(expected_commit):
         raise RegularFilePublicationV2AmbiguousError(
             "commit receipt does not close over the exact collective"
         )

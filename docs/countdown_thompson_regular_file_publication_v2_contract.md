@@ -79,13 +79,16 @@ with that external chain. Missing, replaced, or otherwise mismatching live
 parents are `AMBIGUOUS`, including when the replacement directory is empty: the
 reviewed authorization may already have been consumed in a displaced directory.
 The full binding is stored in ATTEMPT, and its digest is chained through every
-phase receipt, MANIFEST, and COMMIT. The output reservation name intentionally
-remains basename-global within the bound parent and does not include the binding
-digest; a caller cannot choose a different binding to obtain a second sidecar
-basename within the same directory object. A freshly captured binding for a
-replacement directory is different authorization material. The synthetic API
-does not itself prove that its opaque authorization digest commits to the
-binding, so production integration must enforce that closure.
+phase receipt, MANIFEST, and COMMIT. Restart inspection revalidates the embedded
+binding's exact field types and own digest, then compares its canonical bytes to
+the external reviewed binding; language-level numeric equality cannot substitute
+different persisted bytes. The output reservation name intentionally remains
+basename-global within the bound parent and does not include the binding digest;
+a caller cannot choose a different binding to obtain a second sidecar basename
+within the same directory object. A freshly captured binding for a replacement
+directory is different authorization material. The synthetic API does not itself
+prove that its opaque authorization digest commits to the binding, so production
+integration must enforce that closure.
 
 `v2r3` also performs a stable descriptor-bound directory scan before ownership,
 before STARTED/callback boundaries, during every terminal proof, and during

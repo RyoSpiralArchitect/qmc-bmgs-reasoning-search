@@ -31,18 +31,24 @@ from qmc_bmgs.substrate.trace import (
 )
 
 
-PUBLICATION_BACKEND = "posix_regular_files/v2r2"
-ARTIFACT_LAYOUT = "flat_commit_root/v2r2"
-FIXTURE_KIND = "nondiagnostic_synthetic_publication_v2r2"
-ATTEMPT_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-attempt/v2r2"
-PHASE_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-phase/v2r2"
-RECORD_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-record/v2r2"
-MANIFEST_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-manifest/v2r2"
-COMMIT_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-commit/v2r2"
+PUBLICATION_BACKEND = "posix_regular_files/v2r3"
+ARTIFACT_LAYOUT = "flat_commit_root/v2r3"
+FIXTURE_KIND = "nondiagnostic_synthetic_publication_v2r3"
+ATTEMPT_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-attempt/v2r3"
+PHASE_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-phase/v2r3"
+RECORD_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-record/v2r3"
+MANIFEST_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-manifest/v2r3"
+COMMIT_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-commit/v2r3"
+PARENT_BINDING_SCHEMA_VERSION = "qmc-bmgs-posix-output-parent-binding/v1"
+PARENT_BINDING_SCOPE = "same_host_same_filesystem_identity_epoch"
 
 _RESERVED_OUTPUT_PREFIX = ".qmc-bmgs-"
-_INTERNAL_NAME_PREFIX = ".qmc-bmgs-v2r2-"
-_LEGACY_INTERNAL_NAME_PREFIX = ".qmc-bmgs-v2-"
+_INTERNAL_NAME_PREFIX = ".qmc-bmgs-v2r3-"
+_LEGACY_INTERNAL_NAME_PREFIXES = (
+    ".qmc-bmgs-v2-",
+    ".qmc-bmgs-v2r2-",
+)
+_LEGACY_INTERNAL_NAME_PREFIX = _LEGACY_INTERNAL_NAME_PREFIXES[0]
 
 _MAX_CONTROL_BYTES = 1 << 20
 _MAX_RECORDS_BYTES = 16 << 20
@@ -65,6 +71,10 @@ class RegularFilePublicationV2InvalidError(RegularFilePublicationV2Error):
 
 class RegularFilePublicationV2AmbiguousError(RegularFilePublicationV2Error):
     """An exact durable terminal state could not be proved."""
+
+
+class _ParentBindingMismatchError(RegularFilePublicationV2AmbiguousError):
+    """The live lexical parent no longer has its reviewed identity chain."""
 
 
 class _NameConflictError(RegularFilePublicationV2Error):
@@ -274,6 +284,113 @@ def _snapshot_output_path(output_path: Path | str) -> Path:
     return candidate
 
 
+def _parent_binding_core(
+    parent_path: Path,
+    component_identities: Sequence[tuple[int, int]],
+) -> dict[str, Any]:
+    return {
+        "binding_scope": PARENT_BINDING_SCOPE,
+        "component_identities": [
+            {"st_dev": st_dev, "st_ino": st_ino}
+            for st_dev, st_ino in component_identities
+        ],
+        "output_parent_path": os.fspath(parent_path),
+        "schema_version": PARENT_BINDING_SCHEMA_VERSION,
+    }
+
+
+def _freeze_expected_parent_binding(
+    value: object,
+    parent_path: Path,
+) -> dict[str, Any]:
+    """Validate and detach one externally reviewed parent identity chain."""
+
+    expected_keys = {
+        "binding_scope",
+        "component_identities",
+        "deterministic_digest",
+        "output_parent_path",
+        "schema_version",
+    }
+    if type(value) is not dict:
+        raise RegularFilePublicationV2NotRunError(
+            "expected parent binding must be one exact canonical object"
+        )
+    value_keys = tuple(dict.keys(value))
+    if (
+        len(value_keys) != len(expected_keys)
+        or any(type(key) is not str for key in value_keys)
+        or set(value_keys) != expected_keys
+    ):
+        raise RegularFilePublicationV2NotRunError(
+            "expected parent binding must be one exact canonical object"
+        )
+    scope = dict.get(value, "binding_scope")
+    output_parent_path = dict.get(value, "output_parent_path")
+    schema_version = dict.get(value, "schema_version")
+    raw_components = dict.get(value, "component_identities")
+    digest = dict.get(value, "deterministic_digest")
+    if (
+        type(scope) is not str
+        or scope != PARENT_BINDING_SCOPE
+        or type(output_parent_path) is not str
+        or output_parent_path != os.fspath(parent_path)
+        or type(schema_version) is not str
+        or schema_version != PARENT_BINDING_SCHEMA_VERSION
+        or type(raw_components) is not list
+        or type(digest) is not str
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise RegularFilePublicationV2NotRunError(
+            "expected parent binding identity does not match the requested parent"
+        )
+
+    component_snapshot = tuple(raw_components[: len(parent_path.parts) + 1])
+    if len(component_snapshot) != len(parent_path.parts):
+        raise RegularFilePublicationV2NotRunError(
+            "expected parent binding component count does not match the parent"
+        )
+    component_identities: list[tuple[int, int]] = []
+    for component in component_snapshot:
+        if type(component) is not dict:
+            raise RegularFilePublicationV2NotRunError(
+                "expected parent binding components must be plain identities"
+            )
+        component_keys = tuple(dict.keys(component))
+        st_dev = dict.get(component, "st_dev")
+        st_ino = dict.get(component, "st_ino")
+        if (
+            len(component_keys) != 2
+            or any(type(key) is not str for key in component_keys)
+            or set(component_keys) != {"st_dev", "st_ino"}
+            or type(st_dev) is not int
+            or st_dev < 0
+            or type(st_ino) is not int
+            or st_ino < 0
+        ):
+            raise RegularFilePublicationV2NotRunError(
+                "expected parent binding components must be plain identities"
+            )
+        component_identities.append((st_dev, st_ino))
+
+    core = _parent_binding_core(parent_path, component_identities)
+    if sha256_json(core) != digest:
+        raise RegularFilePublicationV2NotRunError(
+            "expected parent binding deterministic digest does not close"
+        )
+    return {**core, "deterministic_digest": digest}
+
+
+def _binding_component_identities(
+    binding: Mapping[str, Any],
+) -> tuple[tuple[int, int], ...]:
+    return tuple(
+        (component["st_dev"], component["st_ino"])
+        for component in binding["component_identities"]
+    )
+
+
 @dataclass(frozen=True)
 class RegularFileLayoutV2:
     """All fixed names participating in one flat publication collective."""
@@ -384,6 +501,7 @@ class _PinnedParent:
     path: Path
     descriptor: int
     component_identities: tuple[tuple[int, int], ...]
+    expected_component_identities: tuple[tuple[int, int], ...] | None = None
 
     @classmethod
     def open(cls, path: Path) -> _PinnedParent:
@@ -403,20 +521,35 @@ class _PinnedParent:
             raise
 
     def assert_path(self) -> None:
+        if (
+            self.expected_component_identities is not None
+            and self.component_identities != self.expected_component_identities
+        ):
+            raise _ParentBindingMismatchError(
+                "pinned output parent does not match the reviewed binding"
+            )
         try:
             opened = os.fstat(self.descriptor)
             if (
                 not stat.S_ISDIR(opened.st_mode)
                 or _directory_identity(opened) != self.component_identities[-1]
             ):
-                raise RegularFilePublicationV2AmbiguousError(
-                    "pinned output parent identity changed"
+                error_type = (
+                    _ParentBindingMismatchError
+                    if self.expected_component_identities is not None
+                    else RegularFilePublicationV2AmbiguousError
                 )
+                raise error_type("pinned output parent identity changed")
             observed_fd, observed_identities = _walk_absolute_directory_nofollow(
                 self.path
             )
         except RegularFilePublicationV2NotRunError as error:
-            raise RegularFilePublicationV2AmbiguousError(
+            error_type = (
+                _ParentBindingMismatchError
+                if self.expected_component_identities is not None
+                else RegularFilePublicationV2AmbiguousError
+            )
+            raise error_type(
                 "lexical output parent path is no longer provable"
             ) from error
         except OSError as error:
@@ -425,7 +558,12 @@ class _PinnedParent:
             ) from error
         try:
             if observed_identities != self.component_identities:
-                raise RegularFilePublicationV2AmbiguousError(
+                error_type = (
+                    _ParentBindingMismatchError
+                    if self.expected_component_identities is not None
+                    else RegularFilePublicationV2AmbiguousError
+                )
+                raise error_type(
                     "lexical output parent path pivoted"
                 )
         finally:
@@ -443,6 +581,56 @@ class _PinnedParent:
         descriptor = self.descriptor
         self.descriptor = -1
         _close_best_effort(descriptor)
+
+
+def build_synthetic_parent_binding_v2(
+    output_path: Path | str,
+) -> dict[str, Any]:
+    """Snapshot a planning-only parent binding for later external review.
+
+    Production execution must load this object from its reviewed authorization;
+    it must not regenerate the expected binding from the live execution path.
+    """
+
+    _require_posix_capabilities()
+    layout = RegularFileLayoutV2.from_output_path(output_path)
+    parent = _PinnedParent.open(layout.output_path.parent)
+    try:
+        parent.assert_path()
+        result = _with_digest(
+            _parent_binding_core(
+                layout.output_path.parent,
+                parent.component_identities,
+            )
+        )
+        parent.assert_path()
+        return result
+    finally:
+        parent.close()
+
+
+def _open_bound_parent(
+    parent_path: Path,
+    expected_parent_binding: Mapping[str, Any],
+) -> _PinnedParent:
+    expected_identities = _binding_component_identities(expected_parent_binding)
+    try:
+        parent = _PinnedParent.open(parent_path)
+    except RegularFilePublicationV2NotRunError as error:
+        raise _ParentBindingMismatchError(
+            "reviewed output parent binding is no longer reachable"
+        ) from error
+    try:
+        if parent.component_identities != expected_identities:
+            raise _ParentBindingMismatchError(
+                "live output parent does not match the reviewed binding"
+            )
+        parent.expected_component_identities = expected_identities
+        parent.assert_path()
+        return parent
+    except BaseException:
+        parent.close()
+        raise
 
 
 @dataclass
@@ -828,7 +1016,11 @@ def _assert_no_legacy_namespace(parent: _PinnedParent) -> None:
             "superseded publication namespace returned a non-text entry"
         )
     if any(
-        name.lower().startswith(_LEGACY_INTERNAL_NAME_PREFIX) for name in entries
+        any(
+            name.lower().startswith(prefix)
+            for prefix in _LEGACY_INTERNAL_NAME_PREFIXES
+        )
+        for name in entries
     ):
         raise RegularFilePublicationV2AmbiguousError(
             "superseded v2 publication authority exists in the output parent"
@@ -903,6 +1095,7 @@ def _validate_layout_against_parent(
 def _attempt_payload(
     layout: RegularFileLayoutV2,
     authorization_digest: str,
+    expected_parent_binding: Mapping[str, Any],
     owner_nonce: object,
 ) -> dict[str, Any]:
     if not _is_owner_nonce(owner_nonce):
@@ -915,6 +1108,10 @@ def _attempt_payload(
             "authorization_digest": authorization_digest,
             "fixture_kind": FIXTURE_KIND,
             "names": layout.names,
+            "output_parent_binding": expected_parent_binding,
+            "output_parent_binding_digest": expected_parent_binding[
+                "deterministic_digest"
+            ],
             "output_path": os.fspath(layout.output_path),
             "output_path_digest": layout.output_path_digest,
             "owner_nonce": owner_nonce,
@@ -939,6 +1136,7 @@ def _phase_payload(
         "attempt_receipt_digest": attempt["deterministic_digest"],
         "authorization_digest": attempt["authorization_digest"],
         "fixture_kind": FIXTURE_KIND,
+        "output_parent_binding_digest": attempt["output_parent_binding_digest"],
         "output_path": attempt["output_path"],
         "output_path_digest": attempt["output_path_digest"],
         "owner_nonce": attempt["owner_nonce"],
@@ -972,6 +1170,7 @@ def _freeze_synthetic_records(
         )
     frozen: list[dict[str, Any]] = []
     encoded: list[bytes] = []
+    encoded_byte_count = 0
     for index, candidate in enumerate(records_snapshot):
         if index >= _MAX_SYNTHETIC_RECORDS:
             raise RegularFilePublicationV2Error(
@@ -993,13 +1192,15 @@ def _freeze_synthetic_records(
             "record_index": index,
             "schema_version": RECORD_SCHEMA_VERSION,
         }
+        frame = _canonical_bytes(wrapped)
+        if encoded_byte_count + len(frame) > _MAX_RECORDS_BYTES:
+            raise RegularFilePublicationV2Error(
+                "synthetic fixture records exceed the bounded byte limit"
+            )
+        encoded_byte_count += len(frame)
         frozen.append(wrapped)
-        encoded.append(_canonical_bytes(wrapped))
+        encoded.append(frame)
     raw = b"".join(encoded)
-    if len(raw) > _MAX_RECORDS_BYTES:
-        raise RegularFilePublicationV2Error(
-            "synthetic fixture records exceed the bounded byte limit"
-        )
     return frozen, raw
 
 
@@ -1017,6 +1218,9 @@ def _manifest_payload(
             "attempt_receipt_digest": attempt["deterministic_digest"],
             "authorization_digest": attempt["authorization_digest"],
             "fixture_kind": FIXTURE_KIND,
+            "output_parent_binding_digest": attempt[
+                "output_parent_binding_digest"
+            ],
             "output_path": os.fspath(layout.output_path),
             "output_path_digest": layout.output_path_digest,
             "owner_nonce": attempt["owner_nonce"],
@@ -1055,6 +1259,9 @@ def _commit_payload(
                 "sha256": _sha256_bytes(_canonical_bytes(manifest)),
             },
             "output_path": os.fspath(layout.output_path),
+            "output_parent_binding_digest": attempt[
+                "output_parent_binding_digest"
+            ],
             "output_path_digest": layout.output_path_digest,
             "owner_nonce": attempt["owner_nonce"],
             "phase": "COMMITTED",
@@ -1338,6 +1545,7 @@ def publish_synthetic_fixture_v2(
     output_path: Path | str,
     *,
     authorization_digest: str,
+    expected_parent_binding: object = None,
     fixture_action: _FixtureAction,
     _pre_outcome_check: _PreOutcomeCheck | None = None,
     _event_hook: _EventHook | None = None,
@@ -1346,7 +1554,9 @@ def publish_synthetic_fixture_v2(
 
     ``fixture_action`` is deliberately invoked only after an exact durable
     STARTED receipt.  It returns synthetic JSON objects; it has no access to a
-    diagnostic bundle through this API.
+    diagnostic bundle through this API.  ``expected_parent_binding`` is a
+    fail-closed required input; production must load it from authorization
+    material rather than recapture it at execution time.
     """
 
     _require_posix_capabilities()
@@ -1360,8 +1570,12 @@ def publish_synthetic_fixture_v2(
         raise RegularFilePublicationV2NotRunError(
             "synthetic fixture callbacks must be callable"
         )
+    parent_binding = _freeze_expected_parent_binding(
+        expected_parent_binding,
+        layout.output_path.parent,
+    )
 
-    parent = _PinnedParent.open(layout.output_path.parent)
+    parent = _open_bound_parent(layout.output_path.parent, parent_binding)
     session = _PublicationSession(parent=parent, layout=layout, hook=_event_hook)
     attempt_payload: dict[str, Any] | None = None
     started_payload: dict[str, Any] | None = None
@@ -1374,7 +1588,7 @@ def publish_synthetic_fixture_v2(
             parent.assert_path()
             _assert_no_legacy_namespace(parent)
             _preflight_reserved_names_absent(parent, layout.reserved_names)
-        except RegularFilePublicationV2NotRunError:
+        except (_ParentBindingMismatchError, RegularFilePublicationV2NotRunError):
             raise
         except BaseException as error:
             raise RegularFilePublicationV2NotRunError(
@@ -1383,7 +1597,12 @@ def publish_synthetic_fixture_v2(
 
         try:
             owner_nonce = secrets.token_hex(_OWNER_NONCE_BYTES)
-            attempt_payload = _attempt_payload(layout, authorization, owner_nonce)
+            attempt_payload = _attempt_payload(
+                layout,
+                authorization,
+                parent_binding,
+                owner_nonce,
+            )
         except BaseException as error:
             raise RegularFilePublicationV2NotRunError(
                 "attempt identity could not be constructed before ownership"
@@ -1604,6 +1823,9 @@ def publish_synthetic_fixture_v2(
                 "artifact_path": os.fspath(layout.output_path),
                 "authorization_digest": authorization,
                 "fixture_kind": FIXTURE_KIND,
+                "output_parent_binding_digest": parent_binding[
+                    "deterministic_digest"
+                ],
                 "run_manifest_digest": manifest_payload["deterministic_digest"],
                 "status": "COMMITTED",
             }
@@ -1769,6 +1991,7 @@ def _validate_attempt_object(
     attempt: Mapping[str, Any],
     layout: RegularFileLayoutV2,
     expected_authorization_digest: str | None,
+    expected_parent_binding: Mapping[str, Any],
 ) -> None:
     expected_keys = {
         "artifact_layout",
@@ -1776,6 +1999,8 @@ def _validate_attempt_object(
         "deterministic_digest",
         "fixture_kind",
         "names",
+        "output_parent_binding",
+        "output_parent_binding_digest",
         "output_path",
         "output_path_digest",
         "owner_nonce",
@@ -1798,6 +2023,9 @@ def _validate_attempt_object(
         or attempt.get("phase") != "PRE_OUTCOME"
         or attempt.get("status") != "PENDING"
         or attempt.get("names") != layout.names
+        or attempt.get("output_parent_binding") != expected_parent_binding
+        or attempt.get("output_parent_binding_digest")
+        != expected_parent_binding.get("deterministic_digest")
         or attempt.get("output_path") != os.fspath(layout.output_path)
         or attempt.get("output_path_digest") != layout.output_path_digest
         or not _is_owner_nonce(owner_nonce)
@@ -1829,6 +2057,7 @@ def _validate_phase_object(
         "authorization_digest",
         "deterministic_digest",
         "fixture_kind",
+        "output_parent_binding_digest",
         "output_path",
         "output_path_digest",
         "owner_nonce",
@@ -1849,6 +2078,8 @@ def _validate_phase_object(
         or receipt.get("authorization_digest")
         != attempt.get("authorization_digest")
         or receipt.get("fixture_kind") != FIXTURE_KIND
+        or receipt.get("output_parent_binding_digest")
+        != attempt.get("output_parent_binding_digest")
         or receipt.get("output_path") != attempt.get("output_path")
         or receipt.get("output_path_digest")
         != attempt.get("output_path_digest")
@@ -1935,6 +2166,7 @@ def _validate_records_and_manifest(
         "authorization_digest",
         "deterministic_digest",
         "fixture_kind",
+        "output_parent_binding_digest",
         "output_path",
         "output_path_digest",
         "owner_nonce",
@@ -1953,6 +2185,8 @@ def _validate_records_and_manifest(
         or manifest.get("authorization_digest")
         != attempt.get("authorization_digest")
         or manifest.get("fixture_kind") != FIXTURE_KIND
+        or manifest.get("output_parent_binding_digest")
+        != attempt.get("output_parent_binding_digest")
         or manifest.get("output_path") != os.fspath(layout.output_path)
         or manifest.get("output_path_digest") != layout.output_path_digest
         or manifest.get("owner_nonce") != attempt.get("owner_nonce")
@@ -1982,6 +2216,7 @@ def _inspect_payload_once(
     parent: _PinnedParent,
     layout: RegularFileLayoutV2,
     expected_authorization_digest: str | None,
+    expected_parent_binding: Mapping[str, Any],
 ) -> dict[str, Any]:
     if not _name_exists(parent, layout.attempt_name):
         occupied_without_attempt = [
@@ -1994,11 +2229,19 @@ def _inspect_payload_once(
                 "reserved names exist without an exact attempt receipt"
             )
         return {
+            "output_parent_binding_digest": expected_parent_binding[
+                "deterministic_digest"
+            ],
             "output_path": os.fspath(layout.output_path),
             "status": "UNRESERVED",
         }
     attempt = _read_canonical_object_at(parent, layout.attempt_name)
-    _validate_attempt_object(attempt, layout, expected_authorization_digest)
+    _validate_attempt_object(
+        attempt,
+        layout,
+        expected_authorization_digest,
+        expected_parent_binding,
+    )
     attempt_digest = attempt["deterministic_digest"]
     has_commit = _name_exists(parent, layout.commit_name)
     has_invalid = _name_exists(parent, layout.invalid_name)
@@ -2030,6 +2273,9 @@ def _inspect_payload_once(
         _validate_reason_code(not_run, "pre_outcome")
         return {
             "authorization_digest": attempt["authorization_digest"],
+            "output_parent_binding_digest": attempt[
+                "output_parent_binding_digest"
+            ],
             "output_path": os.fspath(layout.output_path),
             "status": "NOT_RUN",
             "terminal_digest": not_run["deterministic_digest"],
@@ -2106,6 +2352,9 @@ def _inspect_payload_once(
         _validate_reason_code(invalid, "post_started")
         return {
             "authorization_digest": attempt["authorization_digest"],
+            "output_parent_binding_digest": attempt[
+                "output_parent_binding_digest"
+            ],
             "output_path": os.fspath(layout.output_path),
             "status": "INVALID",
             "terminal_digest": invalid["deterministic_digest"],
@@ -2165,6 +2414,9 @@ def _inspect_payload_once(
     return {
         "artifact_commit_digest": commit["deterministic_digest"],
         "authorization_digest": attempt["authorization_digest"],
+        "output_parent_binding_digest": attempt[
+            "output_parent_binding_digest"
+        ],
         "output_path": os.fspath(layout.output_path),
         "run_manifest_digest": manifest["deterministic_digest"],
         "status": "COMMITTED",
@@ -2208,6 +2460,7 @@ def _inspect_once(
     parent: _PinnedParent,
     layout: RegularFileLayoutV2,
     expected_authorization_digest: str | None,
+    expected_parent_binding: Mapping[str, Any],
 ) -> tuple[
     dict[str, Any],
     tuple[tuple[int, ...], tuple[tuple[str, tuple[int, ...] | None], ...]],
@@ -2216,7 +2469,12 @@ def _inspect_once(
     _assert_no_legacy_namespace(parent)
     before_parent = _parent_generation(parent)
     before_reserved = _reserved_generation(parent, layout.reserved_names)
-    result = _inspect_payload_once(parent, layout, expected_authorization_digest)
+    result = _inspect_payload_once(
+        parent,
+        layout,
+        expected_authorization_digest,
+        expected_parent_binding,
+    )
     sync_names = _terminal_forward_sync_names(parent, layout, result)
     for name in sync_names:
         _forward_sync_exact_regular_file_at(parent, name)
@@ -2236,9 +2494,10 @@ def _inspect_once(
 def inspect_synthetic_publication_v2(
     output_path: Path | str,
     *,
+    expected_parent_binding: object = None,
     authorization_digest: str | None = None,
 ) -> dict[str, Any]:
-    """Validate and forward-sync one exact terminal synthetic v2 collective."""
+    """Validate one exact collective against an external reviewed parent."""
 
     _require_posix_capabilities()
     layout = RegularFileLayoutV2.from_output_path(output_path)
@@ -2247,19 +2506,25 @@ def inspect_synthetic_publication_v2(
         if authorization_digest is None
         else _require_sha256(authorization_digest, "authorization digest")
     )
-    parent = _PinnedParent.open(layout.output_path.parent)
+    parent_binding = _freeze_expected_parent_binding(
+        expected_parent_binding,
+        layout.output_path.parent,
+    )
+    parent = _open_bound_parent(layout.output_path.parent, parent_binding)
     try:
         _validate_layout_against_parent(parent, layout)
         first, first_generation = _inspect_once(
             parent,
             layout,
             expected_authorization,
+            parent_binding,
         )
         parent.assert_path()
         second, second_generation = _inspect_once(
             parent,
             layout,
             expected_authorization,
+            parent_binding,
         )
         parent.assert_path()
         if first != second or first_generation != second_generation:
@@ -2285,9 +2550,11 @@ def _run_self_test() -> None:
             calls += 1
             return [{"candidate": "alpha", "score": 1}, {"candidate": "beta"}]
 
+        parent_binding = build_synthetic_parent_binding_v2(output)
         result = publish_synthetic_fixture_v2(
             output,
             authorization_digest=authorization,
+            expected_parent_binding=parent_binding,
             fixture_action=fixture,
         )
         if result["status"] != "COMMITTED" or calls != 1:
@@ -2295,6 +2562,7 @@ def _run_self_test() -> None:
         inspected = inspect_synthetic_publication_v2(
             output,
             authorization_digest=authorization,
+            expected_parent_binding=parent_binding,
         )
         if inspected["status"] != "COMMITTED":
             raise AssertionError("synthetic v2 collective did not verify")
@@ -2302,6 +2570,7 @@ def _run_self_test() -> None:
             publish_synthetic_fixture_v2(
                 output,
                 authorization_digest="5" * 64,
+                expected_parent_binding=parent_binding,
                 fixture_action=fixture,
             )
         except RegularFilePublicationV2NotRunError:

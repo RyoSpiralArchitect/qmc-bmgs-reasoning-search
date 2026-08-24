@@ -4,6 +4,7 @@ import json
 import errno
 import multiprocessing
 import os
+import shutil
 import socket
 import stat
 import subprocess
@@ -20,11 +21,13 @@ from qmc_bmgs.experiments import (
 
 AUTHORIZATION_A = "a" * 64
 AUTHORIZATION_B = "b" * 64
+_DEFAULT_PARENT_BINDING = object()
 
 
 def _race_worker(
     output: str,
     authorization: str,
+    expected_parent_binding: dict[str, object],
     gate: multiprocessing.synchronize.Event,
     results: multiprocessing.queues.Queue,
 ) -> None:
@@ -33,6 +36,7 @@ def _race_worker(
         publication.publish_synthetic_fixture_v2(
             output,
             authorization_digest=authorization,
+            expected_parent_binding=expected_parent_binding,
             fixture_action=lambda: [{"authorization": authorization}],
         )
     except publication.RegularFilePublicationV2NotRunError:
@@ -43,6 +47,44 @@ def _race_worker(
         results.put("COMMITTED")
 
 
+def _bound_parent_worker(
+    output: str,
+    expected_parent_binding: dict[str, object],
+    label: str,
+    wait_in_action: bool,
+    action_entered: multiprocessing.synchronize.Event,
+    resume_action: multiprocessing.synchronize.Event,
+    results: multiprocessing.queues.Queue,
+) -> None:
+    calls = 0
+
+    def action() -> list[dict[str, object]]:
+        nonlocal calls
+        calls += 1
+        if wait_in_action:
+            action_entered.set()
+            if not resume_action.wait(15):
+                raise RuntimeError("timed out waiting for synthetic parent pivot")
+        return [{"worker": label}]
+
+    try:
+        publication.publish_synthetic_fixture_v2(
+            output,
+            authorization_digest=AUTHORIZATION_A,
+            expected_parent_binding=expected_parent_binding,
+            fixture_action=action,
+        )
+    except publication.RegularFilePublicationV2NotRunError:
+        status = "NOT_RUN"
+    except publication.RegularFilePublicationV2AmbiguousError:
+        status = "AMBIGUOUS"
+    except BaseException as error:
+        status = type(error).__name__
+    else:
+        status = "COMMITTED"
+    results.put((label, status, calls))
+
+
 class RegularFilePublicationV2Tests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(
@@ -51,6 +93,10 @@ class RegularFilePublicationV2Tests(unittest.TestCase):
         )
         self.root = Path(self.temporary.name).resolve()
         self.output = self.root / "artifact.commit.json"
+        self.parent_binding = publication.build_synthetic_parent_binding_v2(
+            self.output
+        )
+        self.parent_bindings = {self.root: self.parent_binding}
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -63,14 +109,52 @@ class RegularFilePublicationV2Tests(unittest.TestCase):
         fixture_action=None,
         pre_outcome_check=None,
         event_hook=None,
+        expected_parent_binding: object = _DEFAULT_PARENT_BINDING,
     ) -> dict[str, object]:
+        target = output or self.output
+        parent_binding = (
+            self._binding_for_output(target)
+            if expected_parent_binding is _DEFAULT_PARENT_BINDING
+            else expected_parent_binding
+        )
         action = fixture_action or (lambda: [{"candidate": "alpha", "score": 1}])
         return publication.publish_synthetic_fixture_v2(
-            output or self.output,
+            target,
             authorization_digest=authorization,
+            expected_parent_binding=parent_binding,
             fixture_action=action,
             _pre_outcome_check=pre_outcome_check,
             _event_hook=event_hook,
+        )
+
+    def _binding_for_output(self, output: object) -> dict[str, object]:
+        if isinstance(output, Path):
+            parent_path = output.parent
+            if parent_path not in self.parent_bindings:
+                # Test planning captures one binding per lexical parent.  Later
+                # replacement of that parent must keep using the first capture.
+                self.parent_bindings[parent_path] = (
+                    publication.build_synthetic_parent_binding_v2(output)
+                )
+            return self.parent_bindings[parent_path]
+        return self.parent_binding
+
+    def _inspect(
+        self,
+        output: object,
+        *,
+        authorization_digest: str | None = None,
+        expected_parent_binding: object = _DEFAULT_PARENT_BINDING,
+    ) -> dict[str, object]:
+        parent_binding = (
+            self._binding_for_output(output)
+            if expected_parent_binding is _DEFAULT_PARENT_BINDING
+            else expected_parent_binding
+        )
+        return publication.inspect_synthetic_publication_v2(
+            output,
+            authorization_digest=authorization_digest,
+            expected_parent_binding=parent_binding,
         )
 
     def _install_forged_committed_collective(
@@ -79,13 +163,20 @@ class RegularFilePublicationV2Tests(unittest.TestCase):
         record_frames: list[dict[str, object]],
         *,
         owner_nonce: str | None = None,
+        parent_binding: dict[str, object] | None = None,
         manifest_record_overrides: dict[str, object] | None = None,
         ready_overrides: dict[str, object] | None = None,
     ) -> None:
         layout = publication.RegularFileLayoutV2.from_output_path(output)
+        frozen_parent_binding = (
+            self._binding_for_output(output)
+            if parent_binding is None
+            else parent_binding
+        )
         attempt = publication._attempt_payload(
             layout,
             AUTHORIZATION_A,
+            frozen_parent_binding,
             (
                 owner_nonce
                 if owner_nonce is not None
@@ -192,6 +283,7 @@ from qmc_bmgs.experiments import countdown_thompson_regular_file_publication_v2 
 output = sys.argv[1]
 status = sys.argv[2]
 layout = publication.RegularFileLayoutV2.from_output_path(output)
+parent_binding = publication.build_synthetic_parent_binding_v2(output)
 target_name = {
     'NOT_RUN': layout.not_run_name,
     'INVALID': layout.invalid_name,
@@ -224,6 +316,7 @@ def action():
 publication.publish_synthetic_fixture_v2(
     output,
     authorization_digest='a' * 64,
+    expected_parent_binding=parent_binding,
     fixture_action=action,
     _pre_outcome_check=precheck,
     _event_hook=hook,
@@ -266,7 +359,7 @@ publication.publish_synthetic_fixture_v2(
         commit = json.loads(self.output.read_text(encoding="utf-8"))
         self.assertEqual(commit["phase"], "COMMITTED")
         self.assertEqual(commit["status"], "COMMITTED")
-        inspected = publication.inspect_synthetic_publication_v2(
+        inspected = self._inspect(
             self.output,
             authorization_digest=AUTHORIZATION_A,
         )
@@ -275,6 +368,159 @@ publication.publish_synthetic_fixture_v2(
             inspected["artifact_commit_digest"],
             result["artifact_commit_digest"],
         )
+
+    def test_parent_binding_is_external_and_hash_chained_through_authority(
+        self,
+    ) -> None:
+        self.assertEqual(
+            self.parent_binding,
+            publication.build_synthetic_parent_binding_v2(self.output),
+        )
+        self.assertEqual(
+            self.parent_binding["schema_version"],
+            publication.PARENT_BINDING_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            self.parent_binding["binding_scope"],
+            publication.PARENT_BINDING_SCOPE,
+        )
+        binding_core = dict(self.parent_binding)
+        binding_digest = binding_core.pop("deterministic_digest")
+        self.assertEqual(publication.sha256_json(binding_core), binding_digest)
+
+        published = self._publish()
+        layout = publication.RegularFileLayoutV2.from_output_path(self.output)
+        attempt = json.loads(
+            (self.root / layout.attempt_name).read_text(encoding="utf-8")
+        )
+        self.assertEqual(attempt["output_parent_binding"], self.parent_binding)
+        self.assertEqual(
+            attempt["output_parent_binding_digest"],
+            binding_digest,
+        )
+        for name in (
+            layout.started_name,
+            layout.ready_name,
+            layout.manifest_name,
+            layout.commit_name,
+        ):
+            payload = json.loads((self.root / name).read_text(encoding="utf-8"))
+            self.assertEqual(
+                payload["output_parent_binding_digest"],
+                binding_digest,
+            )
+        self.assertEqual(
+            published["output_parent_binding_digest"],
+            binding_digest,
+        )
+
+    def test_invalid_parent_bindings_are_not_run_before_parent_access(self) -> None:
+        digest_tamper = json.loads(publication.canonical_json(self.parent_binding))
+        digest_tamper["deterministic_digest"] = "0" * 64
+
+        bool_identity = json.loads(publication.canonical_json(self.parent_binding))
+        bool_identity["component_identities"][-1]["st_ino"] = True
+        bool_core = dict(bool_identity)
+        bool_core.pop("deterministic_digest")
+        bool_identity = publication._with_digest(bool_core)
+
+        path_core = dict(self.parent_binding)
+        path_core.pop("deterministic_digest")
+        path_core["output_parent_path"] = "/"
+        path_mismatch = publication._with_digest(path_core)
+
+        class StatefulBinding(dict):
+            def __iter__(self):
+                raise AssertionError("stateful binding iteration must not run")
+
+            def get(self, key, default=None):
+                raise AssertionError("stateful binding lookup must not run")
+
+        magic_calls: list[str] = []
+
+        class StatefulKey:
+            def __hash__(self) -> int:
+                magic_calls.append("hash")
+                return 7
+
+            def __eq__(self, other: object) -> bool:
+                magic_calls.append("eq")
+                return False
+
+        stateful_component_key = json.loads(
+            publication.canonical_json(self.parent_binding)
+        )
+        stateful_component_key["component_identities"][-1][StatefulKey()] = 0
+        magic_calls.clear()
+
+        candidates = (
+            None,
+            {},
+            digest_tamper,
+            bool_identity,
+            path_mismatch,
+            StatefulBinding(self.parent_binding),
+            stateful_component_key,
+        )
+        calls = 0
+
+        def action() -> list[dict[str, object]]:
+            nonlocal calls
+            calls += 1
+            return []
+
+        with mock.patch.object(
+            publication._PinnedParent,
+            "open",
+            side_effect=AssertionError("invalid binding must not access parent"),
+        ) as parent_open:
+            for candidate in candidates:
+                with self.subTest(candidate_type=type(candidate).__name__):
+                    with self.assertRaises(
+                        publication.RegularFilePublicationV2NotRunError
+                    ):
+                        self._publish(
+                            fixture_action=action,
+                            expected_parent_binding=candidate,
+                        )
+                    with self.assertRaises(
+                        publication.RegularFilePublicationV2NotRunError
+                    ):
+                        self._inspect(
+                            self.output,
+                            expected_parent_binding=candidate,
+                        )
+        parent_open.assert_not_called()
+        self.assertEqual(calls, 0)
+        self.assertEqual(magic_calls, [])
+
+    def test_persisted_self_reported_parent_binding_cannot_replace_external_one(
+        self,
+    ) -> None:
+        forged_binding = json.loads(
+            publication.canonical_json(self.parent_binding)
+        )
+        forged_binding["component_identities"][-1]["st_ino"] += 1
+        forged_core = dict(forged_binding)
+        forged_core.pop("deterministic_digest")
+        forged_binding = publication._with_digest(forged_core)
+        frame = {
+            "fixture_kind": publication.FIXTURE_KIND,
+            "payload": {"forged": True},
+            "record_index": 0,
+            "schema_version": publication.RECORD_SCHEMA_VERSION,
+        }
+        self._install_forged_committed_collective(
+            self.output,
+            [frame],
+            parent_binding=forged_binding,
+        )
+
+        with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
+            self._inspect(
+                self.output,
+                expected_parent_binding=self.parent_binding,
+            )
 
     def test_restrictive_umask_still_publishes_exact_0600_collective(self) -> None:
         previous_umask = os.umask(0o777)
@@ -285,7 +531,7 @@ publication.publish_synthetic_fixture_v2(
 
         self.assertEqual(result["status"], "COMMITTED")
         self.assertEqual(
-            publication.inspect_synthetic_publication_v2(self.output)["status"],
+            self._inspect(self.output)["status"],
             "COMMITTED",
         )
         self.assertTrue(list(self.root.iterdir()))
@@ -395,7 +641,7 @@ publication.publish_synthetic_fixture_v2(
                 with self.assertRaises(
                     publication.RegularFilePublicationV2NotRunError
                 ):
-                    publication.inspect_synthetic_publication_v2(raw)
+                    self._inspect(raw)
                 self.assertEqual(calls, 0)
                 self.assertEqual(list(self.root.iterdir()), [])
 
@@ -420,7 +666,7 @@ publication.publish_synthetic_fixture_v2(
                     fixture_action=action,
                 )
             with self.assertRaises(publication.RegularFilePublicationV2NotRunError):
-                publication.inspect_synthetic_publication_v2(raw)
+                self._inspect(raw)
         parent_open.assert_not_called()
         self.assertEqual(calls, 0)
         self.assertEqual(list(self.root.iterdir()), [])
@@ -433,6 +679,13 @@ publication.publish_synthetic_fixture_v2(
         self.assertEqual(
             os.fsencode(publication._snapshot_output_path(output)),
             encoded_parent + b"/artifact.json",
+        )
+        parent_path = publication._snapshot_output_path(output).parent
+        parent_binding = publication._with_digest(
+            publication._parent_binding_core(
+                parent_path,
+                [(0, 0)] * len(parent_path.parts),
+            )
         )
         calls = 0
 
@@ -448,10 +701,13 @@ publication.publish_synthetic_fixture_v2(
                 "synthetic filesystem refusal"
             ),
         ) as parent_open:
-            with self.assertRaises(publication.RegularFilePublicationV2NotRunError):
+            with self.assertRaises(
+                publication.RegularFilePublicationV2AmbiguousError
+            ):
                 publication.publish_synthetic_fixture_v2(
                     output,
                     authorization_digest=AUTHORIZATION_A,
+                    expected_parent_binding=parent_binding,
                     fixture_action=action,
                 )
         parent_open.assert_called_once()
@@ -492,7 +748,7 @@ publication.publish_synthetic_fixture_v2(
                 with self.assertRaises(
                     publication.RegularFilePublicationV2NotRunError
                 ) as inspected:
-                    publication.inspect_synthetic_publication_v2(AdversarialPath())
+                    self._inspect(AdversarialPath())
                 self.assertIs(
                     type(inspected.exception),
                     publication.RegularFilePublicationV2NotRunError,
@@ -554,7 +810,7 @@ publication.publish_synthetic_fixture_v2(
         self.assertEqual(list(self.root.iterdir()), [])
 
         with self.assertRaises(publication.RegularFilePublicationV2NotRunError):
-            publication.inspect_synthetic_publication_v2(
+            self._inspect(
                 self.root / "Ａrtifact.commit.json"
             )
 
@@ -608,51 +864,57 @@ publication.publish_synthetic_fixture_v2(
                 with self.assertRaises(
                     publication.RegularFilePublicationV2AmbiguousError
                 ):
-                    publication.inspect_synthetic_publication_v2(output)
+                    self._inspect(output)
 
     def test_any_superseded_entry_type_blocks_the_entire_parent(self) -> None:
         entry_kinds = ("regular", "directory", "symlink", "fifo", "socket")
-        for kind in entry_kinds:
-            with self.subTest(kind=kind):
-                case_root = self.root / kind
-                case_root.mkdir()
-                legacy = case_root / (
-                    f"{publication._LEGACY_INTERNAL_NAME_PREFIX}{kind}.garbage"
-                )
-                bound_socket: socket.socket | None = None
-                if kind == "regular":
-                    legacy.write_bytes(b"foreign")
-                elif kind == "directory":
-                    legacy.mkdir()
-                elif kind == "symlink":
-                    legacy.symlink_to("missing")
-                elif kind == "fifo":
-                    os.mkfifo(legacy)
-                else:
-                    bound_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                    bound_socket.bind(os.fspath(legacy))
-                calls = 0
+        legacy_prefixes = (
+            ".qmc-bmgs-v2-",
+            ".QMC-BMGS-V2R2-",
+        )
+        for revision, legacy_prefix in enumerate(legacy_prefixes):
+            for kind in entry_kinds:
+                with self.subTest(revision=revision, kind=kind):
+                    case_root = self.root / f"r{revision}-{kind}"
+                    case_root.mkdir()
+                    legacy = case_root / f"{legacy_prefix}{kind}.garbage"
+                    bound_socket: socket.socket | None = None
+                    if kind == "regular":
+                        legacy.write_bytes(b"foreign")
+                    elif kind == "directory":
+                        legacy.mkdir()
+                    elif kind == "symlink":
+                        legacy.symlink_to("missing")
+                    elif kind == "fifo":
+                        os.mkfifo(legacy)
+                    else:
+                        bound_socket = socket.socket(
+                            socket.AF_UNIX,
+                            socket.SOCK_STREAM,
+                        )
+                        bound_socket.bind(os.fspath(legacy))
+                    calls = 0
 
-                def action() -> list[dict[str, object]]:
-                    nonlocal calls
-                    calls += 1
-                    return []
+                    def action() -> list[dict[str, object]]:
+                        nonlocal calls
+                        calls += 1
+                        return []
 
-                try:
-                    output = case_root / "unrelated-output.json"
-                    with self.assertRaises(
-                        publication.RegularFilePublicationV2NotRunError
-                    ):
-                        self._publish(output=output, fixture_action=action)
-                    self.assertEqual(calls, 0)
-                    self.assertTrue(os.path.lexists(legacy))
-                    with self.assertRaises(
-                        publication.RegularFilePublicationV2AmbiguousError
-                    ):
-                        publication.inspect_synthetic_publication_v2(output)
-                finally:
-                    if bound_socket is not None:
-                        bound_socket.close()
+                    try:
+                        output = case_root / "unrelated-output.json"
+                        with self.assertRaises(
+                            publication.RegularFilePublicationV2NotRunError
+                        ):
+                            self._publish(output=output, fixture_action=action)
+                        self.assertEqual(calls, 0)
+                        self.assertTrue(os.path.lexists(legacy))
+                        with self.assertRaises(
+                            publication.RegularFilePublicationV2AmbiguousError
+                        ):
+                            self._inspect(output)
+                    finally:
+                        if bound_socket is not None:
+                            bound_socket.close()
 
     def test_new_revision_does_not_trigger_its_legacy_fence(self) -> None:
         first = self.root / "first.json"
@@ -660,11 +922,11 @@ publication.publish_synthetic_fixture_v2(
         self.assertEqual(self._publish(output=first)["status"], "COMMITTED")
         self.assertEqual(self._publish(output=second)["status"], "COMMITTED")
         self.assertEqual(
-            publication.inspect_synthetic_publication_v2(first)["status"],
+            self._inspect(first)["status"],
             "COMMITTED",
         )
         self.assertEqual(
-            publication.inspect_synthetic_publication_v2(second)["status"],
+            self._inspect(second)["status"],
             "COMMITTED",
         )
 
@@ -761,7 +1023,7 @@ publication.publish_synthetic_fixture_v2(
             with self.assertRaises(
                 publication.RegularFilePublicationV2AmbiguousError
             ):
-                publication.inspect_synthetic_publication_v2(self.output)
+                self._inspect(self.output)
         forward_sync.assert_not_called()
 
     def test_preexisting_output_is_preserved_before_attempt_or_action(self) -> None:
@@ -779,7 +1041,7 @@ publication.publish_synthetic_fixture_v2(
         self.assertEqual(self.output.read_bytes(), b"foreign-output")
         self.assertEqual(set(self.root.iterdir()), {self.output})
         with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
-            publication.inspect_synthetic_publication_v2(self.output)
+            self._inspect(self.output)
 
     def test_pre_outcome_failure_publishes_exact_not_run(self) -> None:
         calls = 0
@@ -795,7 +1057,7 @@ publication.publish_synthetic_fixture_v2(
         with self.assertRaises(publication.RegularFilePublicationV2NotRunError):
             self._publish(fixture_action=action, pre_outcome_check=precheck)
         self.assertEqual(calls, 0)
-        inspected = publication.inspect_synthetic_publication_v2(
+        inspected = self._inspect(
             self.output,
             authorization_digest=AUTHORIZATION_A,
         )
@@ -856,7 +1118,7 @@ publication.publish_synthetic_fixture_v2(
                 self.assertEqual(calls, 0)
                 self.assertEqual(list(self.root.iterdir()), [])
                 self.assertEqual(
-                    publication.inspect_synthetic_publication_v2(self.output)[
+                    self._inspect(self.output)[
                         "status"
                     ],
                     "UNRESERVED",
@@ -876,7 +1138,7 @@ publication.publish_synthetic_fixture_v2(
                 owner_nonce="A" * (2 * publication._OWNER_NONCE_BYTES),
             )
         with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
-            publication.inspect_synthetic_publication_v2(self.output)
+            self._inspect(self.output)
 
     def test_started_payload_failure_terminalizes_not_run(self) -> None:
         original_phase_payload = publication._phase_payload
@@ -907,7 +1169,7 @@ publication.publish_synthetic_fixture_v2(
                 self._publish(fixture_action=action)
         self.assertEqual(calls, 0)
         self.assertEqual(
-            publication.inspect_synthetic_publication_v2(self.output)["status"],
+            self._inspect(self.output)["status"],
             "NOT_RUN",
         )
 
@@ -917,7 +1179,7 @@ publication.publish_synthetic_fixture_v2(
 
         with self.assertRaises(publication.RegularFilePublicationV2InvalidError):
             self._publish(fixture_action=action)
-        inspected = publication.inspect_synthetic_publication_v2(
+        inspected = self._inspect(
             self.output,
             authorization_digest=AUTHORIZATION_A,
         )
@@ -933,7 +1195,7 @@ publication.publish_synthetic_fixture_v2(
         with self.assertRaises(publication.RegularFilePublicationV2InvalidError):
             self._publish(fixture_action=action)
         self.assertEqual(
-            publication.inspect_synthetic_publication_v2(self.output)["status"],
+            self._inspect(self.output)["status"],
             "INVALID",
         )
 
@@ -950,7 +1212,7 @@ publication.publish_synthetic_fixture_v2(
         with self.assertRaises(publication.RegularFilePublicationV2InvalidError):
             self._publish(event_hook=hook)
         self.assertEqual(
-            publication.inspect_synthetic_publication_v2(self.output)["status"],
+            self._inspect(self.output)["status"],
             "INVALID",
         )
 
@@ -968,7 +1230,7 @@ publication.publish_synthetic_fixture_v2(
             self._publish(event_hook=hook)
         self.assertFalse(self.output.exists())
         self.assertEqual(
-            publication.inspect_synthetic_publication_v2(self.output)["status"],
+            self._inspect(self.output)["status"],
             "INVALID",
         )
 
@@ -990,7 +1252,7 @@ publication.publish_synthetic_fixture_v2(
             )
         self.assertEqual(hook_calls, 2)
         self.assertEqual(
-            publication.inspect_synthetic_publication_v2(self.output)["status"],
+            self._inspect(self.output)["status"],
             "NOT_RUN",
         )
 
@@ -1012,7 +1274,7 @@ publication.publish_synthetic_fixture_v2(
             )
         self.assertEqual(hook_calls, 2)
         self.assertEqual(
-            publication.inspect_synthetic_publication_v2(self.output)["status"],
+            self._inspect(self.output)["status"],
             "INVALID",
         )
 
@@ -1034,7 +1296,7 @@ publication.publish_synthetic_fixture_v2(
         self.assertEqual(result["status"], "COMMITTED")
         self.assertEqual(hook_calls, 2)
         self.assertEqual(
-            publication.inspect_synthetic_publication_v2(self.output)["status"],
+            self._inspect(self.output)["status"],
             "COMMITTED",
         )
 
@@ -1093,7 +1355,7 @@ publication.publish_synthetic_fixture_v2(
                         )
                     self.assertGreaterEqual(hook_calls, 2)
                     self.assertEqual(
-                        publication.inspect_synthetic_publication_v2(output)["status"],
+                        self._inspect(output)["status"],
                         status,
                     )
 
@@ -1143,7 +1405,7 @@ publication.publish_synthetic_fixture_v2(
                         self._publish(**kwargs)
                     self.assertTrue(mutated)
                     self.assertEqual(
-                        publication.inspect_synthetic_publication_v2(output)["status"],
+                        self._inspect(output)["status"],
                         status,
                     )
 
@@ -1195,7 +1457,7 @@ publication.publish_synthetic_fixture_v2(
                         self._publish(**kwargs)
                     self.assertEqual(observed_phases, [False, True])
                     self.assertEqual(
-                        publication.inspect_synthetic_publication_v2(output)["status"],
+                        self._inspect(output)["status"],
                         status,
                     )
 
@@ -1314,7 +1576,7 @@ publication.publish_synthetic_fixture_v2(
             0o644,
         )
         with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
-            publication.inspect_synthetic_publication_v2(self.output)
+            self._inspect(self.output)
 
     def test_post_file_fsync_same_bytes_generation_is_never_adopted(self) -> None:
         layout = publication.RegularFileLayoutV2.from_output_path(self.output)
@@ -1458,7 +1720,7 @@ publication.publish_synthetic_fixture_v2(
             result = self._publish()
         self.assertEqual(result["status"], "COMMITTED")
         self.assertEqual(
-            publication.inspect_synthetic_publication_v2(self.output)["status"],
+            self._inspect(self.output)["status"],
             "COMMITTED",
         )
 
@@ -1558,7 +1820,7 @@ publication.publish_synthetic_fixture_v2(
                 self._publish(event_hook=hook)
         self.assertGreaterEqual(target_writes, 2)
         self.assertEqual(
-            publication.inspect_synthetic_publication_v2(self.output)["status"],
+            self._inspect(self.output)["status"],
             "INVALID",
         )
 
@@ -1727,7 +1989,7 @@ publication.publish_synthetic_fixture_v2(
             b"foreign-records",
         )
         self.assertEqual(
-            publication.inspect_synthetic_publication_v2(self.output)["status"],
+            self._inspect(self.output)["status"],
             "INVALID",
         )
 
@@ -1763,7 +2025,7 @@ publication.publish_synthetic_fixture_v2(
             self._publish(event_hook=hook)
         self.assertFalse((self.root / layout.ready_name).exists())
         self.assertEqual(
-            publication.inspect_synthetic_publication_v2(self.output)["status"],
+            self._inspect(self.output)["status"],
             "INVALID",
         )
 
@@ -1780,7 +2042,7 @@ publication.publish_synthetic_fixture_v2(
             self._publish(event_hook=hook)
         self.assertFalse(self.output.exists())
         self.assertEqual(
-            publication.inspect_synthetic_publication_v2(self.output)["status"],
+            self._inspect(self.output)["status"],
             "INVALID",
         )
 
@@ -1830,7 +2092,7 @@ publication.publish_synthetic_fixture_v2(
         self.assertTrue(mutated)
         self.assertFalse((self.root / layout.started_name).exists())
         with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
-            publication.inspect_synthetic_publication_v2(self.output)
+            self._inspect(self.output)
 
     def test_invalid_terminal_mutate_then_raise_is_ambiguous(self) -> None:
         layout = publication.RegularFileLayoutV2.from_output_path(self.output)
@@ -1857,7 +2119,7 @@ publication.publish_synthetic_fixture_v2(
         self.assertTrue(mutated)
         self.assertFalse(self.output.exists())
         with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
-            publication.inspect_synthetic_publication_v2(self.output)
+            self._inspect(self.output)
 
     def test_committed_terminal_mutate_then_raise_is_ambiguous(self) -> None:
         layout = publication.RegularFileLayoutV2.from_output_path(self.output)
@@ -1881,7 +2143,7 @@ publication.publish_synthetic_fixture_v2(
         self.assertTrue(mutated)
         self.assertFalse((self.root / layout.invalid_name).exists())
         with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
-            publication.inspect_synthetic_publication_v2(self.output)
+            self._inspect(self.output)
 
     def test_committed_invalid_injection_is_ambiguous(self) -> None:
         layout = publication.RegularFileLayoutV2.from_output_path(self.output)
@@ -1912,7 +2174,7 @@ publication.publish_synthetic_fixture_v2(
         self.assertTrue(self.output.exists())
         self.assertEqual((self.root / layout.invalid_name).read_bytes(), b"foreign-invalid")
         with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
-            publication.inspect_synthetic_publication_v2(self.output)
+            self._inspect(self.output)
 
     def test_not_run_started_injection_is_ambiguous(self) -> None:
         layout = publication.RegularFileLayoutV2.from_output_path(self.output)
@@ -1944,7 +2206,7 @@ publication.publish_synthetic_fixture_v2(
             )
         self.assertEqual((self.root / layout.started_name).read_bytes(), b"foreign-started")
         with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
-            publication.inspect_synthetic_publication_v2(self.output)
+            self._inspect(self.output)
 
     def test_hardlink_added_before_started_prevents_outcome(self) -> None:
         layout = publication.RegularFileLayoutV2.from_output_path(self.output)
@@ -2033,7 +2295,7 @@ publication.publish_synthetic_fixture_v2(
             self.assertEqual(frame["record_index"], 0)
             self.assertEqual(frame["payload"], {"nested": ["frozen"]})
             self.assertEqual(
-                publication.inspect_synthetic_publication_v2(self.output)["status"],
+                self._inspect(self.output)["status"],
                 "COMMITTED",
             )
 
@@ -2056,11 +2318,56 @@ publication.publish_synthetic_fixture_v2(
                             fixture_action=lambda records=records: records,
                         )
                     self.assertEqual(
-                        publication.inspect_synthetic_publication_v2(output)[
+                        self._inspect(output)[
                             "status"
                         ],
                         "INVALID",
                     )
+
+    def test_record_byte_cap_stops_before_serializing_later_records(self) -> None:
+        records = [
+            {"record": "first"},
+            {"record": "crosses-cap"},
+            {"record": "must-not-be-serialized"},
+        ]
+
+        def frame_size(candidate: dict[str, object], index: int) -> int:
+            payload = publication.strict_json_loads(
+                publication.canonical_json(candidate)
+            )
+            return len(
+                publication._canonical_bytes(
+                    {
+                        "fixture_kind": publication.FIXTURE_KIND,
+                        "payload": payload,
+                        "record_index": index,
+                        "schema_version": publication.RECORD_SCHEMA_VERSION,
+                    }
+                )
+            )
+
+        byte_cap = frame_size(records[0], 0) + frame_size(records[1], 1) - 1
+        original_canonical_json = publication.canonical_json
+        serialized_raw_records: list[int] = []
+
+        def observing_canonical_json(value: object) -> str:
+            for index, candidate in enumerate(records):
+                if value is candidate:
+                    serialized_raw_records.append(index)
+            return original_canonical_json(value)
+
+        with (
+            mock.patch.object(publication, "_MAX_RECORDS_BYTES", byte_cap),
+            mock.patch.object(
+                publication,
+                "canonical_json",
+                side_effect=observing_canonical_json,
+            ),
+        ):
+            with self.assertRaises(publication.RegularFilePublicationV2Error):
+                publication._freeze_synthetic_records(records)
+
+        self.assertEqual(serialized_raw_records, [0, 1])
 
     def test_fixture_collection_subclasses_are_rejected_without_magic(self) -> None:
         magic_calls: list[str] = []
@@ -2108,7 +2415,7 @@ publication.publish_synthetic_fixture_v2(
                         fixture_action=lambda records=records: records,
                     )
                 self.assertEqual(
-                    publication.inspect_synthetic_publication_v2(output)["status"],
+                    self._inspect(output)["status"],
                     "INVALID",
                 )
         self.assertEqual(magic_calls, [])
@@ -2130,7 +2437,7 @@ publication.publish_synthetic_fixture_v2(
             publication._MAX_RECORDS_BYTES,
         )
         with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
-            publication.inspect_synthetic_publication_v2(self.output)
+            self._inspect(self.output)
 
     def test_inspector_rejects_records_outside_exact_producer_schema(self) -> None:
         cases = {
@@ -2153,7 +2460,7 @@ publication.publish_synthetic_fixture_v2(
                 with self.assertRaises(
                     publication.RegularFilePublicationV2AmbiguousError
                 ):
-                    publication.inspect_synthetic_publication_v2(output)
+                    self._inspect(output)
 
     def test_inspector_types_nonfinite_control_and_record_json_as_ambiguous(
         self,
@@ -2168,7 +2475,7 @@ publication.publish_synthetic_fixture_v2(
         control_path.write_bytes(b'{"x":1e999}\n')
         control_path.chmod(0o600)
         with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
-            publication.inspect_synthetic_publication_v2(control_output)
+            self._inspect(control_output)
 
         records_root = self.root / "records"
         records_root.mkdir()
@@ -2183,7 +2490,7 @@ publication.publish_synthetic_fixture_v2(
         records_path = records_root / records_layout.records_name
         records_path.write_bytes(b'{"x":1e999}\n')
         with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
-            publication.inspect_synthetic_publication_v2(records_output)
+            self._inspect(records_output)
 
     def test_inspector_rejects_non_integer_record_metadata(self) -> None:
         frame = {
@@ -2220,7 +2527,7 @@ publication.publish_synthetic_fixture_v2(
                 with self.assertRaises(
                     publication.RegularFilePublicationV2AmbiguousError
                 ):
-                    publication.inspect_synthetic_publication_v2(output)
+                    self._inspect(output)
 
     def test_same_inode_overwrite_during_commit_proof_is_ambiguous(self) -> None:
         layout = publication.RegularFileLayoutV2.from_output_path(self.output)
@@ -2249,7 +2556,7 @@ publication.publish_synthetic_fixture_v2(
         self.assertTrue(mutated)
         self.assertTrue(self.output.exists())
         with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
-            publication.inspect_synthetic_publication_v2(self.output)
+            self._inspect(self.output)
 
     def test_ready_backed_invalid_reproves_records_and_manifest(self) -> None:
         layout = publication.RegularFileLayoutV2.from_output_path(self.output)
@@ -2312,9 +2619,19 @@ publication.publish_synthetic_fixture_v2(
         original_inspect_once = publication._inspect_once
         calls = 0
 
-        def replacing_inspect_once(parent, observed_layout, authorization):
+        def replacing_inspect_once(
+            parent,
+            observed_layout,
+            authorization,
+            expected_parent_binding,
+        ):
             nonlocal calls
-            result = original_inspect_once(parent, observed_layout, authorization)
+            result = original_inspect_once(
+                parent,
+                observed_layout,
+                authorization,
+                expected_parent_binding,
+            )
             calls += 1
             if calls == 1:
                 path = self.root / layout.attempt_name
@@ -2338,7 +2655,7 @@ publication.publish_synthetic_fixture_v2(
             side_effect=replacing_inspect_once,
         ):
             with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
-                publication.inspect_synthetic_publication_v2(self.output)
+                self._inspect(self.output)
         self.assertEqual(calls, 2)
 
     def test_parent_path_pivot_after_attempt_is_ambiguous_before_outcome(self) -> None:
@@ -2366,6 +2683,108 @@ publication.publish_synthetic_fixture_v2(
                 original_parent.rmdir()
             if moved_parent.exists():
                 os.rename(moved_parent, original_parent)
+
+    def test_replacement_parent_cannot_reexecute_reviewed_binding(self) -> None:
+        calls = 0
+        original_parent = self.root
+        moved_parent = self.root.with_name(f"{self.root.name}-orphaned")
+
+        def action() -> list[dict[str, object]]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                os.rename(original_parent, moved_parent)
+                original_parent.mkdir()
+            return [{"call": calls}]
+
+        try:
+            with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
+                self._publish(fixture_action=action)
+            self.assertEqual(calls, 1)
+
+            with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
+                self._publish(
+                    fixture_action=action,
+                    expected_parent_binding=self.parent_binding,
+                )
+            self.assertEqual(calls, 1)
+            with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
+                self._inspect(
+                    self.output,
+                    expected_parent_binding=self.parent_binding,
+                )
+        finally:
+            if original_parent.exists():
+                shutil.rmtree(original_parent)
+            if moved_parent.exists():
+                os.rename(moved_parent, original_parent)
+
+        with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
+            self._inspect(
+                self.output,
+                expected_parent_binding=self.parent_binding,
+            )
+
+    def test_recaptured_replacement_binding_is_a_production_blocker(self) -> None:
+        calls = 0
+        original_parent = self.root
+        moved_parent = self.root.with_name(f"{self.root.name}-orphaned")
+
+        def action() -> list[dict[str, object]]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                os.rename(original_parent, moved_parent)
+                original_parent.mkdir()
+            return [{"call": calls}]
+
+        try:
+            with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
+                self._publish(
+                    fixture_action=action,
+                    expected_parent_binding=self.parent_binding,
+                )
+            replacement_binding = publication.build_synthetic_parent_binding_v2(
+                self.output
+            )
+            self.assertNotEqual(replacement_binding, self.parent_binding)
+            self.assertEqual(
+                self._publish(
+                    fixture_action=action,
+                    expected_parent_binding=replacement_binding,
+                )["status"],
+                "COMMITTED",
+            )
+            self.assertEqual(calls, 2)
+        finally:
+            if original_parent.exists():
+                shutil.rmtree(original_parent)
+            if moved_parent.exists():
+                os.rename(moved_parent, original_parent)
+
+    def test_original_parent_terminal_is_recoverable_after_restore(self) -> None:
+        self.assertEqual(self._publish()["status"], "COMMITTED")
+        original_parent = self.root
+        moved_parent = self.root.with_name(f"{self.root.name}-orphaned")
+        os.rename(original_parent, moved_parent)
+        original_parent.mkdir()
+        try:
+            with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
+                self._inspect(
+                    self.output,
+                    expected_parent_binding=self.parent_binding,
+                )
+        finally:
+            shutil.rmtree(original_parent)
+            os.rename(moved_parent, original_parent)
+
+        self.assertEqual(
+            self._inspect(
+                self.output,
+                expected_parent_binding=self.parent_binding,
+            )["status"],
+            "COMMITTED",
+        )
 
     def test_symlinked_parent_is_refused_before_action(self) -> None:
         real_parent = self.root / "real"
@@ -2454,10 +2873,10 @@ publication.publish_synthetic_fixture_v2(
             with self.assertRaises(
                 publication.RegularFilePublicationV2AmbiguousError
             ):
-                publication.inspect_synthetic_publication_v2(self.output)
+                self._inspect(self.output)
         self.assertTrue(failed)
         self.assertEqual(
-            publication.inspect_synthetic_publication_v2(self.output)["status"],
+            self._inspect(self.output)["status"],
             "COMMITTED",
         )
 
@@ -2493,6 +2912,7 @@ publication.publish_synthetic_fixture_v2(
                 case_root = self.root / arm_event
                 case_root.mkdir()
                 output = case_root / "artifact.json"
+                case_binding = publication.build_synthetic_parent_binding_v2(output)
                 original_parent_open = publication._PinnedParent.open
                 original_fstat = publication.os.fstat
                 pinned_parents: list[publication._PinnedParent] = []
@@ -2548,6 +2968,7 @@ publication.publish_synthetic_fixture_v2(
                     with self.assertRaises(publish_error):
                         self._publish(
                             output=output,
+                            expected_parent_binding=case_binding,
                             fixture_action=action,
                             event_hook=hook,
                         )
@@ -2557,10 +2978,16 @@ publication.publish_synthetic_fixture_v2(
                     with self.assertRaises(
                         publication.RegularFilePublicationV2AmbiguousError
                     ):
-                        publication.inspect_synthetic_publication_v2(output)
+                        self._inspect(
+                            output,
+                            expected_parent_binding=case_binding,
+                        )
                 else:
                     self.assertEqual(
-                        publication.inspect_synthetic_publication_v2(output)[
+                        self._inspect(
+                            output,
+                            expected_parent_binding=case_binding,
+                        )[
                             "status"
                         ],
                         restart_status,
@@ -2613,7 +3040,7 @@ publication.publish_synthetic_fixture_v2(
                     with self.assertRaises(
                         publication.RegularFilePublicationV2AmbiguousError
                     ):
-                        publication.inspect_synthetic_publication_v2(output)
+                        self._inspect(output)
 
                 terminal_syncs = 0
 
@@ -2629,7 +3056,7 @@ publication.publish_synthetic_fixture_v2(
                     "fsync",
                     side_effect=recording_fsync,
                 ):
-                    inspected = publication.inspect_synthetic_publication_v2(output)
+                    inspected = self._inspect(output)
                 self.assertEqual(inspected["status"], status)
                 self.assertGreaterEqual(terminal_syncs, 2)
 
@@ -2653,7 +3080,7 @@ publication.publish_synthetic_fixture_v2(
         code = """
 import os
 import sys
-from qmc_bmgs.experiments.countdown_thompson_regular_file_publication_v2 import publish_synthetic_fixture_v2
+from qmc_bmgs.experiments.countdown_thompson_regular_file_publication_v2 import build_synthetic_parent_binding_v2, publish_synthetic_fixture_v2
 
 def hook(event, context):
     if event == 'after_started':
@@ -2662,6 +3089,7 @@ def hook(event, context):
 publish_synthetic_fixture_v2(
     sys.argv[1],
     authorization_digest='a' * 64,
+    expected_parent_binding=build_synthetic_parent_binding_v2(sys.argv[1]),
     fixture_action=lambda: [{'must_not': 'return'}],
     _event_hook=hook,
 )
@@ -2693,13 +3121,13 @@ publish_synthetic_fixture_v2(
         self.assertEqual(calls, 0)
         self.assertFalse(first_output.exists())
         with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
-            publication.inspect_synthetic_publication_v2(first_output)
+            self._inspect(first_output)
 
     def test_crash_after_started_spends_authorization_without_reexecution(self) -> None:
         code = """
 import os
 import sys
-from qmc_bmgs.experiments.countdown_thompson_regular_file_publication_v2 import publish_synthetic_fixture_v2
+from qmc_bmgs.experiments.countdown_thompson_regular_file_publication_v2 import build_synthetic_parent_binding_v2, publish_synthetic_fixture_v2
 
 def hook(event, context):
     if event == 'after_started':
@@ -2708,6 +3136,7 @@ def hook(event, context):
 publish_synthetic_fixture_v2(
     sys.argv[1],
     authorization_digest='a' * 64,
+    expected_parent_binding=build_synthetic_parent_binding_v2(sys.argv[1]),
     fixture_action=lambda: [{'must_not': 'return'}],
     _event_hook=hook,
 )
@@ -2723,7 +3152,7 @@ publish_synthetic_fixture_v2(
         )
         self.assertEqual(completed.returncode, 17)
         with self.assertRaises(publication.RegularFilePublicationV2AmbiguousError):
-            publication.inspect_synthetic_publication_v2(self.output)
+            self._inspect(self.output)
         calls = 0
 
         def action() -> list[dict[str, object]]:
@@ -2739,6 +3168,79 @@ publish_synthetic_fixture_v2(
         self.assertEqual(calls, 0)
 
     @unittest.skipUnless(os.name == "posix", "requires POSIX fork semantics")
+    def test_two_processes_across_parent_replacement_invoke_callback_at_most_once(
+        self,
+    ) -> None:
+        context = multiprocessing.get_context("fork")
+        action_entered = context.Event()
+        resume_action = context.Event()
+        results = context.Queue()
+        original_parent = self.root
+        moved_parent = self.root.with_name(f"{self.root.name}-orphaned")
+        first = context.Process(
+            target=_bound_parent_worker,
+            args=(
+                os.fspath(self.output),
+                self.parent_binding,
+                "first",
+                True,
+                action_entered,
+                resume_action,
+                results,
+            ),
+        )
+        second: multiprocessing.Process | None = None
+        try:
+            first.start()
+            self.assertTrue(action_entered.wait(10))
+            os.rename(original_parent, moved_parent)
+            original_parent.mkdir()
+            second = context.Process(
+                target=_bound_parent_worker,
+                args=(
+                    os.fspath(self.output),
+                    self.parent_binding,
+                    "second",
+                    False,
+                    action_entered,
+                    resume_action,
+                    results,
+                ),
+            )
+            second.start()
+            second.join(15)
+            self.assertFalse(second.is_alive())
+            self.assertEqual(second.exitcode, 0)
+            resume_action.set()
+            first.join(15)
+            self.assertFalse(first.is_alive())
+            self.assertEqual(first.exitcode, 0)
+            observed = {
+                label: (status, calls)
+                for label, status, calls in (
+                    results.get(timeout=2),
+                    results.get(timeout=2),
+                )
+            }
+            self.assertEqual(
+                observed,
+                {
+                    "first": ("AMBIGUOUS", 1),
+                    "second": ("AMBIGUOUS", 0),
+                },
+            )
+        finally:
+            resume_action.set()
+            for process in (first, second):
+                if process is not None and process.is_alive():
+                    process.terminate()
+                    process.join(5)
+            if original_parent.exists():
+                shutil.rmtree(original_parent)
+            if moved_parent.exists():
+                os.rename(moved_parent, original_parent)
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX fork semantics")
     def test_two_processes_have_one_reservation_winner(self) -> None:
         context = multiprocessing.get_context("fork")
         gate = context.Event()
@@ -2746,7 +3248,13 @@ publish_synthetic_fixture_v2(
         processes = [
             context.Process(
                 target=_race_worker,
-                args=(os.fspath(self.output), authorization, gate, results),
+                args=(
+                    os.fspath(self.output),
+                    authorization,
+                    self.parent_binding,
+                    gate,
+                    results,
+                ),
             )
             for authorization in (AUTHORIZATION_A, AUTHORIZATION_B)
         ]
@@ -2760,7 +3268,7 @@ publish_synthetic_fixture_v2(
         statuses = sorted(results.get(timeout=2) for _ in processes)
         self.assertEqual(statuses, ["COMMITTED", "NOT_RUN"])
         self.assertEqual(
-            publication.inspect_synthetic_publication_v2(self.output)["status"],
+            self._inspect(self.output)["status"],
             "COMMITTED",
         )
 

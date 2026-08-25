@@ -1,9 +1,10 @@
-"""Synthetic-only regular-file publication substrate for the Thompson diagnostic.
+"""Regular-file publication substrate for the Thompson diagnostic.
 
-This module exercises publication mechanics only.  It cannot open the sealed
-diagnostic bundle, execute a diagnostic cell, or authorize a production run.
-The production diagnostic runner remains fail-closed until a later integration
-binds a separately reviewed authorization and analyzer to this layout.
+This module never opens the sealed diagnostic bundle or grants execution
+authority.  It provides a synthetic mechanics surface and a distinct production
+collective surface whose callback may be entered only after exact durable
+STARTED authority.  The diagnostic runner remains responsible for loading one
+separately reviewed authorization before calling the production surface.
 
 The v2 ownership event is a successful descriptor-relative
 ``open(O_CREAT | O_EXCL)`` of a regular file at its final name.  No authority
@@ -39,6 +40,21 @@ PHASE_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-phase/v2r3"
 RECORD_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-record/v2r3"
 MANIFEST_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-manifest/v2r3"
 COMMIT_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-synthetic-commit/v2r3"
+DIAGNOSTIC_ARTIFACT_KIND = "countdown_thompson_diagnostic_run_v2r3"
+DIAGNOSTIC_ATTEMPT_SCHEMA_VERSION = (
+    "qmc-bmgs-countdown-thompson-diagnostic-attempt/v2r3"
+)
+DIAGNOSTIC_PHASE_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-diagnostic-phase/v2r3"
+DIAGNOSTIC_RECORD_FRAME_SCHEMA_VERSION = (
+    "qmc-bmgs-countdown-thompson-diagnostic-record-frame/v2r3"
+)
+DIAGNOSTIC_MANIFEST_SCHEMA_VERSION = (
+    "qmc-bmgs-countdown-thompson-diagnostic-collective-manifest/v2r3"
+)
+DIAGNOSTIC_COMMIT_SCHEMA_VERSION = (
+    "qmc-bmgs-countdown-thompson-diagnostic-collective-commit/v2r3"
+)
+DIAGNOSTIC_EXPECTED_RECORD_COUNT = 240
 PARENT_BINDING_SCHEMA_VERSION = "qmc-bmgs-posix-output-parent-binding/v1"
 PARENT_BINDING_SCOPE = "same_host_same_filesystem_identity_epoch"
 
@@ -53,13 +69,15 @@ _LEGACY_INTERNAL_NAME_PREFIX = _LEGACY_INTERNAL_NAME_PREFIXES[0]
 _MAX_CONTROL_BYTES = 1 << 20
 _MAX_RECORDS_BYTES = 16 << 20
 _MAX_SYNTHETIC_RECORDS = 10_000
+_MAX_DIAGNOSTIC_CONTROL_BYTES = 8 << 20
+_MAX_DIAGNOSTIC_RECORDS_BYTES = 256 << 20
 _READ_CHUNK_BYTES = 1 << 16
 _OWNER_NONCE_BYTES = 32
 _MAX_PARENT_IDENTITY_BITS = 256
 
 
 class RegularFilePublicationV2Error(RuntimeError):
-    """Base error for the synthetic v2 publication substrate."""
+    """Base error for the v2 regular-file publication substrate."""
 
 
 class RegularFilePublicationV2NotRunError(RegularFilePublicationV2Error):
@@ -67,7 +85,7 @@ class RegularFilePublicationV2NotRunError(RegularFilePublicationV2Error):
 
 
 class RegularFilePublicationV2InvalidError(RegularFilePublicationV2Error):
-    """The synthetic outcome boundary was crossed without a commit."""
+    """The outcome boundary was crossed without a commit."""
 
 
 class RegularFilePublicationV2AmbiguousError(RegularFilePublicationV2Error):
@@ -106,7 +124,7 @@ class _CreateAfterOpenError(RegularFilePublicationV2Error):
 
 
 class _FixtureOutcomeError(RegularFilePublicationV2Error):
-    """A caller-controlled synthetic outcome callback or payload failed."""
+    """A caller-controlled outcome callback or payload failed."""
 
 
 class _EventHookError(RegularFilePublicationV2Error):
@@ -119,6 +137,105 @@ _FixtureAction = Callable[[], _FixtureRecords]
 _PreOutcomeCheck = Callable[[], None]
 
 
+@dataclass(frozen=True)
+class DiagnosticPublicationContextV2:
+    """Immutable authority fields exposed to one post-STARTED runner action."""
+
+    artifact_id: str
+    artifact_layout: str
+    attempt_receipt_digest: str
+    authorization_digest: str
+    output_parent_binding_digest: str
+    output_path: str
+    output_path_digest: str
+    owner_nonce: str
+    publication_backend: str
+    started_receipt_digest: str
+
+
+@dataclass(frozen=True)
+class DiagnosticPublicationBatchV2:
+    """One caller result to snapshot after the diagnostic STARTED boundary."""
+
+    records: object
+    run_manifest: object
+
+
+_CollectiveGenerationV2 = tuple[
+    tuple[int, ...],
+    tuple[tuple[str, tuple[int, ...] | None], ...],
+]
+
+
+@dataclass(frozen=True)
+class VerifiedDiagnosticPublicationV2:
+    """Immutable-byte view of one independently verified COMMITTED collective."""
+
+    output_path: Path
+    authorization_digest: str
+    output_parent_binding_digest: str
+    artifact_commit_digest: str
+    collective_manifest_digest: str
+    run_manifest_digest: str
+    collective_generation: _CollectiveGenerationV2
+    _records_raw: bytes = field(repr=False)
+    _payload_records_raw: bytes = field(repr=False)
+    _run_manifest_raw: bytes = field(repr=False)
+    _collective_manifest_raw: bytes = field(repr=False)
+    _commit_raw: bytes = field(repr=False)
+
+    @property
+    def record_frames(self) -> tuple[dict[str, Any], ...]:
+        frames: list[dict[str, Any]] = []
+        for line in self._records_raw.splitlines(keepends=True):
+            parsed = strict_json_loads(line[:-1].decode("utf-8"))
+            if type(parsed) is not dict:
+                raise RegularFilePublicationV2AmbiguousError(
+                    "verified record snapshot is not an object"
+                )
+            frames.append(parsed)
+        return tuple(frames)
+
+    @property
+    def records(self) -> tuple[dict[str, Any], ...]:
+        return tuple(frame["payload"] for frame in self.record_frames)
+
+    @property
+    def records_jsonl_bytes(self) -> bytes:
+        return self._records_raw
+
+    @property
+    def payload_records_jsonl_bytes(self) -> bytes:
+        return self._payload_records_raw
+
+    @property
+    def run_manifest(self) -> dict[str, Any]:
+        return _parse_verified_object_snapshot(
+            self._run_manifest_raw,
+            "verified run manifest",
+        )
+
+    @property
+    def collective_manifest(self) -> dict[str, Any]:
+        return _parse_verified_object_snapshot(
+            self._collective_manifest_raw,
+            "verified collective manifest",
+        )
+
+    @property
+    def commit_receipt(self) -> dict[str, Any]:
+        return _parse_verified_object_snapshot(
+            self._commit_raw,
+            "verified commit receipt",
+        )
+
+
+_DiagnosticAction = Callable[
+    [DiagnosticPublicationContextV2],
+    DiagnosticPublicationBatchV2,
+]
+
+
 def _emit(
     hook: _EventHook | None,
     event: str,
@@ -128,7 +245,9 @@ def _emit(
         try:
             hook(event, context)
         except BaseException as error:
-            raise _EventHookError(f"synthetic event hook failed at {event}") from error
+            raise _EventHookError(
+                f"publication event hook failed at {event}"
+            ) from error
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -137,6 +256,20 @@ def _sha256_bytes(payload: bytes) -> str:
 
 def _canonical_bytes(payload: Mapping[str, Any]) -> bytes:
     return (canonical_json(payload) + "\n").encode("utf-8")
+
+
+def _parse_verified_object_snapshot(raw: bytes, label: str) -> dict[str, Any]:
+    try:
+        parsed = strict_json_loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, TraceValidationError) as error:
+        raise RegularFilePublicationV2AmbiguousError(
+            f"{label} is no longer strict JSON"
+        ) from error
+    if type(parsed) is not dict or _canonical_bytes(parsed) != raw:
+        raise RegularFilePublicationV2AmbiguousError(
+            f"{label} is no longer one canonical object"
+        )
+    return parsed
 
 
 def _with_digest(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -155,9 +288,7 @@ def _require_sha256(value: object, label: str) -> str:
         or len(value) != 64
         or any(character not in "0123456789abcdef" for character in value)
     ):
-        raise RegularFilePublicationV2NotRunError(
-            f"{label} must be lowercase SHA-256"
-        )
+        raise RegularFilePublicationV2NotRunError(f"{label} must be lowercase SHA-256")
     return value
 
 
@@ -572,9 +703,7 @@ class _PinnedParent:
                     if self.expected_component_identities is not None
                     else RegularFilePublicationV2AmbiguousError
                 )
-                raise error_type(
-                    "lexical output parent path pivoted"
-                )
+                raise error_type("lexical output parent path pivoted")
         finally:
             _close_best_effort(observed_fd)
 
@@ -679,6 +808,44 @@ def preflight_reviewed_parent_binding_v2(
         parent.close()
 
 
+def revalidate_reviewed_parent_binding_v2(
+    output_path: Path | str,
+    expected_parent_binding: object,
+) -> dict[str, Any]:
+    """Revalidate one reviewed parent after publication ownership exists.
+
+    Unlike :func:`preflight_reviewed_parent_binding_v2`, this callback-time
+    check deliberately does not require the v2r3 reserved namespace to be
+    empty: the publisher already owns ATTEMPT and may already own STARTED.
+    It grants no authority over those names.  The publisher must retain and
+    reprove their exact descriptors and collective state around this check.
+    """
+
+    _require_posix_capabilities()
+    layout = RegularFileLayoutV2.from_output_path(output_path)
+    parent_binding = _freeze_expected_parent_binding(
+        expected_parent_binding,
+        layout.output_path.parent,
+    )
+    parent = _open_bound_parent(layout.output_path.parent, parent_binding)
+    try:
+        _validate_layout_against_parent(parent, layout)
+        _assert_no_legacy_namespace(parent)
+        before_parent = _parent_generation(parent)
+        parent.fsync()
+        parent.assert_path()
+        _assert_no_legacy_namespace(parent)
+        after_parent = _parent_generation(parent)
+        parent.assert_path()
+        if before_parent != after_parent:
+            raise RegularFilePublicationV2AmbiguousError(
+                "output parent changed during reviewed-binding revalidation"
+            )
+        return parent_binding
+    finally:
+        parent.close()
+
+
 def _open_bound_parent(
     parent_path: Path,
     expected_parent_binding: Mapping[str, Any],
@@ -768,14 +935,15 @@ def _assert_owned_exact(parent: _PinnedParent, owned: _OwnedRegularFile) -> None
             raise RegularFilePublicationV2AmbiguousError(
                 f"{owned.name} descriptor/name identity changed"
             )
-        if _read_exact_pread(
-            owned.descriptor,
-            len(owned.expected),
-            label=owned.name,
-        ) != owned.expected:
-            raise RegularFilePublicationV2AmbiguousError(
-                f"{owned.name} bytes changed"
+        if (
+            _read_exact_pread(
+                owned.descriptor,
+                len(owned.expected),
+                label=owned.name,
             )
+            != owned.expected
+        ):
+            raise RegularFilePublicationV2AmbiguousError(f"{owned.name} bytes changed")
         after_descriptor = os.fstat(owned.descriptor)
         after_path = os.stat(
             owned.name,
@@ -1087,8 +1255,7 @@ def _assert_no_legacy_namespace(parent: _PinnedParent) -> None:
         )
     if any(
         any(
-            name.lower().startswith(prefix)
-            for prefix in _LEGACY_INTERNAL_NAME_PREFIXES
+            name.lower().startswith(prefix) for prefix in _LEGACY_INTERNAL_NAME_PREFIXES
         )
         for name in entries
     ):
@@ -1152,9 +1319,7 @@ def _validate_layout_against_parent(
             "output parent NAME_MAX is unavailable"
         ) from error
     if type(name_max) is not int or name_max <= 0:
-        raise RegularFilePublicationV2NotRunError(
-            "output parent NAME_MAX is invalid"
-        )
+        raise RegularFilePublicationV2NotRunError("output parent NAME_MAX is invalid")
     for name in layout.reserved_names:
         if len(os.fsencode(name)) > name_max:
             raise RegularFilePublicationV2NotRunError(
@@ -1288,9 +1453,7 @@ def _manifest_payload(
             "attempt_receipt_digest": attempt["deterministic_digest"],
             "authorization_digest": attempt["authorization_digest"],
             "fixture_kind": FIXTURE_KIND,
-            "output_parent_binding_digest": attempt[
-                "output_parent_binding_digest"
-            ],
+            "output_parent_binding_digest": attempt["output_parent_binding_digest"],
             "output_path": os.fspath(layout.output_path),
             "output_path_digest": layout.output_path_digest,
             "owner_nonce": attempt["owner_nonce"],
@@ -1329,9 +1492,7 @@ def _commit_payload(
                 "sha256": _sha256_bytes(_canonical_bytes(manifest)),
             },
             "output_path": os.fspath(layout.output_path),
-            "output_parent_binding_digest": attempt[
-                "output_parent_binding_digest"
-            ],
+            "output_parent_binding_digest": attempt["output_parent_binding_digest"],
             "output_path_digest": layout.output_path_digest,
             "owner_nonce": attempt["owner_nonce"],
             "phase": "COMMITTED",
@@ -1350,11 +1511,280 @@ def _commit_payload(
     )
 
 
+def _diagnostic_attempt_payload(
+    layout: RegularFileLayoutV2,
+    authorization_digest: str,
+    expected_parent_binding: Mapping[str, Any],
+    owner_nonce: object,
+) -> dict[str, Any]:
+    if not _is_owner_nonce(owner_nonce):
+        raise RegularFilePublicationV2Error(
+            "owner nonce must be exact lowercase hexadecimal"
+        )
+    return _with_digest(
+        {
+            "artifact_kind": DIAGNOSTIC_ARTIFACT_KIND,
+            "artifact_layout": ARTIFACT_LAYOUT,
+            "authorization_digest": authorization_digest,
+            "names": layout.names,
+            "output_parent_binding": expected_parent_binding,
+            "output_parent_binding_digest": expected_parent_binding[
+                "deterministic_digest"
+            ],
+            "output_path": os.fspath(layout.output_path),
+            "output_path_digest": layout.output_path_digest,
+            "owner_nonce": owner_nonce,
+            "phase": "PRE_OUTCOME",
+            "publication_backend": PUBLICATION_BACKEND,
+            "schema_version": DIAGNOSTIC_ATTEMPT_SCHEMA_VERSION,
+            "status": "PENDING",
+        }
+    )
+
+
+def _diagnostic_phase_payload(
+    attempt: Mapping[str, Any],
+    *,
+    phase: str,
+    status: str,
+    previous_receipt_digest: str,
+    extra: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "artifact_kind": DIAGNOSTIC_ARTIFACT_KIND,
+        "artifact_layout": ARTIFACT_LAYOUT,
+        "attempt_receipt_digest": attempt["deterministic_digest"],
+        "authorization_digest": attempt["authorization_digest"],
+        "output_parent_binding_digest": attempt["output_parent_binding_digest"],
+        "output_path": attempt["output_path"],
+        "output_path_digest": attempt["output_path_digest"],
+        "owner_nonce": attempt["owner_nonce"],
+        "phase": phase,
+        "previous_receipt_digest": previous_receipt_digest,
+        "publication_backend": PUBLICATION_BACKEND,
+        "schema_version": DIAGNOSTIC_PHASE_SCHEMA_VERSION,
+        "status": status,
+    }
+    if extra is not None:
+        overlap = set(payload).intersection(extra)
+        if overlap:
+            raise RegularFilePublicationV2Error(
+                f"phase receipt fields overlap: {sorted(overlap)}"
+            )
+        payload.update(extra)
+    return _with_digest(payload)
+
+
+def _diagnostic_publication_context(
+    layout: RegularFileLayoutV2,
+    attempt: Mapping[str, Any],
+    started: Mapping[str, Any],
+) -> DiagnosticPublicationContextV2:
+    return DiagnosticPublicationContextV2(
+        artifact_id=layout.commit_name,
+        artifact_layout=ARTIFACT_LAYOUT,
+        attempt_receipt_digest=attempt["deterministic_digest"],
+        authorization_digest=attempt["authorization_digest"],
+        output_parent_binding_digest=attempt["output_parent_binding_digest"],
+        output_path=os.fspath(layout.output_path),
+        output_path_digest=layout.output_path_digest,
+        owner_nonce=attempt["owner_nonce"],
+        publication_backend=PUBLICATION_BACKEND,
+        started_receipt_digest=started["deterministic_digest"],
+    )
+
+
+def _freeze_diagnostic_batch(
+    batch: object,
+    context: DiagnosticPublicationContextV2,
+) -> tuple[list[dict[str, Any]], bytes, bytes, dict[str, Any]]:
+    if type(batch) is not DiagnosticPublicationBatchV2:
+        raise RegularFilePublicationV2Error(
+            "diagnostic action must return one exact publication batch"
+        )
+    records_value = batch.records
+    if type(records_value) not in {list, tuple}:
+        raise RegularFilePublicationV2Error(
+            "diagnostic records must be one exact bounded list or tuple"
+        )
+    records_snapshot = tuple(records_value[: DIAGNOSTIC_EXPECTED_RECORD_COUNT + 1])
+    if len(records_snapshot) != DIAGNOSTIC_EXPECTED_RECORD_COUNT:
+        raise RegularFilePublicationV2Error(
+            "diagnostic record count does not exact-match the frozen schedule"
+        )
+    frozen: list[dict[str, Any]] = []
+    encoded_frames: list[bytes] = []
+    payload_frames: list[bytes] = []
+    encoded_byte_count = 0
+    for index, candidate in enumerate(records_snapshot):
+        if type(candidate) is not dict:
+            raise RegularFilePublicationV2Error(
+                "diagnostic records must be plain JSON objects"
+            )
+        try:
+            payload = strict_json_loads(canonical_json(candidate))
+            if type(payload) is not dict:
+                raise TypeError("record snapshot is not an object")
+            _require_exact_digest(payload, "diagnostic record")
+        except (RecursionError, TypeError, ValueError, TraceValidationError) as error:
+            raise RegularFilePublicationV2Error(
+                "diagnostic record is not strict finite canonical JSON"
+            ) from error
+        payload_frame = _canonical_bytes(payload)
+        wrapped = {
+            "artifact_kind": DIAGNOSTIC_ARTIFACT_KIND,
+            "payload": payload,
+            "record_index": index,
+            "schema_version": DIAGNOSTIC_RECORD_FRAME_SCHEMA_VERSION,
+        }
+        frame = _canonical_bytes(wrapped)
+        if encoded_byte_count + len(frame) > _MAX_DIAGNOSTIC_RECORDS_BYTES:
+            raise RegularFilePublicationV2Error(
+                "diagnostic record frames exceed the bounded byte limit"
+            )
+        encoded_byte_count += len(frame)
+        frozen.append(wrapped)
+        encoded_frames.append(frame)
+        payload_frames.append(payload_frame)
+    records_raw = b"".join(encoded_frames)
+    payload_records_raw = b"".join(payload_frames)
+
+    run_manifest_value = batch.run_manifest
+    if type(run_manifest_value) is not dict:
+        raise RegularFilePublicationV2Error(
+            "diagnostic run manifest must be one plain JSON object"
+        )
+    try:
+        run_manifest = strict_json_loads(canonical_json(run_manifest_value))
+        if type(run_manifest) is not dict:
+            raise TypeError("run manifest snapshot is not an object")
+        _require_exact_digest(run_manifest, "diagnostic run manifest")
+    except (RecursionError, TypeError, ValueError, TraceValidationError) as error:
+        raise RegularFilePublicationV2Error(
+            "diagnostic run manifest is not strict finite canonical JSON"
+        ) from error
+    record_digests = [frame["payload"]["deterministic_digest"] for frame in frozen]
+    schedule_cell_ids = [frame["payload"].get("cell_id") for frame in frozen]
+    expected_common = {
+        "artifact_id": context.artifact_id,
+        "artifact_layout": context.artifact_layout,
+        "attempt_id": context.attempt_receipt_digest,
+        "attempt_receipt_digest": context.attempt_receipt_digest,
+        "authorized_output_path": context.output_path,
+        "execution_authorization_digest": context.authorization_digest,
+        "output_parent_binding_digest": context.output_parent_binding_digest,
+        "output_path_digest": context.output_path_digest,
+        "publication_backend": context.publication_backend,
+        "started_receipt_digest": context.started_receipt_digest,
+    }
+    if (
+        any(run_manifest.get(key) != value for key, value in expected_common.items())
+        or type(run_manifest.get("cell_count")) is not int
+        or run_manifest["cell_count"] != DIAGNOSTIC_EXPECTED_RECORD_COUNT
+        or run_manifest.get("record_digests") != record_digests
+        or run_manifest.get("schedule_cell_ids") != schedule_cell_ids
+        or any(type(cell_id) is not str or not cell_id for cell_id in schedule_cell_ids)
+        or len(set(schedule_cell_ids)) != DIAGNOSTIC_EXPECTED_RECORD_COUNT
+        or run_manifest.get("records_payload_jsonl_byte_count")
+        != len(payload_records_raw)
+        or run_manifest.get("records_payload_jsonl_sha256")
+        != _sha256_bytes(payload_records_raw)
+    ):
+        raise RegularFilePublicationV2Error(
+            "diagnostic run manifest does not close over publication context"
+        )
+    return frozen, records_raw, payload_records_raw, run_manifest
+
+
+def _diagnostic_manifest_payload(
+    layout: RegularFileLayoutV2,
+    attempt: Mapping[str, Any],
+    started: Mapping[str, Any],
+    records: Sequence[Mapping[str, Any]],
+    records_raw: bytes,
+    payload_records_raw: bytes,
+    run_manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    return _with_digest(
+        {
+            "artifact_id": layout.commit_name,
+            "artifact_kind": DIAGNOSTIC_ARTIFACT_KIND,
+            "artifact_layout": ARTIFACT_LAYOUT,
+            "attempt_receipt_digest": attempt["deterministic_digest"],
+            "authorization_digest": attempt["authorization_digest"],
+            "output_parent_binding_digest": attempt["output_parent_binding_digest"],
+            "output_path": os.fspath(layout.output_path),
+            "output_path_digest": layout.output_path_digest,
+            "owner_nonce": attempt["owner_nonce"],
+            "publication_backend": PUBLICATION_BACKEND,
+            "records": {
+                "byte_count": len(records_raw),
+                "filename": layout.records_name,
+                "payload_byte_count": len(payload_records_raw),
+                "payload_sha256": _sha256_bytes(payload_records_raw),
+                "record_count": len(records),
+                "schema_version": DIAGNOSTIC_RECORD_FRAME_SCHEMA_VERSION,
+                "sha256": _sha256_bytes(records_raw),
+            },
+            "run_manifest": run_manifest,
+            "schema_version": DIAGNOSTIC_MANIFEST_SCHEMA_VERSION,
+            "started_receipt_digest": started["deterministic_digest"],
+        }
+    )
+
+
+def _diagnostic_commit_payload(
+    layout: RegularFileLayoutV2,
+    attempt: Mapping[str, Any],
+    started: Mapping[str, Any],
+    ready: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    records_raw: bytes,
+    payload_records_raw: bytes,
+) -> dict[str, Any]:
+    run_manifest = manifest["run_manifest"]
+    return _with_digest(
+        {
+            "artifact_id": layout.commit_name,
+            "artifact_kind": DIAGNOSTIC_ARTIFACT_KIND,
+            "artifact_layout": ARTIFACT_LAYOUT,
+            "attempt_receipt_digest": attempt["deterministic_digest"],
+            "authorization_digest": attempt["authorization_digest"],
+            "manifest": {
+                "deterministic_digest": manifest["deterministic_digest"],
+                "filename": layout.manifest_name,
+                "sha256": _sha256_bytes(_canonical_bytes(manifest)),
+            },
+            "output_path": os.fspath(layout.output_path),
+            "output_parent_binding_digest": attempt["output_parent_binding_digest"],
+            "output_path_digest": layout.output_path_digest,
+            "owner_nonce": attempt["owner_nonce"],
+            "phase": "COMMITTED",
+            "previous_receipt_digest": ready["deterministic_digest"],
+            "publication_backend": PUBLICATION_BACKEND,
+            "ready_receipt_digest": ready["deterministic_digest"],
+            "records": {
+                "byte_count": len(records_raw),
+                "filename": layout.records_name,
+                "payload_byte_count": len(payload_records_raw),
+                "payload_sha256": _sha256_bytes(payload_records_raw),
+                "sha256": _sha256_bytes(records_raw),
+            },
+            "run_manifest_digest": run_manifest["deterministic_digest"],
+            "schema_version": DIAGNOSTIC_COMMIT_SCHEMA_VERSION,
+            "started_receipt_digest": started["deterministic_digest"],
+            "status": "COMMITTED",
+        }
+    )
+
+
 @dataclass
 class _PublicationSession:
     parent: _PinnedParent
     layout: RegularFileLayoutV2
     hook: _EventHook | None
+    max_control_bytes: int = _MAX_CONTROL_BYTES
+    max_records_bytes: int = _MAX_RECORDS_BYTES
     owned: list[_OwnedRegularFile] = field(default_factory=list)
     attempt_file: _OwnedRegularFile | None = None
     started_file: _OwnedRegularFile | None = None
@@ -1374,7 +1804,7 @@ class _PublicationSession:
             self.parent,
             name,
             _canonical_bytes(payload),
-            max_bytes=_MAX_CONTROL_BYTES,
+            max_bytes=self.max_control_bytes,
             hook=self.hook,
         )
         self.owned.append(created)
@@ -1385,7 +1815,7 @@ class _PublicationSession:
             self.parent,
             name,
             payload,
-            max_bytes=_MAX_RECORDS_BYTES,
+            max_bytes=self.max_records_bytes,
             hook=self.hook,
         )
         self.owned.append(created)
@@ -1480,13 +1910,19 @@ def _publish_not_run(
     session: _PublicationSession,
     attempt: Mapping[str, Any],
     error: BaseException,
+    *,
+    phase_payload_builder: Callable[..., dict[str, Any]] | None = None,
+    terminal_message: str = "synthetic publication stopped before STARTED",
 ) -> None:
     if session.attempt_file is None or session.started_file is not None:
         raise RegularFilePublicationV2AmbiguousError(
             "NOT_RUN is forbidden without exact PRE_OUTCOME-only authority"
         ) from error
     try:
-        payload = _phase_payload(
+        builder = (
+            _phase_payload if phase_payload_builder is None else (phase_payload_builder)
+        )
+        payload = builder(
             attempt,
             phase="PRE_OUTCOME",
             status="NOT_RUN",
@@ -1523,9 +1959,7 @@ def _publish_not_run(
         raise RegularFilePublicationV2AmbiguousError(
             "NOT_RUN terminal closure is ambiguous"
         ) from terminal_error
-    raise RegularFilePublicationV2NotRunError(
-        "synthetic publication stopped before STARTED"
-    ) from error
+    raise RegularFilePublicationV2NotRunError(terminal_message) from error
 
 
 def _publish_invalid(
@@ -1536,6 +1970,8 @@ def _publish_invalid(
     error: BaseException,
     *,
     failure_phase: str,
+    phase_payload_builder: Callable[..., dict[str, Any]] | None = None,
+    terminal_message: str = "synthetic publication crossed STARTED without a commit",
 ) -> None:
     if session.attempt_file is None or session.started_file is None:
         raise RegularFilePublicationV2AmbiguousError(
@@ -1555,7 +1991,10 @@ def _publish_invalid(
         else started["deterministic_digest"]
     )
     try:
-        payload = _phase_payload(
+        builder = (
+            _phase_payload if phase_payload_builder is None else (phase_payload_builder)
+        )
+        payload = builder(
             attempt,
             phase=failure_phase,
             status="INVALID",
@@ -1606,9 +2045,7 @@ def _publish_invalid(
         raise RegularFilePublicationV2AmbiguousError(
             "INVALID terminal closure is ambiguous"
         ) from terminal_error
-    raise RegularFilePublicationV2InvalidError(
-        "synthetic publication crossed STARTED without a commit"
-    ) from error
+    raise RegularFilePublicationV2InvalidError(terminal_message) from error
 
 
 def publish_synthetic_fixture_v2(
@@ -1632,10 +2069,10 @@ def publish_synthetic_fixture_v2(
     _require_posix_capabilities()
     layout = RegularFileLayoutV2.from_output_path(output_path)
     authorization = _require_sha256(authorization_digest, "authorization digest")
-    if not callable(fixture_action) or (
-        _pre_outcome_check is not None and not callable(_pre_outcome_check)
-    ) or (
-        _event_hook is not None and not callable(_event_hook)
+    if (
+        not callable(fixture_action)
+        or (_pre_outcome_check is not None and not callable(_pre_outcome_check))
+        or (_event_hook is not None and not callable(_event_hook))
     ):
         raise RegularFilePublicationV2NotRunError(
             "synthetic fixture callbacks must be callable"
@@ -1893,9 +2330,7 @@ def publish_synthetic_fixture_v2(
                 "artifact_path": os.fspath(layout.output_path),
                 "authorization_digest": authorization,
                 "fixture_kind": FIXTURE_KIND,
-                "output_parent_binding_digest": parent_binding[
-                    "deterministic_digest"
-                ],
+                "output_parent_binding_digest": parent_binding["deterministic_digest"],
                 "run_manifest_digest": manifest_payload["deterministic_digest"],
                 "status": "COMMITTED",
             }
@@ -1910,6 +2345,343 @@ def publish_synthetic_fixture_v2(
                 error,
                 failure_phase=(
                     "READY_TO_COMMIT" if ready_payload is not None else "STARTED"
+                ),
+            )
+    finally:
+        session.close()
+        parent.close()
+
+
+def publish_countdown_thompson_diagnostic_v2(
+    output_path: Path | str,
+    *,
+    authorization_digest: str,
+    expected_parent_binding: object,
+    diagnostic_action: _DiagnosticAction,
+    _pre_outcome_check: _PreOutcomeCheck | None = None,
+    _event_hook: _EventHook | None = None,
+) -> dict[str, Any]:
+    """Publish one exact 240-record diagnostic collective through v2r3.
+
+    This function grants no authority by itself.  Its caller must load and
+    validate a separately reviewed authorization before entry.  The diagnostic
+    callback is invoked only after the durable STARTED collective is proved.
+    """
+
+    _require_posix_capabilities()
+    layout = RegularFileLayoutV2.from_output_path(output_path)
+    authorization = _require_sha256(authorization_digest, "authorization digest")
+    if (
+        not callable(diagnostic_action)
+        or (_pre_outcome_check is not None and not callable(_pre_outcome_check))
+        or (_event_hook is not None and not callable(_event_hook))
+    ):
+        raise RegularFilePublicationV2NotRunError(
+            "diagnostic publication callbacks must be callable"
+        )
+    parent_binding = _freeze_expected_parent_binding(
+        expected_parent_binding,
+        layout.output_path.parent,
+    )
+    parent = _open_bound_parent(layout.output_path.parent, parent_binding)
+    session = _PublicationSession(
+        parent=parent,
+        layout=layout,
+        hook=_event_hook,
+        max_control_bytes=_MAX_DIAGNOSTIC_CONTROL_BYTES,
+        max_records_bytes=_MAX_DIAGNOSTIC_RECORDS_BYTES,
+    )
+    attempt_payload: dict[str, Any] | None = None
+    started_payload: dict[str, Any] | None = None
+    ready_payload: dict[str, Any] | None = None
+    try:
+        try:
+            _validate_layout_against_parent(parent, layout)
+            _assert_no_legacy_namespace(parent)
+            parent.fsync()
+            parent.assert_path()
+            _assert_no_legacy_namespace(parent)
+            _preflight_reserved_names_absent(parent, layout.reserved_names)
+        except (_ParentBindingMismatchError, RegularFilePublicationV2NotRunError):
+            raise
+        except BaseException as error:
+            raise RegularFilePublicationV2NotRunError(
+                "publication preflight failed before attempt ownership"
+            ) from error
+
+        try:
+            owner_nonce = secrets.token_hex(_OWNER_NONCE_BYTES)
+            attempt_payload = _diagnostic_attempt_payload(
+                layout,
+                authorization,
+                parent_binding,
+                owner_nonce,
+            )
+        except BaseException as error:
+            raise RegularFilePublicationV2NotRunError(
+                "attempt identity could not be constructed before ownership"
+            ) from error
+        try:
+            session.attempt_file = session.create_authority(
+                layout.attempt_name,
+                attempt_payload,
+            )
+        except _NameConflictError as error:
+            raise RegularFilePublicationV2NotRunError(
+                "output-global attempt reservation is already occupied"
+            ) from error
+        except _CreateBeforeOpenError as error:
+            raise RegularFilePublicationV2NotRunError(
+                "attempt reservation was not created"
+            ) from error
+        except _CreateAfterOpenError as error:
+            error.owned.close()
+            raise RegularFilePublicationV2AmbiguousError(
+                "attempt reservation ownership became ambiguous"
+            ) from error
+        try:
+            _emit(_event_hook, "after_attempt", name=layout.attempt_name)
+            _emit(_event_hook, "before_started", name=layout.started_name)
+            if _pre_outcome_check is not None:
+                _pre_outcome_check()
+            _assert_owned_exact(parent, session.attempt_file)
+            parent.assert_path()
+            started_payload = _diagnostic_phase_payload(
+                attempt_payload,
+                phase="STARTED",
+                status="PENDING",
+                previous_receipt_digest=attempt_payload["deterministic_digest"],
+            )
+        except BaseException as error:
+            _publish_not_run(
+                session,
+                attempt_payload,
+                error,
+                phase_payload_builder=_diagnostic_phase_payload,
+                terminal_message="diagnostic publication stopped before STARTED",
+            )
+        try:
+            _assert_no_legacy_namespace(parent)
+            session.started_file = session.create_authority(
+                layout.started_name,
+                started_payload,
+            )
+        except (_NameConflictError, _CreateAfterOpenError) as error:
+            if isinstance(error, _CreateAfterOpenError):
+                error.owned.close()
+            raise RegularFilePublicationV2AmbiguousError(
+                "STARTED authority is ambiguous"
+            ) from error
+        except _CreateBeforeOpenError as error:
+            _publish_not_run(
+                session,
+                attempt_payload,
+                error,
+                phase_payload_builder=_diagnostic_phase_payload,
+                terminal_message="diagnostic publication stopped before STARTED",
+            )
+        try:
+            _prove_terminal_collective(
+                session,
+                terminal="STARTED_BOUNDARY",
+                required=(session.attempt_file, session.started_file),
+                absent=(
+                    layout.ready_name,
+                    layout.not_run_name,
+                    layout.invalid_name,
+                    layout.records_name,
+                    layout.manifest_name,
+                    layout.commit_name,
+                ),
+            )
+        except RegularFilePublicationV2AmbiguousError:
+            raise
+        except BaseException as error:
+            _publish_invalid(
+                session,
+                attempt_payload,
+                started_payload,
+                None,
+                error,
+                failure_phase="STARTED",
+                phase_payload_builder=_diagnostic_phase_payload,
+                terminal_message=(
+                    "diagnostic publication crossed STARTED without a commit"
+                ),
+            )
+        try:
+            try:
+                _emit(_event_hook, "after_started", name=layout.started_name)
+            except BaseException as outcome_error:
+                raise _FixtureOutcomeError(
+                    "diagnostic outcome hook failed after STARTED"
+                ) from outcome_error
+            _assert_no_legacy_namespace(parent)
+            try:
+                context = _diagnostic_publication_context(
+                    layout,
+                    attempt_payload,
+                    started_payload,
+                )
+                batch = diagnostic_action(context)
+                (
+                    frozen_records,
+                    records_bytes,
+                    payload_records_bytes,
+                    run_manifest,
+                ) = _freeze_diagnostic_batch(batch, context)
+            except BaseException as outcome_error:
+                raise _FixtureOutcomeError(
+                    "diagnostic outcome callback or payload failed"
+                ) from outcome_error
+            try:
+                session.records_file = session.create_data(
+                    layout.records_name,
+                    records_bytes,
+                )
+            except _CreateAfterOpenError as error:
+                error.owned.close()
+                raise RegularFilePublicationV2Error(
+                    "records publication failed after exclusive open"
+                ) from error
+            _emit(_event_hook, "after_records", name=layout.records_name)
+
+            manifest_payload = _diagnostic_manifest_payload(
+                layout,
+                attempt_payload,
+                started_payload,
+                frozen_records,
+                records_bytes,
+                payload_records_bytes,
+                run_manifest,
+            )
+            try:
+                session.manifest_file = session.create_authority(
+                    layout.manifest_name,
+                    manifest_payload,
+                )
+            except _CreateAfterOpenError as error:
+                error.owned.close()
+                raise RegularFilePublicationV2Error(
+                    "manifest publication failed after exclusive open"
+                ) from error
+            _emit(_event_hook, "after_manifest", name=layout.manifest_name)
+
+            ready_candidate = _diagnostic_phase_payload(
+                attempt_payload,
+                phase="READY_TO_COMMIT",
+                status="PENDING",
+                previous_receipt_digest=started_payload["deterministic_digest"],
+                extra={
+                    "manifest_digest": manifest_payload["deterministic_digest"],
+                    "manifest_sha256": _sha256_bytes(
+                        _canonical_bytes(manifest_payload)
+                    ),
+                    "records_byte_count": len(records_bytes),
+                    "records_sha256": _sha256_bytes(records_bytes),
+                },
+            )
+            try:
+                session.ready_file = session.create_authority(
+                    layout.ready_name,
+                    ready_candidate,
+                )
+            except (_NameConflictError, _CreateAfterOpenError) as error:
+                if isinstance(error, _CreateAfterOpenError):
+                    error.owned.close()
+                raise RegularFilePublicationV2AmbiguousError(
+                    "READY_TO_COMMIT authority is ambiguous"
+                ) from error
+            ready_payload = ready_candidate
+            _emit(_event_hook, "after_ready", name=layout.ready_name)
+
+            _prove_terminal_collective(
+                session,
+                terminal="PRE_COMMIT",
+                required=(
+                    session.attempt_file,
+                    session.started_file,
+                    session.records_file,
+                    session.manifest_file,
+                    session.ready_file,
+                ),
+                absent=(
+                    layout.not_run_name,
+                    layout.invalid_name,
+                    layout.commit_name,
+                ),
+            )
+            commit_payload = _diagnostic_commit_payload(
+                layout,
+                attempt_payload,
+                started_payload,
+                ready_payload,
+                manifest_payload,
+                records_bytes,
+                payload_records_bytes,
+            )
+            _emit(_event_hook, "before_commit", name=layout.commit_name)
+            try:
+                session.commit_file = session.create_authority(
+                    layout.commit_name,
+                    commit_payload,
+                )
+            except _HookBeforeOpenError as error:
+                raise RegularFilePublicationV2Error(
+                    "commit creation hook failed before exclusive open"
+                ) from error
+            except (_NameConflictError, _CreateBeforeOpenError) as error:
+                raise RegularFilePublicationV2AmbiguousError(
+                    "commit name authority is ambiguous"
+                ) from error
+            except _CreateAfterOpenError as error:
+                error.owned.close()
+                raise RegularFilePublicationV2AmbiguousError(
+                    "commit creation entered an ambiguous state"
+                ) from error
+            try:
+                _emit(_event_hook, "after_commit", name=layout.commit_name)
+            except BaseException:
+                pass
+            _prove_terminal_collective(
+                session,
+                terminal="COMMITTED",
+                required=(
+                    session.attempt_file,
+                    session.started_file,
+                    session.records_file,
+                    session.manifest_file,
+                    session.ready_file,
+                    session.commit_file,
+                ),
+                absent=(layout.not_run_name, layout.invalid_name),
+            )
+            return {
+                "artifact_commit_digest": commit_payload["deterministic_digest"],
+                "artifact_kind": DIAGNOSTIC_ARTIFACT_KIND,
+                "artifact_layout": ARTIFACT_LAYOUT,
+                "artifact_path": os.fspath(layout.output_path),
+                "authorization_digest": authorization,
+                "collective_manifest_digest": manifest_payload["deterministic_digest"],
+                "output_parent_binding_digest": parent_binding["deterministic_digest"],
+                "run_manifest_digest": run_manifest["deterministic_digest"],
+                "status": "COMMITTED",
+            }
+        except RegularFilePublicationV2AmbiguousError:
+            raise
+        except BaseException as error:
+            _publish_invalid(
+                session,
+                attempt_payload,
+                started_payload,
+                ready_payload,
+                error,
+                failure_phase=(
+                    "READY_TO_COMMIT" if ready_payload is not None else "STARTED"
+                ),
+                phase_payload_builder=_diagnostic_phase_payload,
+                terminal_message=(
+                    "diagnostic publication crossed STARTED without a commit"
                 ),
             )
     finally:
@@ -2022,8 +2794,10 @@ def _forward_sync_exact_regular_file_at(
 def _read_canonical_object_at(
     parent: _PinnedParent,
     name: str,
+    *,
+    max_bytes: int = _MAX_CONTROL_BYTES,
 ) -> dict[str, Any]:
-    raw = _read_bounded_regular_file_at(parent, name, max_bytes=_MAX_CONTROL_BYTES)
+    raw = _read_bounded_regular_file_at(parent, name, max_bytes=max_bytes)
     try:
         parsed = strict_json_loads(raw.decode("utf-8"))
         canonical = _canonical_bytes(parsed) if type(parsed) is dict else None
@@ -2126,6 +2900,67 @@ def _validate_attempt_object(
         )
 
 
+def _validate_diagnostic_attempt_object(
+    attempt: Mapping[str, Any],
+    layout: RegularFileLayoutV2,
+    expected_authorization_digest: str,
+    expected_parent_binding: Mapping[str, Any],
+) -> None:
+    expected_keys = {
+        "artifact_kind",
+        "artifact_layout",
+        "authorization_digest",
+        "deterministic_digest",
+        "names",
+        "output_parent_binding",
+        "output_parent_binding_digest",
+        "output_path",
+        "output_path_digest",
+        "owner_nonce",
+        "phase",
+        "publication_backend",
+        "schema_version",
+        "status",
+    }
+    if set(attempt) != expected_keys:
+        raise RegularFilePublicationV2AmbiguousError(
+            "diagnostic attempt receipt keys do not match v2r3"
+        )
+    try:
+        persisted_parent_binding = _freeze_expected_parent_binding(
+            attempt.get("output_parent_binding"),
+            layout.output_path.parent,
+        )
+    except RegularFilePublicationV2NotRunError as error:
+        raise RegularFilePublicationV2AmbiguousError(
+            "diagnostic attempt contains an invalid parent binding"
+        ) from error
+    if _canonical_bytes(persisted_parent_binding) != _canonical_bytes(
+        expected_parent_binding
+    ):
+        raise RegularFilePublicationV2AmbiguousError(
+            "diagnostic attempt parent binding is not the reviewed binding"
+        )
+    if (
+        attempt.get("artifact_kind") != DIAGNOSTIC_ARTIFACT_KIND
+        or attempt.get("artifact_layout") != ARTIFACT_LAYOUT
+        or attempt.get("authorization_digest") != expected_authorization_digest
+        or attempt.get("names") != layout.names
+        or attempt.get("output_parent_binding_digest")
+        != expected_parent_binding.get("deterministic_digest")
+        or attempt.get("output_path") != os.fspath(layout.output_path)
+        or attempt.get("output_path_digest") != layout.output_path_digest
+        or not _is_owner_nonce(attempt.get("owner_nonce"))
+        or attempt.get("phase") != "PRE_OUTCOME"
+        or attempt.get("publication_backend") != PUBLICATION_BACKEND
+        or attempt.get("schema_version") != DIAGNOSTIC_ATTEMPT_SCHEMA_VERSION
+        or attempt.get("status") != "PENDING"
+    ):
+        raise RegularFilePublicationV2AmbiguousError(
+            "diagnostic attempt identity does not match the requested output"
+        )
+
+
 def _validate_phase_object(
     receipt: Mapping[str, Any],
     attempt: Mapping[str, Any],
@@ -2157,16 +2992,13 @@ def _validate_phase_object(
         )
     if (
         receipt.get("artifact_layout") != ARTIFACT_LAYOUT
-        or receipt.get("attempt_receipt_digest")
-        != attempt.get("deterministic_digest")
-        or receipt.get("authorization_digest")
-        != attempt.get("authorization_digest")
+        or receipt.get("attempt_receipt_digest") != attempt.get("deterministic_digest")
+        or receipt.get("authorization_digest") != attempt.get("authorization_digest")
         or receipt.get("fixture_kind") != FIXTURE_KIND
         or receipt.get("output_parent_binding_digest")
         != attempt.get("output_parent_binding_digest")
         or receipt.get("output_path") != attempt.get("output_path")
-        or receipt.get("output_path_digest")
-        != attempt.get("output_path_digest")
+        or receipt.get("output_path_digest") != attempt.get("output_path_digest")
         or receipt.get("owner_nonce") != attempt.get("owner_nonce")
         or receipt.get("phase") != phase
         or receipt.get("previous_receipt_digest") != previous_receipt_digest
@@ -2176,6 +3008,56 @@ def _validate_phase_object(
     ):
         raise RegularFilePublicationV2AmbiguousError(
             f"{phase} receipt chain does not close"
+        )
+
+
+def _validate_diagnostic_phase_object(
+    receipt: Mapping[str, Any],
+    attempt: Mapping[str, Any],
+    *,
+    phase: str,
+    status: str,
+    previous_receipt_digest: str,
+    required_extra_keys: set[str],
+) -> None:
+    base_keys = {
+        "artifact_kind",
+        "artifact_layout",
+        "attempt_receipt_digest",
+        "authorization_digest",
+        "deterministic_digest",
+        "output_parent_binding_digest",
+        "output_path",
+        "output_path_digest",
+        "owner_nonce",
+        "phase",
+        "previous_receipt_digest",
+        "publication_backend",
+        "schema_version",
+        "status",
+    }
+    if set(receipt) != base_keys | required_extra_keys:
+        raise RegularFilePublicationV2AmbiguousError(
+            f"diagnostic {phase} receipt keys do not match v2r3"
+        )
+    if (
+        receipt.get("artifact_kind") != DIAGNOSTIC_ARTIFACT_KIND
+        or receipt.get("artifact_layout") != ARTIFACT_LAYOUT
+        or receipt.get("attempt_receipt_digest") != attempt.get("deterministic_digest")
+        or receipt.get("authorization_digest") != attempt.get("authorization_digest")
+        or receipt.get("output_parent_binding_digest")
+        != attempt.get("output_parent_binding_digest")
+        or receipt.get("output_path") != attempt.get("output_path")
+        or receipt.get("output_path_digest") != attempt.get("output_path_digest")
+        or receipt.get("owner_nonce") != attempt.get("owner_nonce")
+        or receipt.get("phase") != phase
+        or receipt.get("previous_receipt_digest") != previous_receipt_digest
+        or receipt.get("publication_backend") != PUBLICATION_BACKEND
+        or receipt.get("schema_version") != DIAGNOSTIC_PHASE_SCHEMA_VERSION
+        or receipt.get("status") != status
+    ):
+        raise RegularFilePublicationV2AmbiguousError(
+            f"diagnostic {phase} receipt chain does not close"
         )
 
 
@@ -2264,10 +3146,8 @@ def _validate_records_and_manifest(
         set(manifest) != expected_keys
         or manifest.get("artifact_id") != layout.commit_name
         or manifest.get("artifact_layout") != ARTIFACT_LAYOUT
-        or manifest.get("attempt_receipt_digest")
-        != attempt.get("deterministic_digest")
-        or manifest.get("authorization_digest")
-        != attempt.get("authorization_digest")
+        or manifest.get("attempt_receipt_digest") != attempt.get("deterministic_digest")
+        or manifest.get("authorization_digest") != attempt.get("authorization_digest")
         or manifest.get("fixture_kind") != FIXTURE_KIND
         or manifest.get("output_parent_binding_digest")
         != attempt.get("output_parent_binding_digest")
@@ -2276,8 +3156,7 @@ def _validate_records_and_manifest(
         or manifest.get("owner_nonce") != attempt.get("owner_nonce")
         or manifest.get("publication_backend") != PUBLICATION_BACKEND
         or manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION
-        or manifest.get("started_receipt_digest")
-        != started.get("deterministic_digest")
+        or manifest.get("started_receipt_digest") != started.get("deterministic_digest")
         or type(record_info) is not dict
         or type(record_info.get("byte_count")) is not int
         or type(record_info.get("record_count")) is not int
@@ -2294,6 +3173,115 @@ def _validate_records_and_manifest(
             "manifest does not close over the exact records collective"
         )
     return records_raw, manifest
+
+
+def _validate_diagnostic_records_and_manifest(
+    parent: _PinnedParent,
+    layout: RegularFileLayoutV2,
+    attempt: Mapping[str, Any],
+    started: Mapping[str, Any],
+) -> tuple[bytes, bytes, dict[str, Any]]:
+    records_raw = _read_bounded_regular_file_at(
+        parent,
+        layout.records_name,
+        max_bytes=_MAX_DIAGNOSTIC_RECORDS_BYTES,
+    )
+    frames: list[dict[str, Any]] = []
+    for index, line in enumerate(records_raw.splitlines(keepends=True)):
+        if index >= DIAGNOSTIC_EXPECTED_RECORD_COUNT:
+            raise RegularFilePublicationV2AmbiguousError(
+                "diagnostic records exceed the frozen 240-cell schedule"
+            )
+        if not line.endswith(b"\n"):
+            raise RegularFilePublicationV2AmbiguousError(
+                "diagnostic records have a truncated final frame"
+            )
+        try:
+            parsed = strict_json_loads(line[:-1].decode("utf-8"))
+            canonical = _canonical_bytes(parsed) if type(parsed) is dict else None
+        except (
+            RecursionError,
+            TypeError,
+            UnicodeDecodeError,
+            ValueError,
+            TraceValidationError,
+        ) as error:
+            raise RegularFilePublicationV2AmbiguousError(
+                "diagnostic records contain invalid strict JSON"
+            ) from error
+        if (
+            type(parsed) is not dict
+            or canonical != line
+            or set(parsed)
+            != {
+                "artifact_kind",
+                "payload",
+                "record_index",
+                "schema_version",
+            }
+            or parsed.get("artifact_kind") != DIAGNOSTIC_ARTIFACT_KIND
+            or type(parsed.get("payload")) is not dict
+            or type(parsed.get("record_index")) is not int
+            or parsed.get("record_index") != index
+            or parsed.get("schema_version") != DIAGNOSTIC_RECORD_FRAME_SCHEMA_VERSION
+        ):
+            raise RegularFilePublicationV2AmbiguousError(
+                "diagnostic record-frame identity does not close"
+            )
+        frames.append(parsed)
+    if len(frames) != DIAGNOSTIC_EXPECTED_RECORD_COUNT:
+        raise RegularFilePublicationV2AmbiguousError(
+            "diagnostic record count does not match the frozen 240-cell schedule"
+        )
+
+    manifest = _read_canonical_object_at(
+        parent,
+        layout.manifest_name,
+        max_bytes=_MAX_DIAGNOSTIC_CONTROL_BYTES,
+    )
+    run_manifest = manifest.get("run_manifest")
+    if type(run_manifest) is not dict:
+        raise RegularFilePublicationV2AmbiguousError(
+            "diagnostic collective manifest has no exact run manifest"
+        )
+    try:
+        _require_exact_digest(run_manifest, "diagnostic run manifest")
+        context = _diagnostic_publication_context(layout, attempt, started)
+        expected_frames, expected_records_raw, payload_records_raw, frozen_run = (
+            _freeze_diagnostic_batch(
+                DiagnosticPublicationBatchV2(
+                    records=[frame["payload"] for frame in frames],
+                    run_manifest=run_manifest,
+                ),
+                context,
+            )
+        )
+    except RegularFilePublicationV2Error as error:
+        raise RegularFilePublicationV2AmbiguousError(
+            "diagnostic records and run manifest do not close"
+        ) from error
+    if (
+        expected_frames != frames
+        or expected_records_raw != records_raw
+        or frozen_run != run_manifest
+    ):
+        raise RegularFilePublicationV2AmbiguousError(
+            "diagnostic record snapshots do not close over canonical bytes"
+        )
+    expected_manifest = _diagnostic_manifest_payload(
+        layout,
+        attempt,
+        started,
+        expected_frames,
+        records_raw,
+        payload_records_raw,
+        run_manifest,
+    )
+    if _canonical_bytes(manifest) != _canonical_bytes(expected_manifest):
+        raise RegularFilePublicationV2AmbiguousError(
+            "diagnostic collective manifest does not close over exact records"
+        )
+    return records_raw, payload_records_raw, manifest
 
 
 def _inspect_payload_once(
@@ -2357,9 +3345,7 @@ def _inspect_payload_once(
         _validate_reason_code(not_run, "pre_outcome")
         return {
             "authorization_digest": attempt["authorization_digest"],
-            "output_parent_binding_digest": attempt[
-                "output_parent_binding_digest"
-            ],
+            "output_parent_binding_digest": attempt["output_parent_binding_digest"],
             "output_path": os.fspath(layout.output_path),
             "status": "NOT_RUN",
             "terminal_digest": not_run["deterministic_digest"],
@@ -2402,8 +3388,7 @@ def _inspect_payload_once(
                 },
             )
             if (
-                ready.get("manifest_digest")
-                != manifest.get("deterministic_digest")
+                ready.get("manifest_digest") != manifest.get("deterministic_digest")
                 or ready.get("manifest_sha256")
                 != _sha256_bytes(_canonical_bytes(manifest))
                 or type(ready.get("records_byte_count")) is not int
@@ -2417,9 +3402,7 @@ def _inspect_payload_once(
         invalid = _read_canonical_object_at(parent, layout.invalid_name)
         failure_phase = invalid.get("phase")
         expected_failure_phase = (
-            "READY_TO_COMMIT"
-            if _name_exists(parent, layout.ready_name)
-            else "STARTED"
+            "READY_TO_COMMIT" if _name_exists(parent, layout.ready_name) else "STARTED"
         )
         if failure_phase != expected_failure_phase:
             raise RegularFilePublicationV2AmbiguousError(
@@ -2436,9 +3419,7 @@ def _inspect_payload_once(
         _validate_reason_code(invalid, "post_started")
         return {
             "authorization_digest": attempt["authorization_digest"],
-            "output_parent_binding_digest": attempt[
-                "output_parent_binding_digest"
-            ],
+            "output_parent_binding_digest": attempt["output_parent_binding_digest"],
             "output_path": os.fspath(layout.output_path),
             "status": "INVALID",
             "terminal_digest": invalid["deterministic_digest"],
@@ -2473,8 +3454,7 @@ def _inspect_payload_once(
     )
     if (
         ready.get("manifest_digest") != manifest.get("deterministic_digest")
-        or ready.get("manifest_sha256")
-        != _sha256_bytes(_canonical_bytes(manifest))
+        or ready.get("manifest_sha256") != _sha256_bytes(_canonical_bytes(manifest))
         or type(ready.get("records_byte_count")) is not int
         or ready.get("records_byte_count") != len(records_raw)
         or ready.get("records_sha256") != _sha256_bytes(records_raw)
@@ -2498,14 +3478,280 @@ def _inspect_payload_once(
     return {
         "artifact_commit_digest": commit["deterministic_digest"],
         "authorization_digest": attempt["authorization_digest"],
-        "output_parent_binding_digest": attempt[
-            "output_parent_binding_digest"
-        ],
+        "output_parent_binding_digest": attempt["output_parent_binding_digest"],
         "output_path": os.fspath(layout.output_path),
         "run_manifest_digest": manifest["deterministic_digest"],
         "status": "COMMITTED",
         "terminal_digest": commit["deterministic_digest"],
     }
+
+
+def _inspect_diagnostic_payload_once(
+    parent: _PinnedParent,
+    layout: RegularFileLayoutV2,
+    expected_authorization_digest: str,
+    expected_parent_binding: Mapping[str, Any],
+) -> tuple[dict[str, Any], tuple[tuple[str, bytes], ...]]:
+    snapshots: list[tuple[str, bytes]] = []
+
+    def remember(name: str, payload: Mapping[str, Any] | bytes) -> None:
+        raw = payload if type(payload) is bytes else _canonical_bytes(payload)
+        snapshots.append((name, raw))
+
+    if not _name_exists(parent, layout.attempt_name):
+        occupied_without_attempt = [
+            name
+            for name in layout.reserved_names
+            if name != layout.attempt_name and _name_exists(parent, name)
+        ]
+        if occupied_without_attempt:
+            raise RegularFilePublicationV2AmbiguousError(
+                "diagnostic reserved names exist without an exact attempt"
+            )
+        return (
+            {
+                "output_parent_binding_digest": expected_parent_binding[
+                    "deterministic_digest"
+                ],
+                "output_path": os.fspath(layout.output_path),
+                "status": "UNRESERVED",
+            },
+            (),
+        )
+
+    attempt = _read_canonical_object_at(
+        parent,
+        layout.attempt_name,
+        max_bytes=_MAX_DIAGNOSTIC_CONTROL_BYTES,
+    )
+    _validate_diagnostic_attempt_object(
+        attempt,
+        layout,
+        expected_authorization_digest,
+        expected_parent_binding,
+    )
+    remember(layout.attempt_name, attempt)
+    attempt_digest = attempt["deterministic_digest"]
+    has_commit = _name_exists(parent, layout.commit_name)
+    has_invalid = _name_exists(parent, layout.invalid_name)
+    has_not_run = _name_exists(parent, layout.not_run_name)
+    if sum((has_commit, has_invalid, has_not_run)) > 1:
+        raise RegularFilePublicationV2AmbiguousError(
+            "conflicting diagnostic terminal receipts exist"
+        )
+
+    if has_not_run:
+        for forbidden in (
+            layout.started_name,
+            layout.ready_name,
+            layout.invalid_name,
+            layout.records_name,
+            layout.manifest_name,
+            layout.commit_name,
+        ):
+            _assert_name_absent(parent, forbidden)
+        not_run = _read_canonical_object_at(
+            parent,
+            layout.not_run_name,
+            max_bytes=_MAX_DIAGNOSTIC_CONTROL_BYTES,
+        )
+        _validate_diagnostic_phase_object(
+            not_run,
+            attempt,
+            phase="PRE_OUTCOME",
+            status="NOT_RUN",
+            previous_receipt_digest=attempt_digest,
+            required_extra_keys={"reason_code"},
+        )
+        _validate_reason_code(not_run, "pre_outcome")
+        remember(layout.not_run_name, not_run)
+        return (
+            {
+                "artifact_kind": DIAGNOSTIC_ARTIFACT_KIND,
+                "authorization_digest": attempt["authorization_digest"],
+                "output_parent_binding_digest": attempt["output_parent_binding_digest"],
+                "output_path": os.fspath(layout.output_path),
+                "status": "NOT_RUN",
+                "terminal_digest": not_run["deterministic_digest"],
+            },
+            tuple(sorted(snapshots)),
+        )
+
+    started = _read_canonical_object_at(
+        parent,
+        layout.started_name,
+        max_bytes=_MAX_DIAGNOSTIC_CONTROL_BYTES,
+    )
+    _validate_diagnostic_phase_object(
+        started,
+        attempt,
+        phase="STARTED",
+        status="PENDING",
+        previous_receipt_digest=attempt_digest,
+        required_extra_keys=set(),
+    )
+    remember(layout.started_name, started)
+    started_digest = started["deterministic_digest"]
+
+    if has_invalid:
+        _assert_name_absent(parent, layout.not_run_name)
+        _assert_name_absent(parent, layout.commit_name)
+        previous = started_digest
+        if _name_exists(parent, layout.ready_name):
+            records_raw, _, manifest = _validate_diagnostic_records_and_manifest(
+                parent,
+                layout,
+                attempt,
+                started,
+            )
+            ready = _read_canonical_object_at(
+                parent,
+                layout.ready_name,
+                max_bytes=_MAX_DIAGNOSTIC_CONTROL_BYTES,
+            )
+            _validate_diagnostic_phase_object(
+                ready,
+                attempt,
+                phase="READY_TO_COMMIT",
+                status="PENDING",
+                previous_receipt_digest=started_digest,
+                required_extra_keys={
+                    "manifest_digest",
+                    "manifest_sha256",
+                    "records_byte_count",
+                    "records_sha256",
+                },
+            )
+            if (
+                ready.get("manifest_digest") != manifest.get("deterministic_digest")
+                or ready.get("manifest_sha256")
+                != _sha256_bytes(_canonical_bytes(manifest))
+                or type(ready.get("records_byte_count")) is not int
+                or ready.get("records_byte_count") != len(records_raw)
+                or ready.get("records_sha256") != _sha256_bytes(records_raw)
+            ):
+                raise RegularFilePublicationV2AmbiguousError(
+                    "diagnostic READY receipt does not close over sidecars"
+                )
+            remember(layout.records_name, records_raw)
+            remember(layout.manifest_name, manifest)
+            remember(layout.ready_name, ready)
+            previous = ready["deterministic_digest"]
+        invalid = _read_canonical_object_at(
+            parent,
+            layout.invalid_name,
+            max_bytes=_MAX_DIAGNOSTIC_CONTROL_BYTES,
+        )
+        expected_failure_phase = (
+            "READY_TO_COMMIT" if _name_exists(parent, layout.ready_name) else "STARTED"
+        )
+        if invalid.get("phase") != expected_failure_phase:
+            raise RegularFilePublicationV2AmbiguousError(
+                "diagnostic INVALID phase does not match READY evidence"
+            )
+        _validate_diagnostic_phase_object(
+            invalid,
+            attempt,
+            phase=expected_failure_phase,
+            status="INVALID",
+            previous_receipt_digest=previous,
+            required_extra_keys={"reason_code"},
+        )
+        _validate_reason_code(invalid, "post_started")
+        remember(layout.invalid_name, invalid)
+        return (
+            {
+                "artifact_kind": DIAGNOSTIC_ARTIFACT_KIND,
+                "authorization_digest": attempt["authorization_digest"],
+                "output_parent_binding_digest": attempt["output_parent_binding_digest"],
+                "output_path": os.fspath(layout.output_path),
+                "status": "INVALID",
+                "terminal_digest": invalid["deterministic_digest"],
+            },
+            tuple(sorted(snapshots)),
+        )
+
+    if not has_commit:
+        raise RegularFilePublicationV2AmbiguousError(
+            "diagnostic attempt is non-terminal and cannot be retried"
+        )
+
+    _assert_name_absent(parent, layout.not_run_name)
+    _assert_name_absent(parent, layout.invalid_name)
+    records_raw, payload_records_raw, manifest = (
+        _validate_diagnostic_records_and_manifest(
+            parent,
+            layout,
+            attempt,
+            started,
+        )
+    )
+    ready = _read_canonical_object_at(
+        parent,
+        layout.ready_name,
+        max_bytes=_MAX_DIAGNOSTIC_CONTROL_BYTES,
+    )
+    _validate_diagnostic_phase_object(
+        ready,
+        attempt,
+        phase="READY_TO_COMMIT",
+        status="PENDING",
+        previous_receipt_digest=started_digest,
+        required_extra_keys={
+            "manifest_digest",
+            "manifest_sha256",
+            "records_byte_count",
+            "records_sha256",
+        },
+    )
+    if (
+        ready.get("manifest_digest") != manifest.get("deterministic_digest")
+        or ready.get("manifest_sha256") != _sha256_bytes(_canonical_bytes(manifest))
+        or type(ready.get("records_byte_count")) is not int
+        or ready.get("records_byte_count") != len(records_raw)
+        or ready.get("records_sha256") != _sha256_bytes(records_raw)
+    ):
+        raise RegularFilePublicationV2AmbiguousError(
+            "diagnostic READY receipt does not close over exact sidecars"
+        )
+    commit = _read_canonical_object_at(
+        parent,
+        layout.commit_name,
+        max_bytes=_MAX_DIAGNOSTIC_CONTROL_BYTES,
+    )
+    expected_commit = _diagnostic_commit_payload(
+        layout,
+        attempt,
+        started,
+        ready,
+        manifest,
+        records_raw,
+        payload_records_raw,
+    )
+    if _canonical_bytes(commit) != _canonical_bytes(expected_commit):
+        raise RegularFilePublicationV2AmbiguousError(
+            "diagnostic commit does not close over the exact collective"
+        )
+    remember(layout.records_name, records_raw)
+    remember(layout.manifest_name, manifest)
+    remember(layout.ready_name, ready)
+    remember(layout.commit_name, commit)
+    return (
+        {
+            "artifact_commit_digest": commit["deterministic_digest"],
+            "artifact_kind": DIAGNOSTIC_ARTIFACT_KIND,
+            "authorization_digest": attempt["authorization_digest"],
+            "collective_manifest_digest": manifest["deterministic_digest"],
+            "output_parent_binding_digest": attempt["output_parent_binding_digest"],
+            "output_path": os.fspath(layout.output_path),
+            "records_payload_jsonl_byte_count": len(payload_records_raw),
+            "records_payload_jsonl_sha256": _sha256_bytes(payload_records_raw),
+            "run_manifest_digest": manifest["run_manifest"]["deterministic_digest"],
+            "status": "COMMITTED",
+            "terminal_digest": commit["deterministic_digest"],
+        },
+        tuple(sorted(snapshots)),
+    )
 
 
 def _terminal_forward_sync_names(
@@ -2521,9 +3767,7 @@ def _terminal_forward_sync_names(
     if status == "INVALID":
         names = [layout.attempt_name, layout.started_name]
         if _name_exists(parent, layout.ready_name):
-            names.extend(
-                (layout.records_name, layout.manifest_name, layout.ready_name)
-            )
+            names.extend((layout.records_name, layout.manifest_name, layout.ready_name))
         names.append(layout.invalid_name)
         return tuple(names)
     if status == "COMMITTED":
@@ -2575,6 +3819,93 @@ def _inspect_once(
     return result, (before_parent, before_reserved)
 
 
+def _inspect_diagnostic_once(
+    parent: _PinnedParent,
+    layout: RegularFileLayoutV2,
+    expected_authorization_digest: str,
+    expected_parent_binding: Mapping[str, Any],
+) -> tuple[
+    dict[str, Any],
+    _CollectiveGenerationV2,
+    tuple[tuple[str, bytes], ...],
+]:
+    parent.assert_path()
+    _assert_no_legacy_namespace(parent)
+    before_parent = _parent_generation(parent)
+    before_reserved = _reserved_generation(parent, layout.reserved_names)
+    result, snapshot = _inspect_diagnostic_payload_once(
+        parent,
+        layout,
+        expected_authorization_digest,
+        expected_parent_binding,
+    )
+    sync_names = _terminal_forward_sync_names(parent, layout, result)
+    for name in sync_names:
+        _forward_sync_exact_regular_file_at(parent, name)
+    if sync_names:
+        parent.fsync()
+    _assert_no_legacy_namespace(parent)
+    after_reserved = _reserved_generation(parent, layout.reserved_names)
+    after_parent = _parent_generation(parent)
+    parent.assert_path()
+    if before_parent != after_parent or before_reserved != after_reserved:
+        raise RegularFilePublicationV2AmbiguousError(
+            "diagnostic collective generation changed during validation"
+        )
+    return result, (before_parent, before_reserved), snapshot
+
+
+def _observe_diagnostic_publication_v2(
+    output_path: Path | str,
+    *,
+    expected_parent_binding: object,
+    authorization_digest: str,
+) -> tuple[
+    RegularFileLayoutV2,
+    dict[str, Any],
+    _CollectiveGenerationV2,
+    tuple[tuple[str, bytes], ...],
+]:
+    _require_posix_capabilities()
+    layout = RegularFileLayoutV2.from_output_path(output_path)
+    expected_authorization = _require_sha256(
+        authorization_digest,
+        "authorization digest",
+    )
+    parent_binding = _freeze_expected_parent_binding(
+        expected_parent_binding,
+        layout.output_path.parent,
+    )
+    parent = _open_bound_parent(layout.output_path.parent, parent_binding)
+    try:
+        _validate_layout_against_parent(parent, layout)
+        first, first_generation, first_snapshot = _inspect_diagnostic_once(
+            parent,
+            layout,
+            expected_authorization,
+            parent_binding,
+        )
+        parent.assert_path()
+        second, second_generation, second_snapshot = _inspect_diagnostic_once(
+            parent,
+            layout,
+            expected_authorization,
+            parent_binding,
+        )
+        parent.assert_path()
+        if (
+            first != second
+            or first_generation != second_generation
+            or first_snapshot != second_snapshot
+        ):
+            raise RegularFilePublicationV2AmbiguousError(
+                "diagnostic collective changed between validation snapshots"
+            )
+        return layout, second, second_generation, second_snapshot
+    finally:
+        parent.close()
+
+
 def inspect_synthetic_publication_v2(
     output_path: Path | str,
     *,
@@ -2618,6 +3949,85 @@ def inspect_synthetic_publication_v2(
         return first
     finally:
         parent.close()
+
+
+def inspect_countdown_thompson_diagnostic_v2(
+    output_path: Path | str,
+    *,
+    expected_parent_binding: object,
+    authorization_digest: str,
+) -> dict[str, Any]:
+    """Independently validate one production-shape v2r3 terminal state."""
+
+    _, result, _, _ = _observe_diagnostic_publication_v2(
+        output_path,
+        expected_parent_binding=expected_parent_binding,
+        authorization_digest=authorization_digest,
+    )
+    return result
+
+
+def verify_countdown_thompson_diagnostic_v2(
+    output_path: Path | str,
+    *,
+    expected_parent_binding: object,
+    authorization_digest: str,
+) -> VerifiedDiagnosticPublicationV2:
+    """Return immutable bytes only for an exact stable COMMITTED collective."""
+
+    layout, result, generation, snapshot = _observe_diagnostic_publication_v2(
+        output_path,
+        expected_parent_binding=expected_parent_binding,
+        authorization_digest=authorization_digest,
+    )
+    if result.get("status") != "COMMITTED":
+        raise RegularFilePublicationV2AmbiguousError(
+            "diagnostic publication is not an exact COMMITTED collective"
+        )
+    captured = dict(snapshot)
+    try:
+        records_raw = captured[layout.records_name]
+        collective_manifest_raw = captured[layout.manifest_name]
+        commit_raw = captured[layout.commit_name]
+        collective_manifest = _parse_verified_object_snapshot(
+            collective_manifest_raw,
+            "verified collective manifest",
+        )
+        run_manifest = collective_manifest["run_manifest"]
+        run_manifest_raw = _canonical_bytes(run_manifest)
+        payload_records_raw = b"".join(
+            _canonical_bytes(frame["payload"])
+            for frame in (
+                strict_json_loads(line[:-1].decode("utf-8"))
+                for line in records_raw.splitlines(keepends=True)
+            )
+        )
+    except (KeyError, TypeError, UnicodeDecodeError, ValueError) as error:
+        raise RegularFilePublicationV2AmbiguousError(
+            "verified diagnostic snapshot could not be frozen"
+        ) from error
+    if (
+        _sha256_bytes(payload_records_raw) != result["records_payload_jsonl_sha256"]
+        or len(payload_records_raw) != result["records_payload_jsonl_byte_count"]
+        or run_manifest.get("deterministic_digest") != result["run_manifest_digest"]
+    ):
+        raise RegularFilePublicationV2AmbiguousError(
+            "verified diagnostic immutable snapshot does not close"
+        )
+    return VerifiedDiagnosticPublicationV2(
+        output_path=layout.output_path,
+        authorization_digest=result["authorization_digest"],
+        output_parent_binding_digest=result["output_parent_binding_digest"],
+        artifact_commit_digest=result["artifact_commit_digest"],
+        collective_manifest_digest=result["collective_manifest_digest"],
+        run_manifest_digest=result["run_manifest_digest"],
+        collective_generation=generation,
+        _records_raw=records_raw,
+        _payload_records_raw=payload_records_raw,
+        _run_manifest_raw=run_manifest_raw,
+        _collective_manifest_raw=collective_manifest_raw,
+        _commit_raw=commit_raw,
+    )
 
 
 def _run_self_test() -> None:
@@ -2675,7 +4085,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     if not args.self_test:
-        parser.error("only --self-test is available; production remains fail-closed")
+        parser.error(
+            "only --self-test is available; production is invoked through the "
+            "reviewed diagnostic runner"
+        )
     _run_self_test()
 
 

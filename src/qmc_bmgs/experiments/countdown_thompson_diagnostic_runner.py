@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Fail-closed controls for the sealed Countdown Thompson diagnostic.
 
-Planning can bind a reviewed v2r3 regular-file namespace, but production
-execution remains disabled until the production publisher and analyzer are
-integrated and reviewed.  The legacy directory publisher is reachable only by
-explicit non-diagnostic fixtures.  ``--self-test`` never reads the sealed task
-cohort.
+Planning and separately reviewed authorization bind one v2r3 regular-file
+namespace.  The production entry point accepts only that exact authorization;
+the legacy directory publisher remains reachable only by explicit
+non-diagnostic fixtures.  ``--self-test`` never reads the sealed task cohort.
 """
 
 from __future__ import annotations
@@ -62,6 +61,12 @@ from qmc_bmgs.substrate.trace import (
 
 RUN_MANIFEST_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-diagnostic-run-manifest/v1"
 RUN_RECORD_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-diagnostic-run-record/v1"
+RUN_MANIFEST_V2R3_SCHEMA_VERSION = (
+    "qmc-bmgs-countdown-thompson-diagnostic-run-manifest/v2r3"
+)
+RUN_RECORD_V2R3_SCHEMA_VERSION = (
+    "qmc-bmgs-countdown-thompson-diagnostic-run-record/v2r3"
+)
 _LEGACY_AUTHORIZATION_SCHEMA_VERSION = (
     "qmc-bmgs-countdown-thompson-diagnostic-execution-authorization/v1"
 )
@@ -180,10 +185,47 @@ _SYNTHETIC_AUTHORIZATION_CLAIM_BOUNDARY = (
     "synthetic protocol fixture authority only; no diagnostic execution, "
     "inferential, superiority, retry, or locked-evaluation authority is granted"
 )
+_FULL_SHAPE_FIXTURE_BUNDLE_ID = "countdown_thompson_nondiagnostic_full_shape_240/v1"
+_FULL_SHAPE_FIXTURE_AUTHORIZATION_SCHEMA_VERSION = (
+    "qmc-bmgs-countdown-thompson-nondiagnostic-full-shape-authorization/v2r3"
+)
+_FULL_SHAPE_FIXTURE_AUTHORIZATION_SCOPE = (
+    "one_exact_nondiagnostic_full_shape_240_cell_fixture"
+)
+_FULL_SHAPE_FIXTURE_EXECUTION_MODE = "nondiagnostic_full_shape_fixture"
+_PRODUCTION_EXECUTION_MODE = "authorized_diagnostic"
+_FULL_SHAPE_FIXTURE_CLAIM_BOUNDARY = (
+    "nondiagnostic full-shaped protocol fixture only; the 240 records exercise "
+    "the production runner, publication, verifier, replay, analysis, and summary "
+    "schemas without opening the sealed diagnostic bundle; no inferential, "
+    "superiority, retry, authorization-review, or locked-evaluation authority"
+)
+_PRODUCTION_RUN_CLAIM_BOUNDARY = (
+    "authorized engineering diagnostic only; no method-superiority, task-transfer, "
+    "retry, or locked-128 execution authority"
+)
+_FULL_SHAPE_FIXTURE_DESIGN_DIGEST = (
+    "f60008e00e7e2e07f9888b35546b593c14c04779b268eb211fc1774df504c4d2"
+)
+_SEALED_DIAGNOSTIC_TASK_FINGERPRINTS = frozenset(
+    {
+        "0406b78647c0798a5c833c17c76c3e0122b7ba419aad5a4153d1f7eca255add1",
+        "4d520f0093ced9dd1564af96f4b060d79985989700ebd8614fe30866eb782b66",
+        "72dd0338377cd3b0b411b10bf45353d846773bc88802e4e230ea42dcbe412b55",
+        "7a5102cd25e4355104fcbe907a2fafed7a553fdd1187be3f2da93000e833b48f",
+        "7ed687b520de55e92951c8a679bab089f35ae704e0a18eba4519e99e472f040c",
+        "9dc9b766b13a4dce6418716c58542c0bbdbbe537d05c2b6cc6c1110744a2d046",
+        "a28f38a47d147626079a0b9efb4ad2a5a7efd5642fb4272c45780869c606012d",
+        "b8b53323d3fbe63c8850318da8ac9b142613b35c7290c2b1d3e4659823037d7c",
+        "c4871dc359ba03b5a902ceb60712380309aff98d5aa8df4caeff827cd634b573",
+        "c65b927aa1e194dc3edeabef7e7030665aa570e5191777e721228edc09a05657",
+        "de96b8c60a3d4fc18d598ab30a9af4adc9f44807ad106a246526412f7a29d041",
+        "eca2d75ca8fcfe101ff858225f94eba1be36d5f75e8864329eb76bf523b75f93",
+    }
+)
 _PUBLICATION_BACKEND_REFUSAL = (
-    "diagnostic execution remains fail-closed: portable atomic directory "
-    "creation authority is unavailable and the production v2r3 publisher and "
-    "analyzer are not integrated; no attempt or outcome was opened"
+    "portable atomic directory creation authority is unavailable; the legacy "
+    "directory publisher remains fixture-only and no attempt or outcome was opened"
 )
 _SYNTHETIC_RUN_CLAIM_BOUNDARY = (
     "non-diagnostic synthetic protocol fixture; byte replay exercises plumbing "
@@ -2896,6 +2938,7 @@ class _Preflight:
     synthetic_components: _ResolvedComponents | None = None
     synthetic_method_manifest_digest: str | None = None
     synthetic_expected_cell_count: int | None = None
+    nondiagnostic_full_shape_fixture_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2914,6 +2957,315 @@ class _SyntheticFixtureBundleSnapshot:
         return parsed
 
 
+@dataclass(frozen=True)
+class _FullShapeFixtureBundleSnapshot:
+    """Immutable bytes for the positively identified 240-cell fixture."""
+
+    _payload_bytes: bytes
+    cells: tuple[DiagnosticCell, ...]
+    seal_digest: str
+
+    @property
+    def payloads(self) -> dict[str, Any]:
+        parsed = strict_json_loads(self._payload_bytes.decode("utf-8"))
+        if type(parsed) is not dict:
+            raise DiagnosticRunnerError(
+                "full-shaped fixture payload snapshot is not an object"
+            )
+        return parsed
+
+
+@dataclass(frozen=True)
+class _V2R3ExecutionSnapshot:
+    """Immutable pre-STARTED inputs shared by fixture and diagnostic runs."""
+
+    _payloads_raw: bytes
+    cells: tuple[DiagnosticCell, ...]
+    _qualification_raw: bytes
+    runtime_qualification_digest: str
+    _build_raw: bytes
+    execution_head_revision: str
+    output_path: Path
+    _output_parent_binding_raw: bytes
+    _authorization_raw: bytes
+    reviewed_authorization_revision: str
+    seal_digest: str
+    bundle_id: str
+    method_manifest_digest: str
+    schedule_digest: str
+    claim_boundary: str
+    execution_mode: str
+
+    @staticmethod
+    def _object(raw: bytes, label: str) -> dict[str, Any]:
+        try:
+            parsed = strict_json_loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, TraceValidationError) as error:
+            raise DiagnosticRunnerError(f"{label} snapshot is invalid") from error
+        if type(parsed) is not dict or _canonical_bytes(parsed) != raw:
+            raise DiagnosticRunnerError(f"{label} snapshot is not canonical")
+        return parsed
+
+    @property
+    def payloads(self) -> dict[str, Any]:
+        return self._object(self._payloads_raw, "execution payloads")
+
+    @property
+    def qualification(self) -> dict[str, Any]:
+        return self._object(self._qualification_raw, "runtime qualification")
+
+    @property
+    def build(self) -> dict[str, Any]:
+        return self._object(self._build_raw, "runner build")
+
+    @property
+    def output_parent_binding(self) -> dict[str, Any]:
+        return self._object(
+            self._output_parent_binding_raw,
+            "output parent binding",
+        )
+
+    @property
+    def authorization(self) -> dict[str, Any]:
+        return self._object(self._authorization_raw, "execution authorization")
+
+
+_FULL_SHAPE_FIXTURE_TASKS = tuple(
+    (tuple((1, 2, 3, 4, 5, last)), 120 * last) for last in range(6, 18)
+)
+
+
+def _full_shape_fixture_methods() -> dict[str, TrackAMethodSpec]:
+    return {
+        "greedy": TrackAMethodSpec.greedy(),
+        "beam_width_2": TrackAMethodSpec.beam_width_two(),
+        "puct_c1": TrackAMethodSpec.puct(),
+        "thompson_candidate_iid_v1": TrackAMethodSpec.candidate_thompson("iid"),
+        "thompson_dimnorm_iid_v2": (
+            TrackAMethodSpec.dimension_normalized_thompson("iid")
+        ),
+        "thompson_dense_iid_v3": (
+            TrackAMethodSpec.dimension_normalized_dense_thompson("iid")
+        ),
+        "thompson_greedy_anchor_dense_iid_v4": (
+            TrackAMethodSpec.greedy_anchored_dimension_normalized_dense_thompson("iid")
+        ),
+    }
+
+
+def _full_shape_fixture_budget() -> TrackABudgetProfile:
+    return TrackABudgetProfile(
+        profile_id="score256",
+        primary_axis="legal_action_scores",
+        budget=TrackAWorkBudget(
+            proposal_state_evaluations=87,
+            proposal_action_scores=317,
+            legal_action_scores=256,
+            generated_perturbation_coordinates=316,
+            edge_selections=86,
+            transitions=86,
+            verifier_calls=18,
+        ),
+    )
+
+
+def _full_shape_fixture_design() -> tuple[dict[str, Any], str]:
+    tasks = [
+        CountdownTask(inputs, target) for inputs, target in _FULL_SHAPE_FIXTURE_TASKS
+    ]
+    proposals = {
+        "heuristic": TrackAProposalSpec("greedy_rollout_target_error/v1"),
+        "oracle_positive_control": TrackAProposalSpec(
+            "oracle_path_count_positive_control/v1"
+        ),
+    }
+    methods = _full_shape_fixture_methods()
+    budget = _full_shape_fixture_budget()
+    if {task.task_fingerprint for task in tasks}.intersection(
+        _SEALED_DIAGNOSTIC_TASK_FINGERPRINTS
+    ):
+        raise DiagnosticRunnerError(
+            "nondiagnostic fixture overlaps the sealed task cohort"
+        )
+    schedule: list[dict[str, Any]] = []
+    for task in tasks:
+        for method_label in _DETERMINISTIC_METHOD_LABELS:
+            schedule.append(
+                {
+                    "budget_profile_id": budget.profile_id,
+                    "exploration_seed": 0,
+                    "method_label": method_label,
+                    "proposal_label": "heuristic",
+                    "task_fingerprint": task.task_fingerprint,
+                }
+            )
+        for method_label in _STOCHASTIC_METHOD_LABELS:
+            for exploration_seed in _DIAGNOSTIC_EXPLORATION_SEEDS:
+                schedule.append(
+                    {
+                        "budget_profile_id": budget.profile_id,
+                        "exploration_seed": exploration_seed,
+                        "method_label": method_label,
+                        "proposal_label": "heuristic",
+                        "task_fingerprint": task.task_fingerprint,
+                    }
+                )
+        schedule.append(
+            {
+                "budget_profile_id": budget.profile_id,
+                "exploration_seed": 0,
+                "method_label": "greedy",
+                "proposal_label": "oracle_positive_control",
+                "task_fingerprint": task.task_fingerprint,
+            }
+        )
+    design = {
+        "budget": budget.to_dict(),
+        "bundle_id": _FULL_SHAPE_FIXTURE_BUNDLE_ID,
+        "methods": [
+            {"label": label, "spec": methods[label].to_dict()}
+            for label in (*_DETERMINISTIC_METHOD_LABELS, *_STOCHASTIC_METHOD_LABELS)
+        ],
+        "proposals": [
+            {"label": label, "spec": proposals[label].to_dict()}
+            for label in ("heuristic", "oracle_positive_control")
+        ],
+        "schedule": schedule,
+        "tasks": [task.to_dict() for task in tasks],
+    }
+    return design, sha256_json(design)
+
+
+def _build_nondiagnostic_full_shape_bundle() -> _FullShapeFixtureBundleSnapshot:
+    """Build the fixed 240-cell shape without reading the sealed bundle."""
+
+    design, design_digest = _full_shape_fixture_design()
+    if design_digest != _FULL_SHAPE_FIXTURE_DESIGN_DIGEST:
+        raise DiagnosticRunnerError(
+            "nondiagnostic full-shaped fixture design digest drifted"
+        )
+    tasks_payload = _with_digest(
+        {
+            "bundle_id": _FULL_SHAPE_FIXTURE_BUNDLE_ID,
+            "schema_version": "qmc-bmgs-nondiagnostic-full-shape-tasks/v1",
+            "tasks": design["tasks"],
+        }
+    )
+    proposals_payload = _with_digest(
+        {
+            "bundle_id": _FULL_SHAPE_FIXTURE_BUNDLE_ID,
+            "policies": [
+                {
+                    "label": row["label"],
+                    "spec": row["spec"],
+                    "spec_digest": sha256_json(row["spec"]),
+                }
+                for row in design["proposals"]
+            ],
+            "schema_version": "qmc-bmgs-nondiagnostic-full-shape-proposals/v1",
+        }
+    )
+    methods_payload = _with_digest(
+        {
+            "bundle_id": _FULL_SHAPE_FIXTURE_BUNDLE_ID,
+            "methods": [
+                {
+                    "label": row["label"],
+                    "spec": row["spec"],
+                    "spec_digest": sha256_json(row["spec"]),
+                }
+                for row in design["methods"]
+            ],
+            "runtime_bindings": _frozen_diagnostic_runtime_bindings(),
+            "schema_version": "qmc-bmgs-nondiagnostic-full-shape-methods/v1",
+        }
+    )
+    budgets_payload = _with_digest(
+        {
+            "bundle_id": _FULL_SHAPE_FIXTURE_BUNDLE_ID,
+            "profile_order": ["score256"],
+            "profiles": [
+                {
+                    "spec": design["budget"],
+                    "spec_digest": sha256_json(design["budget"]),
+                }
+            ],
+            "schema_version": "qmc-bmgs-nondiagnostic-full-shape-budgets/v1",
+        }
+    )
+    proposals = {
+        row["label"]: TrackAProposalSpec(row["spec"]["policy_id"])
+        for row in design["proposals"]
+    }
+    methods = _full_shape_fixture_methods()
+    budget = _full_shape_fixture_budget()
+    cells = tuple(
+        DiagnosticCell(
+            task_fingerprint=row["task_fingerprint"],
+            proposal_label=row["proposal_label"],
+            proposal_spec_digest=proposals[row["proposal_label"]].deterministic_digest,
+            method_label=row["method_label"],
+            method_spec_digest=sha256_json(methods[row["method_label"]].to_dict()),
+            method_manifest_digest=methods_payload["deterministic_digest"],
+            budget_profile_id=row["budget_profile_id"],
+            budget_profile_spec_digest=sha256_json(budget.to_dict()),
+            exploration_seed=row["exploration_seed"],
+            task_manifest_digest=tasks_payload["deterministic_digest"],
+        )
+        for row in design["schedule"]
+    )
+    schedule_rows = [cell.to_dict() for cell in cells]
+    preregistration_payload = _with_digest(
+        {
+            "bundle_id": _FULL_SHAPE_FIXTURE_BUNDLE_ID,
+            "execution_matrix": {
+                "cell_count": len(cells),
+                "schedule": schedule_rows,
+                "schedule_digest": sha256_json(schedule_rows),
+            },
+            "fixture_design_digest": design_digest,
+            "schema_version": ("qmc-bmgs-nondiagnostic-full-shape-preregistration/v1"),
+        }
+    )
+    payloads = {
+        "budgets.json": budgets_payload,
+        "diagnostic_tasks.json": tasks_payload,
+        "methods.json": methods_payload,
+        "preregistration.json": preregistration_payload,
+        "proposals.json": proposals_payload,
+    }
+    payloads_snapshot, payloads_raw = _snapshot_json_object(
+        payloads,
+        "nondiagnostic full-shaped fixture payloads",
+    )
+    if (
+        len(cells) != EXPECTED_CELL_COUNT
+        or len({cell.cell_id for cell in cells}) != EXPECTED_CELL_COUNT
+        or payloads_snapshot["preregistration.json"]["execution_matrix"][
+            "schedule_digest"
+        ]
+        != sha256_json(schedule_rows)
+    ):
+        raise DiagnosticRunnerError(
+            "nondiagnostic full-shaped fixture schedule drifted"
+        )
+    components = _resolve_components(payloads_snapshot)
+    for cell in cells:
+        _validate_cell_component_bindings(
+            cell,
+            task=components.tasks[cell.task_fingerprint],
+            proposal=components.proposals[cell.proposal_label],
+            method=components.methods[cell.method_label],
+            budget_profile=components.budgets[cell.budget_profile_id],
+            method_manifest_digest=methods_payload["deterministic_digest"],
+        )
+    return _FullShapeFixtureBundleSnapshot(
+        _payload_bytes=payloads_raw,
+        cells=cells,
+        seal_digest=design_digest,
+    )
+
+
 def _snapshot_json_object(value: object, label: str) -> tuple[dict[str, Any], bytes]:
     if type(value) is not dict:
         raise DiagnosticRunnerError(f"{label} is not an exact JSON object")
@@ -2926,7 +3278,7 @@ def _snapshot_json_object(value: object, label: str) -> tuple[dict[str, Any], by
 
 def _snapshot_diagnostic_cell(cell: object) -> DiagnosticCell:
     if type(cell) is not DiagnosticCell:
-        raise DiagnosticRunnerError("synthetic schedule contains a non-exact cell")
+        raise DiagnosticRunnerError("execution schedule contains a non-exact cell")
     observed = cell.to_dict()
     snapshot = DiagnosticCell(
         task_fingerprint=cell.task_fingerprint,
@@ -2941,7 +3293,7 @@ def _snapshot_diagnostic_cell(cell: object) -> DiagnosticCell:
         exploration_seed=cell.exploration_seed,
     )
     if type(observed) is not dict or snapshot.to_dict() != observed:
-        raise DiagnosticRunnerError("synthetic schedule cell snapshot drifted")
+        raise DiagnosticRunnerError("execution schedule cell snapshot drifted")
     return snapshot
 
 
@@ -3144,13 +3496,26 @@ def _preflight_reviewed_parent_binding(
         raise DiagnosticNotRunError(str(error)) from error
 
 
+def _revalidate_reviewed_parent_binding(
+    output_path: Path | str,
+    expected_parent_binding: object,
+) -> dict[str, Any]:
+    try:
+        return regular_file_publication.revalidate_reviewed_parent_binding_v2(
+            output_path,
+            expected_parent_binding,
+        )
+    except regular_file_publication.RegularFilePublicationV2AmbiguousError as error:
+        raise DiagnosticPublicationStateAmbiguousError(str(error)) from error
+    except regular_file_publication.RegularFilePublicationV2NotRunError as error:
+        raise DiagnosticNotRunError(str(error)) from error
+
+
 def _capture_planning_parent_binding(
     output_path: Path | str,
 ) -> dict[str, Any]:
     try:
-        return regular_file_publication.build_synthetic_parent_binding_v2(
-            output_path
-        )
+        return regular_file_publication.build_synthetic_parent_binding_v2(output_path)
     except regular_file_publication.RegularFilePublicationV2AmbiguousError as error:
         raise DiagnosticPublicationStateAmbiguousError(str(error)) from error
     except regular_file_publication.RegularFilePublicationV2NotRunError as error:
@@ -3182,10 +3547,60 @@ def _publication_environment_requirements(
                 "regular_file_and_directory_fsync/v1",
                 "stable_st_dev_st_ino_within_identity_epoch/v1",
             ],
-            "schema_version": (
-                PUBLICATION_ENVIRONMENT_REQUIREMENTS_SCHEMA_VERSION
-            ),
+            "schema_version": (PUBLICATION_ENVIRONMENT_REQUIREMENTS_SCHEMA_VERSION),
         }
+    )
+
+
+def _fresh_nondiagnostic_full_shape_preflight(
+    output_path: Path | str,
+    repository_root: Path,
+) -> _Preflight:
+    """Prepare the fixed fixture without touching the sealed diagnostic."""
+
+    layout = _regular_file_layout(output_path)
+    output = layout.output_path
+    lexical_repository = Path(os.path.abspath(os.fspath(repository_root)))
+    repository = Path(repository_root).resolve()
+    if (
+        output == lexical_repository
+        or output.is_relative_to(lexical_repository)
+        or output == repository
+        or output.is_relative_to(repository)
+    ):
+        raise DiagnosticRunnerError("fixture output must lie outside the repository")
+    parent_binding = _capture_planning_parent_binding(output)
+    parent_binding = _preflight_reviewed_parent_binding(output, parent_binding)
+    diagnostic_qualification = _qualify_diagnostic_runtime()
+    qualification = {
+        "bundle_id": _FULL_SHAPE_FIXTURE_BUNDLE_ID,
+        "execution_authorized": False,
+        "runtime_bindings_digest": diagnostic_qualification["runtime_bindings_digest"],
+        "status": "NONDIAGNOSTIC_FIXTURE_RUNTIME_QUALIFIED",
+    }
+    build = _attest_clean_source_build(
+        repository,
+        authorized_runner_revision=None,
+    )
+    bundle = _build_nondiagnostic_full_shape_bundle()
+    _recheck_source_closure(repository, build)
+    parent_binding = _preflight_reviewed_parent_binding(output, parent_binding)
+    return _Preflight(
+        bundle=bundle,
+        cells=bundle.cells,
+        qualification=qualification,
+        runtime_qualification_digest=sha256_json(qualification),
+        build=build,
+        output_path=output,
+        publication_backend=_REGULAR_FILE_PUBLICATION_BACKEND,
+        synthetic_fixture_digest=None,
+        artifact_layout=_REGULAR_FILE_ARTIFACT_LAYOUT,
+        output_path_digest=layout.output_path_digest,
+        output_parent_binding=parent_binding,
+        publication_environment_requirements=(
+            _publication_environment_requirements(parent_binding)
+        ),
+        nondiagnostic_full_shape_fixture_digest=bundle.seal_digest,
     )
 
 
@@ -3369,16 +3784,12 @@ def _authorization_payload_from_preflight(
         if _canonical_bytes(requirements) != _canonical_bytes(
             preflight.publication_environment_requirements
         ):
-            raise DiagnosticRunnerError(
-                "publication environment requirements drifted"
-            )
+            raise DiagnosticRunnerError("publication environment requirements drifted")
         core.update(
             {
                 "artifact_layout": _REGULAR_FILE_ARTIFACT_LAYOUT,
                 "output_parent_binding": parent_binding,
-                "output_parent_binding_digest": parent_binding[
-                    "deterministic_digest"
-                ],
+                "output_parent_binding_digest": parent_binding["deterministic_digest"],
                 "output_path_digest": layout.output_path_digest,
                 "publication_backend": _REGULAR_FILE_PUBLICATION_BACKEND,
                 "publication_environment_requirements": requirements,
@@ -3394,6 +3805,251 @@ def _authorization_payload(preflight: _Preflight) -> dict[str, Any]:
     return _authorization_payload_from_preflight(
         preflight,
         synthetic_fixture=synthetic_fixture,
+    )
+
+
+def _full_shape_fixture_authorization_payload(
+    preflight: _Preflight,
+) -> dict[str, Any]:
+    """Build a v2-shaped authority that the production loader must reject."""
+
+    if (
+        type(preflight) is not _Preflight
+        or type(preflight.bundle) is not _FullShapeFixtureBundleSnapshot
+        or preflight.bundle.seal_digest != _FULL_SHAPE_FIXTURE_DESIGN_DIGEST
+        or preflight.nondiagnostic_full_shape_fixture_digest
+        != _FULL_SHAPE_FIXTURE_DESIGN_DIGEST
+        or type(preflight.cells) is not tuple
+        or len(preflight.cells) != EXPECTED_CELL_COUNT
+        or preflight.cells != preflight.bundle.cells
+        or preflight.publication_backend != _REGULAR_FILE_PUBLICATION_BACKEND
+        or preflight.artifact_layout != _REGULAR_FILE_ARTIFACT_LAYOUT
+        or preflight.output_parent_binding is None
+        or preflight.publication_environment_requirements is None
+    ):
+        raise DiagnosticRunnerError(
+            "full-shaped fixture preflight identity is incomplete"
+        )
+    _, design_digest = _full_shape_fixture_design()
+    payloads = preflight.bundle.payloads
+    if (
+        design_digest != _FULL_SHAPE_FIXTURE_DESIGN_DIGEST
+        or payloads["preregistration.json"].get("fixture_design_digest")
+        != design_digest
+        or payloads["preregistration.json"]["execution_matrix"]["schedule"]
+        != [cell.to_dict() for cell in preflight.cells]
+    ):
+        raise DiagnosticRunnerError("full-shaped fixture content drifted")
+    layout = _regular_file_layout(preflight.output_path)
+    parent_binding = _freeze_reviewed_parent_binding(
+        preflight.output_path,
+        preflight.output_parent_binding,
+    )
+    requirements = _publication_environment_requirements(parent_binding)
+    if preflight.output_path_digest != layout.output_path_digest or _canonical_bytes(
+        requirements
+    ) != _canonical_bytes(preflight.publication_environment_requirements):
+        raise DiagnosticRunnerError("full-shaped fixture publication binding drifted")
+    core = {
+        "artifact_id": layout.output_path.name,
+        "artifact_layout": _REGULAR_FILE_ARTIFACT_LAYOUT,
+        "authorization_scope": _FULL_SHAPE_FIXTURE_AUTHORIZATION_SCOPE,
+        "bundle_id": _FULL_SHAPE_FIXTURE_BUNDLE_ID,
+        "cell_count": EXPECTED_CELL_COUNT,
+        "claim_boundary": _FULL_SHAPE_FIXTURE_CLAIM_BOUNDARY,
+        "diagnostic_seal_digest": _FULL_SHAPE_FIXTURE_DESIGN_DIGEST,
+        "method_manifest_digest": payloads["methods.json"]["deterministic_digest"],
+        "output_parent_binding": parent_binding,
+        "output_parent_binding_digest": parent_binding["deterministic_digest"],
+        "output_path": os.fspath(layout.output_path),
+        "output_path_digest": layout.output_path_digest,
+        "publication_backend": _REGULAR_FILE_PUBLICATION_BACKEND,
+        "publication_environment_requirements": requirements,
+        "requires_explicit_digest_confirmation": True,
+        "runner_build_attestation": preflight.build.payload,
+        "runtime_qualification": preflight.qualification,
+        "runtime_qualification_digest": preflight.runtime_qualification_digest,
+        "schedule_digest": payloads["preregistration.json"]["execution_matrix"][
+            "schedule_digest"
+        ],
+        "schema_version": _FULL_SHAPE_FIXTURE_AUTHORIZATION_SCHEMA_VERSION,
+    }
+    result = _with_digest(core)
+    if set(result) != _AUTHORIZATION_V2_FIELDS:
+        raise DiagnosticRunnerError("full-shaped fixture authorization shape drifted")
+    return result
+
+
+def _snapshot_v2r3_execution_inputs(
+    preflight: _Preflight,
+    authorization: object,
+    *,
+    reviewed_authorization_revision: str,
+    execution_mode: str,
+) -> _V2R3ExecutionSnapshot:
+    """Detach every mutable input before the regular-file publisher is called."""
+
+    if type(preflight) is not _Preflight or execution_mode not in {
+        _PRODUCTION_EXECUTION_MODE,
+        _FULL_SHAPE_FIXTURE_EXECUTION_MODE,
+    }:
+        raise DiagnosticRunnerError("v2r3 execution mode is unsupported")
+    observed_authorization, authorization_raw = _snapshot_json_object(
+        authorization,
+        "v2r3 execution authorization",
+    )
+    _require_sha256(
+        observed_authorization.get("deterministic_digest"),
+        "v2r3 execution authorization digest",
+    )
+    if execution_mode == _PRODUCTION_EXECUTION_MODE:
+        expected_authorization = _authorization_payload(preflight)
+        expected_schema = AUTHORIZATION_SCHEMA_VERSION
+        expected_scope = "one_exact_complete_240_cell_diagnostic_run"
+        expected_bundle_id = BUNDLE_ID
+        expected_seal_digest = EXPECTED_SEAL_DIGEST
+        expected_claim = _PRODUCTION_RUN_CLAIM_BOUNDARY
+        if type(preflight.bundle) is _FullShapeFixtureBundleSnapshot:
+            raise DiagnosticRunnerError(
+                "nondiagnostic fixture cannot enter production execution mode"
+            )
+    else:
+        expected_authorization = _full_shape_fixture_authorization_payload(preflight)
+        expected_schema = _FULL_SHAPE_FIXTURE_AUTHORIZATION_SCHEMA_VERSION
+        expected_scope = _FULL_SHAPE_FIXTURE_AUTHORIZATION_SCOPE
+        expected_bundle_id = _FULL_SHAPE_FIXTURE_BUNDLE_ID
+        expected_seal_digest = _FULL_SHAPE_FIXTURE_DESIGN_DIGEST
+        expected_claim = _FULL_SHAPE_FIXTURE_CLAIM_BOUNDARY
+    if authorization_raw != _canonical_bytes(expected_authorization):
+        raise DiagnosticRunnerError(
+            "v2r3 authorization does not exact-match frozen preflight"
+        )
+    if (
+        set(observed_authorization) != _AUTHORIZATION_V2_FIELDS
+        or observed_authorization.get("schema_version") != expected_schema
+        or observed_authorization.get("authorization_scope") != expected_scope
+        or observed_authorization.get("bundle_id") != expected_bundle_id
+        or observed_authorization.get("diagnostic_seal_digest") != expected_seal_digest
+        or observed_authorization.get("cell_count") != EXPECTED_CELL_COUNT
+        or observed_authorization.get("claim_boundary")
+        != (
+            _FULL_SHAPE_FIXTURE_CLAIM_BOUNDARY
+            if execution_mode == _FULL_SHAPE_FIXTURE_EXECUTION_MODE
+            else (
+                "execution authority only; this engineering diagnostic grants no "
+                "method-superiority or locked-128 execution authority"
+            )
+        )
+    ):
+        raise DiagnosticRunnerError("v2r3 authorization identity drifted")
+
+    payloads, payloads_raw = _snapshot_json_object(
+        getattr(preflight.bundle, "payloads", None),
+        "v2r3 bundle payloads",
+    )
+    cells_value = preflight.cells
+    bundle_cells_value = getattr(preflight.bundle, "cells", None)
+    if type(cells_value) is not tuple or type(bundle_cells_value) is not tuple:
+        raise DiagnosticRunnerError("v2r3 schedule must be one exact tuple")
+    cells = tuple(_snapshot_diagnostic_cell(cell) for cell in cells_value)
+    bundle_cells = tuple(_snapshot_diagnostic_cell(cell) for cell in bundle_cells_value)
+    schedule_rows = [cell.to_dict() for cell in cells]
+    matrix = payloads.get("preregistration.json", {}).get("execution_matrix")
+    if (
+        cells != bundle_cells
+        or len(cells) != EXPECTED_CELL_COUNT
+        or len({cell.cell_id for cell in cells}) != EXPECTED_CELL_COUNT
+        or type(matrix) is not dict
+        or matrix.get("cell_count") != EXPECTED_CELL_COUNT
+        or matrix.get("schedule") != schedule_rows
+        or matrix.get("schedule_digest") != sha256_json(schedule_rows)
+        or observed_authorization.get("schedule_digest")
+        != matrix.get("schedule_digest")
+    ):
+        raise DiagnosticRunnerError("v2r3 execution schedule drifted")
+    _validate_outcome_blind_budget_guards(payloads)
+    components = _resolve_components(payloads)
+    method_manifest_digest = _require_sha256(
+        payloads["methods.json"].get("deterministic_digest"),
+        "v2r3 method manifest digest",
+    )
+    if observed_authorization.get("method_manifest_digest") != method_manifest_digest:
+        raise DiagnosticRunnerError("v2r3 method manifest authority drifted")
+    for cell in cells:
+        _validate_cell_component_bindings(
+            cell,
+            task=components.tasks[cell.task_fingerprint],
+            proposal=components.proposals[cell.proposal_label],
+            method=components.methods[cell.method_label],
+            budget_profile=components.budgets[cell.budget_profile_id],
+            method_manifest_digest=method_manifest_digest,
+        )
+    qualification, qualification_raw = _snapshot_json_object(
+        preflight.qualification,
+        "v2r3 runtime qualification",
+    )
+    qualification_digest = _require_sha256(
+        preflight.runtime_qualification_digest,
+        "v2r3 runtime qualification digest",
+    )
+    build, build_raw = _snapshot_json_object(
+        preflight.build.payload,
+        "v2r3 runner build attestation",
+    )
+    _validate_authorized_build_attestation_structure(build)
+    execution_head = _require_git_oid(
+        preflight.build.current_head,
+        "v2r3 execution HEAD",
+    )
+    parent_binding = _freeze_reviewed_parent_binding(
+        preflight.output_path,
+        preflight.output_parent_binding,
+    )
+    _, parent_binding_raw = _snapshot_json_object(
+        parent_binding,
+        "v2r3 output parent binding",
+    )
+    reviewed_revision = _require_git_oid(
+        reviewed_authorization_revision,
+        "reviewed authorization revision",
+    )
+    seal_digest = _require_sha256(
+        getattr(preflight.bundle, "seal_digest", None),
+        "v2r3 bundle seal digest",
+    )
+    if (
+        seal_digest != expected_seal_digest
+        or qualification_digest != sha256_json(qualification)
+        or observed_authorization.get("runtime_qualification") != qualification
+        or observed_authorization.get("runtime_qualification_digest")
+        != qualification_digest
+        or observed_authorization.get("runner_build_attestation") != build
+        or observed_authorization.get("output_parent_binding") != parent_binding
+        or observed_authorization.get("output_parent_binding_digest")
+        != parent_binding["deterministic_digest"]
+    ):
+        raise DiagnosticRunnerError("v2r3 immutable execution inputs drifted")
+    return _V2R3ExecutionSnapshot(
+        _payloads_raw=payloads_raw,
+        cells=cells,
+        _qualification_raw=qualification_raw,
+        runtime_qualification_digest=qualification_digest,
+        _build_raw=build_raw,
+        execution_head_revision=execution_head,
+        output_path=_snapshot_exact_absolute_path(
+            preflight.output_path,
+            "v2r3 output path",
+            require_leaf=True,
+        ),
+        _output_parent_binding_raw=parent_binding_raw,
+        _authorization_raw=authorization_raw,
+        reviewed_authorization_revision=reviewed_revision,
+        seal_digest=seal_digest,
+        bundle_id=expected_bundle_id,
+        method_manifest_digest=method_manifest_digest,
+        schedule_digest=matrix["schedule_digest"],
+        claim_boundary=expected_claim,
+        execution_mode=execution_mode,
     )
 
 
@@ -3557,8 +4213,7 @@ def _reviewed_authorization_parent_binding(
         or type(authorization.get("output_path")) is not str
         or authorization.get("output_path") != os.fspath(layout.output_path)
         or authorization.get("artifact_layout") != _REGULAR_FILE_ARTIFACT_LAYOUT
-        or authorization.get("publication_backend")
-        != _REGULAR_FILE_PUBLICATION_BACKEND
+        or authorization.get("publication_backend") != _REGULAR_FILE_PUBLICATION_BACKEND
     ):
         raise DiagnosticRunnerError(
             "authorization publication identity does not match requested output"
@@ -3590,9 +4245,7 @@ def _reviewed_authorization_parent_binding(
             "authorization parent binding digest does not exact-match"
         )
     requirements = _publication_environment_requirements(parent_binding)
-    observed_requirements = authorization.get(
-        "publication_environment_requirements"
-    )
+    observed_requirements = authorization.get("publication_environment_requirements")
     if type(observed_requirements) is not dict or _canonical_bytes(
         observed_requirements
     ) != _canonical_bytes(requirements):
@@ -3776,6 +4429,8 @@ def _execute_cell(
     runtime_qualification_digest: str,
     runner_build_digest: str,
     search_build_digest: str,
+    bundle_id: str = BUNDLE_ID,
+    record_schema_version: str = RUN_RECORD_SCHEMA_VERSION,
 ) -> dict[str, Any]:
     """Execute and independently replay one already-authorized typed cell."""
 
@@ -3817,6 +4472,10 @@ def _execute_cell(
     non_primary = {
         axis: ledger["remaining"][axis] for axis in TRACK_A_WORK_AXES if axis != primary
     }
+    if type(bundle_id) is not str or not bundle_id:
+        raise DiagnosticRunnerError("record bundle identity is invalid")
+    if type(record_schema_version) is not str or not record_schema_version:
+        raise DiagnosticRunnerError("record schema identity is invalid")
     record_core = {
         "budget_evidence": {
             "blocked_axes": result.summary["stop_blocked_axes"],
@@ -3829,7 +4488,7 @@ def _execute_cell(
             "stop_reason": result.summary["stop_reason"],
             "usage": ledger["usage"],
         },
-        "bundle_id": BUNDLE_ID,
+        "bundle_id": bundle_id,
         "diagnostic_seal_digest": diagnostic_seal_digest,
         "cell_id": cell.cell_id,
         "cell_key": cell.key,
@@ -3849,7 +4508,7 @@ def _execute_cell(
         },
         "runner_build_digest": runner_build_digest,
         "runtime_qualification_digest": runtime_qualification_digest,
-        "schema_version": RUN_RECORD_SCHEMA_VERSION,
+        "schema_version": record_schema_version,
         "search_build_digest": search_build_digest,
         "search_record": result.record,
         "search_run_identity_digest": result.run_identity_digest,
@@ -5604,6 +6263,285 @@ def _publish_run_artifact_locked(
         _close_descriptor_best_effort(attempt.directory_fd)
 
 
+def _execute_v2r3_batch(
+    snapshot: _V2R3ExecutionSnapshot,
+    context: regular_file_publication.DiagnosticPublicationContextV2,
+    *,
+    post_execution_check: Callable[[], None] | None = None,
+) -> regular_file_publication.DiagnosticPublicationBatchV2:
+    """Execute the shared 240-cell action only after durable STARTED authority."""
+
+    if (
+        type(snapshot) is not _V2R3ExecutionSnapshot
+        or type(context) is not regular_file_publication.DiagnosticPublicationContextV2
+    ):
+        raise DiagnosticRunnerError("v2r3 execution snapshot type drifted")
+    authorization = snapshot.authorization
+    if (
+        context.artifact_id != authorization.get("artifact_id")
+        or context.artifact_layout != authorization.get("artifact_layout")
+        or context.authorization_digest != authorization.get("deterministic_digest")
+        or context.output_parent_binding_digest
+        != authorization.get("output_parent_binding_digest")
+        or context.output_path != authorization.get("output_path")
+        or context.output_path_digest != authorization.get("output_path_digest")
+        or context.publication_backend != authorization.get("publication_backend")
+    ):
+        raise DiagnosticRunnerError(
+            "STARTED publication context does not match authorization"
+        )
+    payloads = snapshot.payloads
+    components = _resolve_components(payloads)
+    build = snapshot.build
+    qualification = snapshot.qualification
+    records: list[dict[str, Any]] = []
+    record_digests: list[str] = []
+    cell_ids: list[str] = []
+    replay_wall_time_ns_total = 0
+    search_wall_time_ns_total = 0
+    for cell in snapshot.cells:
+        record = _execute_cell(
+            cell,
+            task=components.tasks[cell.task_fingerprint],
+            proposal=components.proposals[cell.proposal_label],
+            method=components.methods[cell.method_label],
+            budget_profile=components.budgets[cell.budget_profile_id],
+            diagnostic_seal_digest=snapshot.seal_digest,
+            method_manifest_digest=snapshot.method_manifest_digest,
+            runtime_qualification_digest=(snapshot.runtime_qualification_digest),
+            runner_build_digest=build["runner_build_digest"],
+            search_build_digest=build["search_build_digest"],
+            bundle_id=snapshot.bundle_id,
+            record_schema_version=RUN_RECORD_V2R3_SCHEMA_VERSION,
+        )
+        if record.get("cell_id") != cell.cell_id:
+            raise DiagnosticRunnerError("executed v2r3 cell identity drifted")
+        record_digest = _require_sha256(
+            record.get("deterministic_digest"),
+            "executed v2r3 record digest",
+        )
+        telemetry = record.get("telemetry")
+        if (
+            type(telemetry) is not dict
+            or telemetry.get("role") != _TELEMETRY_ROLE
+            or type(telemetry.get("search_wall_time_ns")) is not int
+            or telemetry["search_wall_time_ns"] < 0
+            or type(telemetry.get("replay_wall_time_ns")) is not int
+            or telemetry["replay_wall_time_ns"] < 0
+        ):
+            raise DiagnosticRunnerError("executed v2r3 telemetry drifted")
+        search_wall_time_ns_total += telemetry["search_wall_time_ns"]
+        replay_wall_time_ns_total += telemetry["replay_wall_time_ns"]
+        records.append(record)
+        record_digests.append(record_digest)
+        cell_ids.append(record["cell_id"])
+    expected_ids = [cell.cell_id for cell in snapshot.cells]
+    if (
+        cell_ids != expected_ids
+        or len(set(cell_ids)) != EXPECTED_CELL_COUNT
+        or len(set(record_digests)) != EXPECTED_CELL_COUNT
+    ):
+        raise DiagnosticRunnerError(
+            "executed v2r3 schedule is incomplete, duplicated, or reordered"
+        )
+    payload_records_raw = b"".join(_canonical_bytes(record) for record in records)
+    run_manifest = _with_digest(
+        {
+            "artifact_id": context.artifact_id,
+            "artifact_layout": context.artifact_layout,
+            "attempt_id": context.attempt_receipt_digest,
+            "attempt_receipt_digest": context.attempt_receipt_digest,
+            "authorization_schema_version": authorization["schema_version"],
+            "authorized_output_path": context.output_path,
+            "bundle_id": snapshot.bundle_id,
+            "cell_count": EXPECTED_CELL_COUNT,
+            "claim_boundary": snapshot.claim_boundary,
+            "diagnostic_seal_digest": snapshot.seal_digest,
+            "execution_authorization": authorization,
+            "execution_authorization_digest": context.authorization_digest,
+            "execution_head_revision": snapshot.execution_head_revision,
+            "execution_mode": snapshot.execution_mode,
+            "fixture_design_digest": (
+                snapshot.seal_digest
+                if snapshot.execution_mode == _FULL_SHAPE_FIXTURE_EXECUTION_MODE
+                else None
+            ),
+            "method_manifest_digest": snapshot.method_manifest_digest,
+            "output_parent_binding_digest": (context.output_parent_binding_digest),
+            "output_path_digest": context.output_path_digest,
+            "publication_backend": context.publication_backend,
+            "record_digests": record_digests,
+            "records_payload_jsonl_byte_count": len(payload_records_raw),
+            "records_payload_jsonl_sha256": _sha256_bytes(payload_records_raw),
+            "reviewed_authorization_revision": (
+                snapshot.reviewed_authorization_revision
+            ),
+            "runner_build_attestation": build,
+            "runtime_qualification": qualification,
+            "schedule_cell_ids": cell_ids,
+            "schedule_digest": snapshot.schedule_digest,
+            "schema_version": RUN_MANIFEST_V2R3_SCHEMA_VERSION,
+            "started_receipt_digest": context.started_receipt_digest,
+            "telemetry": {
+                "replay_wall_time_ns_total": replay_wall_time_ns_total,
+                "role": _TELEMETRY_ROLE,
+                "search_wall_time_ns_total": search_wall_time_ns_total,
+            },
+        }
+    )
+    if post_execution_check is not None:
+        post_execution_check()
+    return regular_file_publication.DiagnosticPublicationBatchV2(
+        records=records,
+        run_manifest=run_manifest,
+    )
+
+
+def _publish_v2r3_execution(
+    snapshot: _V2R3ExecutionSnapshot,
+    *,
+    pre_outcome_check: Callable[[], None],
+    post_execution_check: Callable[[], None],
+) -> dict[str, Any]:
+    authorization = snapshot.authorization
+    publication_entered = False
+
+    def action(
+        context: regular_file_publication.DiagnosticPublicationContextV2,
+    ) -> regular_file_publication.DiagnosticPublicationBatchV2:
+        return _execute_v2r3_batch(
+            snapshot,
+            context,
+            post_execution_check=post_execution_check,
+        )
+
+    try:
+        publication_entered = True
+        return regular_file_publication.publish_countdown_thompson_diagnostic_v2(
+            snapshot.output_path,
+            authorization_digest=authorization["deterministic_digest"],
+            expected_parent_binding=snapshot.output_parent_binding,
+            diagnostic_action=action,
+            _pre_outcome_check=pre_outcome_check,
+        )
+    except regular_file_publication.RegularFilePublicationV2NotRunError as error:
+        raise DiagnosticNotRunError(str(error)) from error
+    except regular_file_publication.RegularFilePublicationV2InvalidError as error:
+        raise DiagnosticInvalidRunError(str(error)) from error
+    except regular_file_publication.RegularFilePublicationV2AmbiguousError as error:
+        raise DiagnosticPublicationStateAmbiguousError(str(error)) from error
+    except regular_file_publication.RegularFilePublicationV2Error as error:
+        raise DiagnosticPublicationStateAmbiguousError(
+            "unclassified v2r3 publication failure"
+        ) from error
+    except BaseException as error:
+        if publication_entered:
+            raise DiagnosticPublicationStateAmbiguousError(
+                "untyped failure at or after the v2r3 publication boundary"
+            ) from error
+        raise
+
+
+def _recheck_v2r3_fixture_inputs(
+    snapshot: _V2R3ExecutionSnapshot,
+    repository_root: Path,
+) -> None:
+    build = _BuildAttestation(
+        payload=snapshot.build,
+        current_head=snapshot.execution_head_revision,
+    )
+    _recheck_source_closure(Path(repository_root), build)
+    parent_binding = _revalidate_reviewed_parent_binding(
+        snapshot.output_path,
+        snapshot.output_parent_binding,
+    )
+    if _canonical_bytes(parent_binding) != snapshot._output_parent_binding_raw:
+        raise DiagnosticRunnerError("fixture output parent binding changed")
+    regenerated = _build_nondiagnostic_full_shape_bundle()
+    if (
+        regenerated._payload_bytes != snapshot._payloads_raw
+        or regenerated.cells != snapshot.cells
+        or regenerated.seal_digest != snapshot.seal_digest
+    ):
+        raise DiagnosticRunnerError("full-shaped fixture regeneration drifted")
+    live = _qualify_diagnostic_runtime()
+    expected_qualification = snapshot.qualification
+    if (
+        live.get("runtime_bindings_digest")
+        != expected_qualification.get("runtime_bindings_digest")
+        or expected_qualification.get("bundle_id") != _FULL_SHAPE_FIXTURE_BUNDLE_ID
+        or expected_qualification.get("execution_authorized") is not False
+        or expected_qualification.get("status")
+        != "NONDIAGNOSTIC_FIXTURE_RUNTIME_QUALIFIED"
+        or sha256_json(expected_qualification) != snapshot.runtime_qualification_digest
+    ):
+        raise DiagnosticRunnerError("full-shaped fixture runtime drifted")
+    _recheck_source_closure(Path(repository_root), build)
+
+
+def _recheck_v2r3_production_inputs(
+    snapshot: _V2R3ExecutionSnapshot,
+    *,
+    bundle_path: Path,
+    authorization_path: Path,
+    repository_root: Path,
+) -> None:
+    repository = Path(repository_root).resolve()
+    authorization_file, _ = _authorization_repository_location(
+        Path(authorization_path),
+        repository,
+    )
+    observed, observed_raw = _strict_canonical_object(authorization_file)
+    if (
+        observed_raw != snapshot._authorization_raw
+        or observed != snapshot.authorization
+    ):
+        raise DiagnosticRunnerError("reviewed authorization changed before STARTED")
+    build_payload = snapshot.build
+    build = _BuildAttestation(
+        payload=build_payload,
+        current_head=snapshot.execution_head_revision,
+    )
+    approved_revision = _require_git_oid(
+        build_payload.get("authorized_runner_revision"),
+        "authorized runner revision",
+    )
+    _validate_reviewed_authorization_blob(
+        repository_root=repository,
+        authorization_path=authorization_file,
+        authorization_raw=observed_raw,
+        authorized_runner_revision=approved_revision,
+        reviewed_authorization_revision=snapshot.reviewed_authorization_revision,
+    )
+    _recheck_source_closure(repository, build)
+    parent_binding = _revalidate_reviewed_parent_binding(
+        snapshot.output_path,
+        snapshot.output_parent_binding,
+    )
+    if _canonical_bytes(parent_binding) != snapshot._output_parent_binding_raw:
+        raise DiagnosticRunnerError("reviewed output parent binding changed")
+    verified = verify_countdown_thompson_diagnostic_bundle(
+        Path(bundle_path),
+        repository_root=repository,
+    )
+    if (
+        _canonical_bytes(verified.payloads) != snapshot._payloads_raw
+        or verified.cells != snapshot.cells
+        or verified.seal_digest != snapshot.seal_digest
+    ):
+        raise DiagnosticRunnerError("sealed diagnostic bundle changed")
+    qualification = _qualify_diagnostic_runtime()
+    if (
+        _canonical_bytes(qualification) != snapshot._qualification_raw
+        or sha256_json(qualification) != snapshot.runtime_qualification_digest
+    ):
+        raise DiagnosticRunnerError("diagnostic runtime qualification changed")
+    _recheck_source_closure(repository, build)
+    _, final_raw = _strict_canonical_object(authorization_file)
+    if final_raw != snapshot._authorization_raw:
+        raise DiagnosticRunnerError("reviewed authorization changed during recheck")
+
+
 def run_countdown_thompson_diagnostic(
     bundle_path: Path,
     output_path: Path | str,
@@ -5613,9 +6551,90 @@ def run_countdown_thompson_diagnostic(
     *,
     repository_root: Path,
 ) -> dict[str, Any]:
-    """Fail closed until creation and ownership share one atomic primitive."""
+    """Execute one exact reviewed authorization through the v2r3 publisher."""
 
-    raise DiagnosticNotRunError(_PUBLICATION_BACKEND_REFUSAL)
+    try:
+        preflight, authorization = _load_and_match_authorization(
+            Path(authorization_path),
+            authorization_digest,
+            authorization_revision,
+            bundle_path=Path(bundle_path),
+            output_path=output_path,
+            repository_root=Path(repository_root),
+        )
+        snapshot = _snapshot_v2r3_execution_inputs(
+            preflight,
+            authorization,
+            reviewed_authorization_revision=authorization_revision,
+            execution_mode=_PRODUCTION_EXECUTION_MODE,
+        )
+
+        def recheck() -> None:
+            _recheck_v2r3_production_inputs(
+                snapshot,
+                bundle_path=Path(bundle_path),
+                authorization_path=Path(authorization_path),
+                repository_root=Path(repository_root),
+            )
+
+        return _publish_v2r3_execution(
+            snapshot,
+            pre_outcome_check=recheck,
+            post_execution_check=recheck,
+        )
+    except (
+        DiagnosticNotRunError,
+        DiagnosticInvalidRunError,
+        DiagnosticPublicationStateAmbiguousError,
+    ):
+        raise
+    except BaseException as error:
+        raise DiagnosticNotRunError(str(error)) from error
+
+
+def run_countdown_thompson_nondiagnostic_full_shape_fixture(
+    output_path: Path | str,
+    *,
+    repository_root: Path,
+) -> dict[str, Any]:
+    """Exercise the production v2r3 path without reading sealed inputs."""
+
+    try:
+        preflight = _fresh_nondiagnostic_full_shape_preflight(
+            output_path,
+            Path(repository_root),
+        )
+        authorization = _full_shape_fixture_authorization_payload(preflight)
+        snapshot = _snapshot_v2r3_execution_inputs(
+            preflight,
+            authorization,
+            reviewed_authorization_revision=preflight.build.current_head,
+            execution_mode=_FULL_SHAPE_FIXTURE_EXECUTION_MODE,
+        )
+
+        def recheck() -> None:
+            _recheck_v2r3_fixture_inputs(snapshot, Path(repository_root))
+
+        result = _publish_v2r3_execution(
+            snapshot,
+            pre_outcome_check=recheck,
+            post_execution_check=recheck,
+        )
+        return {
+            **result,
+            "authorization_digest": authorization["deterministic_digest"],
+            "claim_boundary": _FULL_SHAPE_FIXTURE_CLAIM_BOUNDARY,
+            "fixture_authorization": authorization,
+            "fixture_design_digest": _FULL_SHAPE_FIXTURE_DESIGN_DIGEST,
+        }
+    except (
+        DiagnosticNotRunError,
+        DiagnosticInvalidRunError,
+        DiagnosticPublicationStateAmbiguousError,
+    ):
+        raise
+    except BaseException as error:
+        raise DiagnosticNotRunError(str(error)) from error
 
 
 def _self_test() -> dict[str, Any]:
@@ -5697,6 +6716,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--plan", type=Path, metavar="SEALED_BUNDLE")
     modes.add_argument("--run", type=Path, metavar="SEALED_BUNDLE")
+    modes.add_argument("--full-shape-fixture", action="store_true")
     modes.add_argument("--self-test", action="store_true")
     # Preserve the exact lexical spelling; v2r3 hashes and reviews these bytes.
     parser.add_argument("--output")
@@ -5721,6 +6741,50 @@ def main(argv: Sequence[str] | None = None) -> None:
         ):
             parser.error("--self-test accepts no execution or authorization paths")
         result = _self_test()
+    elif args.full_shape_fixture:
+        if args.repository_root is None or args.output is None:
+            parser.error("--full-shape-fixture requires --output and --repository-root")
+        if any(
+            value is not None
+            for value in (
+                args.authorization_out,
+                args.authorization_file,
+                args.authorization_digest,
+                args.authorization_revision,
+            )
+        ):
+            parser.error(
+                "--full-shape-fixture accepts no diagnostic authorization inputs"
+            )
+        try:
+            result = run_countdown_thompson_nondiagnostic_full_shape_fixture(
+                args.output,
+                repository_root=args.repository_root,
+            )
+        except DiagnosticPublicationStateAmbiguousError as error:
+            _raise_publication_state_ambiguous(error)
+        except DiagnosticNotRunError as error:
+            print(
+                canonical_json(
+                    {
+                        "claim_boundary": _FULL_SHAPE_FIXTURE_CLAIM_BOUNDARY,
+                        "reason": str(error),
+                        "status": "NOT_RUN",
+                    }
+                )
+            )
+            raise SystemExit(2) from error
+        except DiagnosticInvalidRunError as error:
+            print(
+                canonical_json(
+                    {
+                        "claim_boundary": _FULL_SHAPE_FIXTURE_CLAIM_BOUNDARY,
+                        "reason": str(error),
+                        "status": "INVALID",
+                    }
+                )
+            )
+            raise SystemExit(3) from error
     elif args.plan is not None:
         if args.repository_root is None:
             parser.error("--plan requires explicit --repository-root")

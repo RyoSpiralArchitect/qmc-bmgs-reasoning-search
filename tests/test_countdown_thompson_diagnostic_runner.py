@@ -457,7 +457,9 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             self.assertEqual(
                 receipt["authorization_digest"], parsed["deterministic_digest"]
             )
-            self.assertEqual(parsed["schema_version"], runner.AUTHORIZATION_SCHEMA_VERSION)
+            self.assertEqual(
+                parsed["schema_version"], runner.AUTHORIZATION_SCHEMA_VERSION
+            )
             self.assertEqual(
                 parsed["publication_backend"],
                 runner._REGULAR_FILE_PUBLICATION_BACKEND,
@@ -465,9 +467,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             self.assertEqual(
                 parsed["artifact_layout"], runner._REGULAR_FILE_ARTIFACT_LAYOUT
             )
-            self.assertEqual(
-                parsed["output_path_digest"], preflight.output_path_digest
-            )
+            self.assertEqual(parsed["output_path_digest"], preflight.output_path_digest)
             self.assertEqual(
                 parsed["output_parent_binding"], preflight.output_parent_binding
             )
@@ -497,9 +497,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             self.assertEqual(observed, parsed)
             self.assertEqual(
                 runner._canonical_bytes(
-                    fresh_preflight.call_args.kwargs[
-                        "expected_output_parent_binding"
-                    ]
+                    fresh_preflight.call_args.kwargs["expected_output_parent_binding"]
                 ),
                 runner._canonical_bytes(parsed["output_parent_binding"]),
             )
@@ -536,9 +534,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             binding_core.pop("deterministic_digest")
             binding["deterministic_digest"] = sha256_json(binding_core)
             payload["output_parent_binding"] = binding
-            payload["output_parent_binding_digest"] = binding[
-                "deterministic_digest"
-            ]
+            payload["output_parent_binding_digest"] = binding["deterministic_digest"]
             requirements = payload["publication_environment_requirements"]
             self.assertIsInstance(requirements, dict)
             requirements["output_parent_binding_digest"] = binding[
@@ -556,7 +552,9 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 patch.object(
                     runner.regular_file_publication,
                     "_open_bound_parent",
-                    side_effect=AssertionError("malformed binding must not open parent"),
+                    side_effect=AssertionError(
+                        "malformed binding must not open parent"
+                    ),
                 ) as parent_open,
                 patch.object(
                     runner,
@@ -627,9 +625,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         core = dict(payload)
                         core.pop("deterministic_digest")
                         payload["deterministic_digest"] = sha256_json(core)
-                        authorization_path.write_bytes(
-                            runner._canonical_bytes(payload)
-                        )
+                        authorization_path.write_bytes(runner._canonical_bytes(payload))
                         with self.assertRaisesRegex(
                             runner.DiagnosticRunnerError,
                             reason,
@@ -1378,7 +1374,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     reviewed_authorization_revision=reviewed_tag,
                 )
 
-    def test_public_run_fails_closed_before_inputs_without_atomic_backend(
+    def test_public_run_enters_only_the_strict_v2_authorization_loader(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1389,8 +1385,10 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 patch.object(
                     runner,
                     "_load_and_match_authorization",
-                    side_effect=AssertionError("inputs must not be opened"),
-                ),
+                    side_effect=runner.DiagnosticRunnerError(
+                        "authorization schema is unsupported"
+                    ),
+                ) as loader,
                 patch.object(
                     runner,
                     "_publish_run_artifact",
@@ -1404,7 +1402,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             ):
                 with self.assertRaisesRegex(
                     runner.DiagnosticNotRunError,
-                    "portable atomic directory creation authority is unavailable",
+                    "authorization schema is unsupported",
                 ):
                     runner.run_countdown_thompson_diagnostic(
                         root / "bundle",
@@ -1414,6 +1412,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         _AUTHORIZATION_REVISION,
                         repository_root=root,
                     )
+            loader.assert_called_once()
 
     def test_real_backend_preflight_cannot_enter_fixture_publisher(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -22,13 +22,13 @@ authority. `READY_TO_PREREGISTER_LOCKED_128_EXECUTION` means that a new locked
 execution contract may be proposed and reviewed; it is not permission to run
 that cohort.
 
-At this revision, only authorization-v2 planning and strict reviewed loading are
-closed against the regular-file `v2r3` publication identity. The public `--run`
-entry point still refuses before reading authorization, sealed inputs, or output
-state because the production v2r3 publisher and analyzer are not integrated.
-This implementation revision does not create or commit a real authorization
-candidate and opens no diagnostic outcome. Stages 3 and 4 below remain future
-review boundaries, not executable instructions.
+At this revision, authorization-v2 planning/loading, production v2r3
+publication, the shared 240-cell runner, independent v2r3 analysis, and
+no-overwrite summary publication are integrated. The full-shaped test fixture
+has separate nondiagnostic authority and opens no sealed input. This
+implementation revision creates no real authorization candidate and opens no
+diagnostic outcome; the next boundary remains a fresh exact-head review followed
+by a separate authorization-only PR.
 
 ## Source-checkout authority
 
@@ -47,11 +47,12 @@ The runner protects exactly 15 imported modules: nine search modules and six
 runner-side modules. The six runner-side modules are the experiments package
 initializer, Track A canary manifest, diagnostic manifest, regular-file v2r3
 publication substrate, runner, and analyzer.
-The analyzer's current replay closure contains exactly 13 imported modules: the
+The analyzer's current replay closure contains exactly 14 imported modules: the
 same nine search modules plus the experiments package initializer, Track A
-canary manifest, diagnostic manifest, and analyzer. The historical runner leaf
-remains required in the run's attested receipt set even though the analyzer does
-not import that leaf for current replay.
+canary manifest, diagnostic manifest, regular-file v2r3 publication substrate,
+and analyzer. The historical runner leaf remains required in the run's attested
+receipt set even though the analyzer does not import that leaf for current
+replay.
 
 The tools pin imported module origins to the checkout. Protected source files
 must be regular files whose descriptor-read bytes match both their receipts and
@@ -189,25 +190,39 @@ authorized runner revision. The later execution HEAD must descend from the
 authorization revision, and the authorization bytes at both revisions must be
 identical.
 
-## Stage 3: one authorized run attempt — not enabled
+## Stage 3: one authorized run attempt — implemented, not authorized
 
-There is no authorized production command at this revision. `--run` returns
-canonical `NOT_RUN` before loading authorization, sealed bundle, or output state.
-A later integration must replace the legacy directory publisher with a
-production v2r3 runner, bind every phase receipt and the final commit file to the
-authorization's exact parent-binding bytes, preserve the one-shot
-NOT_RUN/INVALID/AMBIGUOUS rules, add a nondiagnostic full-shaped fixture, and
-pass a fresh exact-head authority review. Only that reviewed revision may freeze
-the one-attempt command.
+The public `--run` path now loads only an exact reviewed authorization v2, repeats
+authorization/source/bundle/runtime/parent checks immediately before durable
+`STARTED`, executes the frozen 240-cell action after that boundary, repeats the
+same checks after execution, and publishes through the regular-file v2r3 API.
+Every attempt, phase, record frame, collective manifest, and final commit binds
+the exact authorization digest and reviewed parent-binding digest. NOT_RUN,
+INVALID, and AMBIGUOUS remain distinct one-shot terminal states.
 
-## Stage 4: independent analysis — not enabled
+This revision creates no production authorization candidate and opens no sealed
+diagnostic outcome. Its 240-cell full-shaped fixture has a distinct bundle ID,
+authorization schema, scope, claim boundary, and fixed design digest; the
+production loader rejects it before sealed preflight. Only a later separately
+reviewed authorization PR may freeze the one-attempt production command.
 
-The current analyzer validates only the legacy v1 three-file directory artifact;
-it is not compatible with the v2r3 flat commit-root layout or authorization v2.
-Do not invoke it on a future v2r3 diagnostic artifact. A later integration must
-add a production v2r3 analyzer, exact collective/authorization/source replay
-closure, bounded regular-file reads, and no-overwrite summary publication before
-any 240-cell outcome is opened. The eventual decision remains exactly one of
+## Stage 4: independent analysis — implemented, not diagnostically invoked
+
+`--analyze-v2r3` independently validates the flat collective with bounded
+descriptor-relative regular-file reads, checks authorization bytes and Git
+provenance, closes every protected source receipt against both the authorized
+runner revision and execution HEAD, independently verifies the sealed bundle,
+reconstructs all 240 cells, performs two-stage trace replay, and revalidates all
+inputs around no-overwrite summary publication. The legacy `--analyze` v1 path
+remains private compatibility surface.
+
+The full-shaped nondiagnostic fixture passes the same record/publication/replay
+core but emits only a fixture PASS receipt, never a diagnostic readiness
+decision. Its validated run retains the fixture execution mode, and production
+summary construction independently requires the exact production authorization
+schema, scope, bundle, seal, claim boundary, and a null fixture-design digest.
+No production diagnostic artifact has been analyzed at this revision.
+The eventual production decision remains exactly one of
 `READY_TO_PREREGISTER_LOCKED_128_EXECUTION` and
 `STOP_REPAIR_NO_LOCKED_128_RUN`; the first grants only authority to propose and
 review a new locked execution contract.

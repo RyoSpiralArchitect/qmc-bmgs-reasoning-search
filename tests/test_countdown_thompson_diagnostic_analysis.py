@@ -374,9 +374,13 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
     def test_source_attestation_closes_canary_authority_dependency(self) -> None:
         self.assertEqual(len(analysis._SEARCH_SOURCE_PATHS), 9)
         self.assertEqual(len(analysis._RUNNER_SOURCE_PATHS), 6)
-        self.assertEqual(len(analysis._CURRENT_REPLAY_MODULE_PATHS), 13)
+        self.assertEqual(len(analysis._CURRENT_REPLAY_MODULE_PATHS), 14)
         self.assertIn(
             "qmc_bmgs.experiments.countdown_track_a_canary_manifest",
+            analysis._CURRENT_REPLAY_MODULE_PATHS,
+        )
+        self.assertIn(
+            "qmc_bmgs.experiments.countdown_thompson_regular_file_publication_v2",
             analysis._CURRENT_REPLAY_MODULE_PATHS,
         )
         self.assertEqual(

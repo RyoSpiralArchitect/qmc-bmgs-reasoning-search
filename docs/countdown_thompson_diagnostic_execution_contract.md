@@ -177,7 +177,8 @@ review must establish all of the following before merge:
   directory `fsync`, and ASCII alias assumptions are qualified; NFS, SMB, FUSE,
   reboot, cross-host, mount-namespace drift, and device/inode ABA remain outside
   authority;
-- the protected path sets and all source receipts are exact;
+- the protected path sets and all source receipts exact-match non-executable
+  regular blobs at both the authorized runner revision and execution HEAD;
 - the authorized runner revision is the reviewed implementation revision; and
 - the claim boundary grants one diagnostic execution only, with no method
   superiority or locked-128 authority.

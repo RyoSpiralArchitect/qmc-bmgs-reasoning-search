@@ -2373,6 +2373,8 @@ def _require_regular_git_blob(
     repository_root: Path,
     revision: str,
     relative_path: str,
+    *,
+    label: str = "authorization",
 ) -> None:
     raw = _git_bytes(
         repository_root,
@@ -2384,7 +2386,7 @@ def _require_regular_git_blob(
     )
     entries = raw.split(b"\0")
     if len(entries) != 2 or entries[1] != b"" or b"\t" not in entries[0]:
-        raise DiagnosticRunnerError("authorization Git tree entry is not unique")
+        raise DiagnosticRunnerError(f"{label} Git tree entry is not unique")
     metadata, observed_path = entries[0].split(b"\t", maxsplit=1)
     fields = metadata.split()
     if (
@@ -2394,7 +2396,7 @@ def _require_regular_git_blob(
         or fields[1] != b"blob"
     ):
         raise DiagnosticRunnerError(
-            "authorization Git tree entry must be one non-executable regular blob"
+            f"{label} Git tree entry must be one non-executable regular blob"
         )
 
 
@@ -2500,17 +2502,47 @@ def _validate_protected_import_origins(root: Path) -> None:
             )
 
 
-def _protected_source_receipts(root: Path, head: str) -> dict[str, dict[str, Any]]:
+def _protected_source_receipts(
+    root: Path,
+    head: str,
+    *,
+    authorized_runner_revision: str,
+) -> dict[str, dict[str, Any]]:
+    current = _require_git_oid(head, "git HEAD")
+    approved = _require_git_oid(
+        authorized_runner_revision,
+        "authorized runner revision",
+    )
     receipts: dict[str, dict[str, Any]] = {}
     for relative in (*_SEARCH_SOURCE_PATHS, *_RUNNER_SOURCE_PATHS):
+        _require_regular_git_blob(
+            root,
+            current,
+            relative,
+            label="protected source at clean HEAD",
+        )
         source = _read_regular_file_nofollow(
             root / relative,
             "attested protected source",
         )
-        head_blob = _git_bytes(root, "show", f"{head}:{relative}")
+        head_blob = _git_bytes(root, "show", f"{current}:{relative}")
         if source != head_blob:
             raise DiagnosticRunnerError(
                 f"protected source does not exact-match clean HEAD blob: {relative}"
+            )
+        approved_blob = head_blob
+        if approved != current:
+            _require_regular_git_blob(
+                root,
+                approved,
+                relative,
+                label="protected source at authorized runner revision",
+            )
+            approved_blob = _git_bytes(root, "show", f"{approved}:{relative}")
+        if source != approved_blob:
+            raise DiagnosticRunnerError(
+                "protected source does not exact-match authorized runner "
+                f"revision blob: {relative}"
             )
         receipts[relative] = {
             "byte_count": len(source),
@@ -2636,7 +2668,15 @@ def _recheck_source_closure(
     if _git(root, "status", "--porcelain=v1", "--untracked-files=all"):
         raise DiagnosticRunnerError("source checkout changed after build attestation")
     _validate_protected_import_origins(root)
-    observed = _protected_source_receipts(root, head)
+    approved = _require_git_oid(
+        build.payload["authorized_runner_revision"],
+        "authorized runner revision",
+    )
+    observed = _protected_source_receipts(
+        root,
+        head,
+        authorized_runner_revision=approved,
+    )
     expected = {
         **build.payload["search_source_files"],
         **build.payload["runner_source_files"],
@@ -2667,6 +2707,8 @@ def _attest_clean_source_build(
             "authorized runner revision",
         )
     )
+    _require_commit_object(root, head, "git HEAD")
+    _require_commit_object(root, approved, "authorized runner revision")
     for revision in (*REQUIRED_ANCESTRY, approved):
         _require_ancestor(root, revision, head)
 
@@ -2677,7 +2719,11 @@ def _attest_clean_source_build(
             "protected runner/search source surface is untracked"
         )
     _validate_protected_import_origins(root)
-    receipts = _protected_source_receipts(root, head)
+    receipts = _protected_source_receipts(
+        root,
+        head,
+        authorized_runner_revision=approved,
+    )
     host = _host_build_receipt()
     numeric = _numeric_microfixture()
     search_micro = _search_microfixture()

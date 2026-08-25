@@ -7737,6 +7737,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
         with (
             patch.object(runner, "_git", side_effect=clean_tracked_git),
             patch.object(runner, "_git_bytes", side_effect=local_head_blob),
+            patch.object(runner, "_require_regular_git_blob"),
             patch.object(runner, "_host_build_receipt", return_value={}),
             patch.object(runner, "_numeric_microfixture", return_value={}),
             patch.object(runner, "_search_microfixture", return_value={}),
@@ -7790,12 +7791,83 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
 
         repository = Path(runner.__file__).resolve().parents[3]
         head = runner._git(repository, "rev-parse", "HEAD")
-        with patch.object(runner, "_git_bytes", return_value=b"drifted"):
+        with (
+            patch.object(runner, "_require_regular_git_blob"),
+            patch.object(runner, "_git_bytes", return_value=b"drifted"),
+        ):
             with self.assertRaisesRegex(
                 runner.DiagnosticRunnerError,
                 "does not exact-match clean HEAD blob",
             ):
-                runner._protected_source_receipts(repository, head)
+                runner._protected_source_receipts(
+                    repository,
+                    head,
+                    authorized_runner_revision=head,
+                )
+
+    def test_attestation_rejects_receipts_from_a_different_authorized_revision(
+        self,
+    ) -> None:
+        repository = Path(runner.__file__).resolve().parents[3]
+        head = runner._git(repository, "rev-parse", "HEAD")
+        approved = "f" * 40
+        drifted_relative = runner._RUNNER_SOURCE_PATHS[-2]
+        original_git = runner._git
+
+        def clean_tracked_git(root: Path, *arguments: str) -> str:
+            if arguments == ("status", "--porcelain=v1", "--untracked-files=all"):
+                return ""
+            if arguments[:1] == ("ls-files",):
+                return "\n".join(
+                    (*runner._SEARCH_SOURCE_PATHS, *runner._RUNNER_SOURCE_PATHS)
+                )
+            if arguments == ("cat-file", "-t", approved):
+                return "commit"
+            return original_git(root, *arguments)
+
+        def revision_blobs(root: Path, *arguments: str) -> bytes:
+            command, revision_path = arguments
+            self.assertEqual(command, "show")
+            revision, relative = revision_path.split(":", 1)
+            source = (root / relative).read_bytes()
+            if revision == approved and relative == drifted_relative:
+                return source + b"# unauthorized descendant bytes\n"
+            self.assertIn(revision, {head, approved})
+            return source
+
+        with (
+            patch.object(runner, "_git", side_effect=clean_tracked_git),
+            patch.object(runner, "_git_bytes", side_effect=revision_blobs),
+            patch.object(runner, "_require_ancestor"),
+            patch.object(runner, "_require_regular_git_blob"),
+            patch.object(
+                runner,
+                "_host_build_receipt",
+                side_effect=AssertionError("host receipt must not run"),
+            ) as host_receipt,
+            patch.object(
+                runner,
+                "_numeric_microfixture",
+                side_effect=AssertionError("numeric fixture must not run"),
+            ) as numeric_fixture,
+            patch.object(
+                runner,
+                "_search_microfixture",
+                side_effect=AssertionError("search fixture must not run"),
+            ) as search_fixture,
+        ):
+            with self.assertRaisesRegex(
+                runner.DiagnosticRunnerError,
+                "does not exact-match authorized runner revision blob.*"
+                + Path(drifted_relative).name,
+            ):
+                runner._attest_clean_source_build(
+                    repository,
+                    authorized_runner_revision=approved,
+                )
+        host_receipt.assert_not_called()
+        numeric_fixture.assert_not_called()
+        search_fixture.assert_not_called()
 
     def test_initializer_byte_drift_stops_before_sealed_bundle_and_search(self) -> None:
         repository = Path(runner.__file__).resolve().parents[3]
@@ -7835,6 +7907,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     "_git_bytes",
                     side_effect=current_worktree_blob,
                 ),
+                patch.object(runner, "_require_regular_git_blob"),
                 patch.object(
                     runner,
                     "verify_countdown_thompson_diagnostic_bundle",

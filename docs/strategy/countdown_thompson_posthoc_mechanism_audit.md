@@ -35,7 +35,14 @@ unsupported claim that dense feedback was causally harmful.
 - execution-authorization digest:
   `88f6639ccc9e949a7633a5cd243099ae28e85c2cceb3bcd7eab7303387474c28`
 - reviewed authorization revision:
-  `a0111868d6549597b19cd0e2ac81952974ea9c52`
+  `28cb810dd730cb27a28b8f1d89365dafa12ab980`
+- authorized runner revision embedded in that authorization:
+  `a0111868aae556d6fd7cdbb8c7670c1b11e68f34`
+
+The first draft of this audit design incorrectly placed the authorized runner
+revision in the reviewed-authorization field. The first real audit attempt
+therefore failed closed in source preflight and emitted no receipt. This
+provenance correction was made before any post-hoc reduction was returned.
 
 The audit must first rerun the existing v2r3 analyzer, require exact summary
 object equality, and independently reverify the committed collective. It must

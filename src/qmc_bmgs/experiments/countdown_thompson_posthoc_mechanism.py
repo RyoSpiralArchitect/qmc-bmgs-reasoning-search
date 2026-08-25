@@ -26,7 +26,7 @@ from qmc_bmgs.experiments import (
 from qmc_bmgs.substrate.trace import canonical_json, sha256_json, strict_json_loads
 
 
-SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-posthoc-mechanism/v2"
+SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-posthoc-mechanism/v3"
 MODULE_RELATIVE_PATH = Path(
     "src/qmc_bmgs/experiments/countdown_thompson_posthoc_mechanism.py"
 )
@@ -814,10 +814,58 @@ def _resolved_existing_path(
         resolved = Path(path).resolve(strict=True)
     except OSError as error:
         raise PosthocMechanismAuditError(f"{label} could not be resolved") from error
-    if (directory and not resolved.is_dir()) or (not directory and not resolved.is_file()):
+    canonical = _canonical_filesystem_spelling(resolved, label)
+    if (directory and not canonical.is_dir()) or (not directory and not canonical.is_file()):
         expected = "directory" if directory else "regular file"
         raise PosthocMechanismAuditError(f"{label} must resolve to a {expected}")
-    return resolved
+    return canonical
+
+
+def _canonical_filesystem_spelling(path: Path, label: str) -> Path:
+    """Return one directory-entry spelling for an already resolved path.
+
+    ``Path.resolve`` removes symlinks but preserves caller casing on common
+    case-insensitive filesystems. Walk inode identities from the root and use
+    the actual directory-entry names so case-only and Unicode-spelling aliases
+    hash to the same receipt identity. Multiple hard links choose the
+    byte-lexicographically first name within that parent.
+    """
+
+    if not path.is_absolute():
+        raise PosthocMechanismAuditError(f"{label} did not resolve absolutely")
+    current = Path(path.anchor)
+    try:
+        for component in path.parts[1:]:
+            candidate = current / component
+            target = os.stat(candidate, follow_symlinks=False)
+            matches: list[str] = []
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        observed = entry.stat(follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    if (observed.st_dev, observed.st_ino) == (
+                        target.st_dev,
+                        target.st_ino,
+                    ):
+                        matches.append(entry.name)
+            if not matches:
+                raise PosthocMechanismAuditError(
+                    f"{label} directory-entry spelling could not be recovered"
+                )
+            current /= min(matches, key=os.fsencode)
+        if not os.path.samefile(current, path):
+            raise PosthocMechanismAuditError(
+                f"{label} canonical spelling changed filesystem identity"
+            )
+    except PosthocMechanismAuditError:
+        raise
+    except OSError as error:
+        raise PosthocMechanismAuditError(
+            f"{label} directory-entry spelling could not be verified"
+        ) from error
+    return current
 
 
 def _git(repository: Path, *arguments: str) -> bytes:
@@ -962,7 +1010,9 @@ def build_receipt(
             "repository_path": os.fspath(repository),
             "run_manifest_digest": verified.run_manifest_digest,
             "summary_deterministic_digest": summary_digest,
-            "path_identity_semantics": "resolved_absolute_paths/v1",
+            "path_identity_semantics": (
+                "filesystem_entry_spelling_absolute_paths/v1"
+            ),
             "summary_path": os.fspath(summary_file),
             "summary_raw_byte_count": len(summary_raw),
             "summary_raw_sha256": hashlib.sha256(summary_raw).hexdigest(),

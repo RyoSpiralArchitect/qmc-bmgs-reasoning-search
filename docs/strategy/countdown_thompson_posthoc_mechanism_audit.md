@@ -154,7 +154,7 @@ locked-128 execution authority. The handoff decision remains
 `STOP_REPAIR_NO_LOCKED_128_RUN` unless a separate future authorization changes
 it.
 
-## Post-review v2 receipt amendment
+## Post-review receipt amendments
 
 Amendment date: 2026-08-26
 
@@ -176,3 +176,12 @@ The analyzer deliberately regenerates each historical search from empty state
 and requires byte-identical replay. Therefore “read-only” and “no new run” mean
 no new outcome-bearing cohort, retry, provider call, or locked evaluation; they
 do not mean that deterministic search replay is skipped.
+
+A focused rereview then found that `Path.resolve()` preserves caller casing on
+the case-insensitive host filesystem. Schema v3 therefore walks every resolved
+path from the filesystem root, matches each component by device/inode identity,
+and records the actual parent directory-entry spelling. Case-only, symlink, and
+equivalent Unicode-spelling aliases now share one path identity. If a component
+has multiple hard-link names in one parent, the byte-lexicographically first
+entry is canonical. Schema v2 is retained as review history; v3 supersedes it
+for citation without changing any frozen or supplemental reduction value.

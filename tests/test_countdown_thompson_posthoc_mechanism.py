@@ -454,7 +454,8 @@ class PosthocMechanismReductionTests(unittest.TestCase):
         self.assertEqual(receipt["integrity_status"], "PASS")
         provenance = receipt["input_provenance"]
         self.assertEqual(
-            provenance["path_identity_semantics"], "resolved_absolute_paths/v1"
+            provenance["path_identity_semantics"],
+            "filesystem_entry_spelling_absolute_paths/v1",
         )
         self.assertEqual(
             provenance["artifact_path"],
@@ -470,6 +471,23 @@ class PosthocMechanismReductionTests(unittest.TestCase):
             alias.symlink_to(fixture["artifact"])
             aliased_fixture = {**fixture, "artifact": alias}
             through_alias = _build_fixture_receipt(aliased_fixture)
+        self.assertEqual(canonical_json(direct), canonical_json(through_alias))
+
+    def test_case_equivalent_path_alias_produces_the_same_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            fixture = _receipt_fixture(Path(raw))
+            direct = _build_fixture_receipt(fixture)
+            artifact = Path(fixture["artifact"])  # type: ignore[arg-type]
+            case_alias = artifact.with_name(
+                artifact.name[0].swapcase() + artifact.name[1:]
+            )
+            if not case_alias.exists() or not posthoc.os.path.samefile(
+                artifact, case_alias
+            ):
+                self.skipTest("test filesystem is case-sensitive")
+            aliased_fixture = {**fixture, "artifact": case_alias}
+            through_alias = _build_fixture_receipt(aliased_fixture)
+        self.assertNotEqual(str(artifact.resolve()), str(case_alias.resolve()))
         self.assertEqual(canonical_json(direct), canonical_json(through_alias))
 
     def test_build_receipt_rejects_summary_mismatch(self) -> None:

@@ -32,6 +32,9 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, TypedDict
 
 from qmc_bmgs.benchmarks.countdown import CountdownTask
+from qmc_bmgs.experiments import (
+    countdown_thompson_regular_file_publication_v2 as regular_file_publication,
+)
 from qmc_bmgs.experiments.countdown_thompson_diagnostic_manifest import (
     BUNDLE_FILENAMES,
     BUNDLE_ID,
@@ -59,7 +62,17 @@ from qmc_bmgs.substrate.trace import (
 
 RUN_MANIFEST_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-diagnostic-run-manifest/v1"
 RUN_RECORD_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-diagnostic-run-record/v1"
+RUN_MANIFEST_V2R3_SCHEMA_VERSION = (
+    "qmc-bmgs-countdown-thompson-diagnostic-run-manifest/v2r3"
+)
+RUN_RECORD_V2R3_SCHEMA_VERSION = (
+    "qmc-bmgs-countdown-thompson-diagnostic-run-record/v2r3"
+)
 ANALYSIS_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-diagnostic-result/v1"
+ANALYSIS_V2R3_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-diagnostic-result/v2r3"
+FIXTURE_ANALYSIS_V2R3_SCHEMA_VERSION = (
+    "qmc-bmgs-countdown-thompson-nondiagnostic-full-shape-result/v2r3"
+)
 ANALYZER_BUILD_SCHEMA_VERSION = (
     "qmc-bmgs-countdown-thompson-diagnostic-analyzer-build/v1"
 )
@@ -127,6 +140,7 @@ _CURRENT_REPLAY_MODULE_PATHS = {
     "qmc_bmgs.experiments.countdown_thompson_diagnostic_manifest": (
         _RUNNER_SOURCE_PATHS[2]
     ),
+    regular_file_publication.__name__: _RUNNER_SOURCE_PATHS[3],
     __name__: _RUNNER_SOURCE_PATHS[5],
 }
 
@@ -256,6 +270,39 @@ _RUN_MANIFEST_FIELDS = {
     "telemetry",
     "deterministic_digest",
 }
+_RUN_MANIFEST_V2R3_FIELDS = {
+    "artifact_id",
+    "artifact_layout",
+    "attempt_id",
+    "attempt_receipt_digest",
+    "authorization_schema_version",
+    "authorized_output_path",
+    "bundle_id",
+    "cell_count",
+    "claim_boundary",
+    "deterministic_digest",
+    "diagnostic_seal_digest",
+    "execution_authorization",
+    "execution_authorization_digest",
+    "execution_head_revision",
+    "execution_mode",
+    "fixture_design_digest",
+    "method_manifest_digest",
+    "output_parent_binding_digest",
+    "output_path_digest",
+    "publication_backend",
+    "record_digests",
+    "records_payload_jsonl_byte_count",
+    "records_payload_jsonl_sha256",
+    "reviewed_authorization_revision",
+    "runner_build_attestation",
+    "runtime_qualification",
+    "schedule_cell_ids",
+    "schedule_digest",
+    "schema_version",
+    "started_receipt_digest",
+    "telemetry",
+}
 _ATTEMPT_STARTED_RECEIPT_FIELDS = {
     "artifact_id",
     "authorization_digest",
@@ -302,6 +349,29 @@ _AUTHORIZATION_FIELDS = {
     "schedule_digest",
     "schema_version",
 }
+_AUTHORIZATION_V2_FIELDS = {
+    "artifact_id",
+    "artifact_layout",
+    "authorization_scope",
+    "bundle_id",
+    "cell_count",
+    "claim_boundary",
+    "deterministic_digest",
+    "diagnostic_seal_digest",
+    "method_manifest_digest",
+    "output_parent_binding",
+    "output_parent_binding_digest",
+    "output_path",
+    "output_path_digest",
+    "publication_backend",
+    "publication_environment_requirements",
+    "requires_explicit_digest_confirmation",
+    "runner_build_attestation",
+    "runtime_qualification",
+    "runtime_qualification_digest",
+    "schedule_digest",
+    "schema_version",
+}
 _TELEMETRY_ROLE = "descriptive_only_excluded_from_search_core_identity_and_gates"
 _AUTHORIZATION_SCHEMA_VERSION = (
     "qmc-bmgs-countdown-thompson-diagnostic-execution-authorization/v1"
@@ -315,6 +385,47 @@ _RUN_CLAIM_BOUNDARY = (
     "engineering diagnostic artifact; byte replay applies only to the embedded "
     "search core, telemetry is volatile, and no inferential, superiority, or "
     "locked-evaluation authority is granted"
+)
+_AUTHORIZATION_V2_SCHEMA_VERSION = (
+    "qmc-bmgs-countdown-thompson-diagnostic-execution-authorization/v2"
+)
+_FULL_SHAPE_FIXTURE_AUTHORIZATION_SCHEMA_VERSION = (
+    "qmc-bmgs-countdown-thompson-nondiagnostic-full-shape-authorization/v2r3"
+)
+_FULL_SHAPE_FIXTURE_AUTHORIZATION_SCOPE = (
+    "one_exact_nondiagnostic_full_shape_240_cell_fixture"
+)
+_FULL_SHAPE_FIXTURE_BUNDLE_ID = "countdown_thompson_nondiagnostic_full_shape_240/v1"
+_FULL_SHAPE_FIXTURE_DESIGN_DIGEST = (
+    "f60008e00e7e2e07f9888b35546b593c14c04779b268eb211fc1774df504c4d2"
+)
+_SEALED_DIAGNOSTIC_TASK_FINGERPRINTS = frozenset(
+    {
+        "0406b78647c0798a5c833c17c76c3e0122b7ba419aad5a4153d1f7eca255add1",
+        "4d520f0093ced9dd1564af96f4b060d79985989700ebd8614fe30866eb782b66",
+        "72dd0338377cd3b0b411b10bf45353d846773bc88802e4e230ea42dcbe412b55",
+        "7a5102cd25e4355104fcbe907a2fafed7a553fdd1187be3f2da93000e833b48f",
+        "7ed687b520de55e92951c8a679bab089f35ae704e0a18eba4519e99e472f040c",
+        "9dc9b766b13a4dce6418716c58542c0bbdbbe537d05c2b6cc6c1110744a2d046",
+        "a28f38a47d147626079a0b9efb4ad2a5a7efd5642fb4272c45780869c606012d",
+        "b8b53323d3fbe63c8850318da8ac9b142613b35c7290c2b1d3e4659823037d7c",
+        "c4871dc359ba03b5a902ceb60712380309aff98d5aa8df4caeff827cd634b573",
+        "c65b927aa1e194dc3edeabef7e7030665aa570e5191777e721228edc09a05657",
+        "de96b8c60a3d4fc18d598ab30a9af4adc9f44807ad106a246526412f7a29d041",
+        "eca2d75ca8fcfe101ff858225f94eba1be36d5f75e8864329eb76bf523b75f93",
+    }
+)
+_PRODUCTION_EXECUTION_MODE = "authorized_diagnostic"
+_FULL_SHAPE_FIXTURE_EXECUTION_MODE = "nondiagnostic_full_shape_fixture"
+_PRODUCTION_RUN_CLAIM_BOUNDARY = (
+    "authorized engineering diagnostic only; no method-superiority, task-transfer, "
+    "retry, or locked-128 execution authority"
+)
+_FULL_SHAPE_FIXTURE_CLAIM_BOUNDARY = (
+    "nondiagnostic full-shaped protocol fixture only; the 240 records exercise "
+    "the production runner, publication, verifier, replay, analysis, and summary "
+    "schemas without opening the sealed diagnostic bundle; no inferential, "
+    "superiority, retry, authorization-review, or locked-evaluation authority"
 )
 
 
@@ -2345,6 +2456,205 @@ def _validate_reviewed_authorization_provenance(
             )
 
 
+def _validate_v2r3_source_provenance(
+    repository_root: Path,
+    *,
+    attestation: Mapping[str, Any],
+    execution_head_revision: str,
+) -> str:
+    """Bind protected bytes to both approved and execution revisions."""
+
+    analyzer_build_digest = _validate_current_replay_surface(
+        repository_root,
+        attestation=attestation,
+        execution_head_revision=execution_head_revision,
+    )
+    root = Path(repository_root).resolve()
+    authorized = attestation["authorized_runner_revision"]
+    receipts = {
+        **attestation["search_source_files"],
+        **attestation["runner_source_files"],
+    }
+    for relative_path, receipt in receipts.items():
+        for revision, label in (
+            (authorized, "authorized runner revision"),
+            (execution_head_revision, "execution HEAD"),
+        ):
+            _require_regular_git_tree_entry(root, revision, relative_path)
+            blob = _git_result(root, "show", f"{revision}:{relative_path}")
+            if (
+                blob.returncode != 0
+                or len(blob.stdout) != receipt["byte_count"]
+                or _sha256_bytes(blob.stdout) != receipt["sha256"]
+            ):
+                raise DiagnosticAnalysisError(
+                    f"protected source differs at {label}: {relative_path}"
+                )
+    return analyzer_build_digest
+
+
+def _validate_v2r3_authorization_provenance(
+    repository_root: Path,
+    *,
+    authorization_path: Path,
+    authorization_raw: bytes,
+    manifest: Mapping[str, Any],
+    authorization_revision: str,
+) -> None:
+    root = Path(repository_root).resolve()
+    absolute, relative = _authorization_repository_location(
+        authorization_path,
+        root,
+    )
+    embedded = manifest.get("execution_authorization")
+    if type(embedded) is not dict or _canonical_bytes(embedded) != authorization_raw:
+        raise DiagnosticAnalysisError(
+            "embedded v2r3 authorization differs from reviewed bytes"
+        )
+    attestation = manifest["runner_build_attestation"]
+    authorized = attestation["authorized_runner_revision"]
+    reviewed = manifest["reviewed_authorization_revision"]
+    execution_head = manifest["execution_head_revision"]
+    if reviewed != authorization_revision:
+        raise DiagnosticAnalysisError(
+            "explicit authorization revision does not match run manifest"
+        )
+    current = _git_result(root, "rev-parse", "HEAD")
+    try:
+        current_head = current.stdout.decode("utf-8").strip()
+    except UnicodeDecodeError as error:
+        raise DiagnosticAnalysisError("current Git HEAD is not UTF-8") from error
+    if current.returncode != 0 or not _is_git_oid(current_head):
+        raise DiagnosticAnalysisError("analysis HEAD is unavailable")
+    for revision, label in (
+        (authorized, "authorized runner revision"),
+        (reviewed, "reviewed authorization revision"),
+        (execution_head, "execution HEAD"),
+        (current_head, "analysis HEAD"),
+    ):
+        _require_git_commit_object(root, revision, label)
+    if reviewed == authorized:
+        raise DiagnosticAnalysisError(
+            "reviewed authorization revision must strictly descend from runner"
+        )
+    for ancestor, descendant in (
+        (authorized, reviewed),
+        (reviewed, execution_head),
+        (execution_head, current_head),
+    ):
+        relation = _git_result(
+            root,
+            "merge-base",
+            "--is-ancestor",
+            ancestor,
+            descendant,
+        )
+        if relation.returncode != 0:
+            raise DiagnosticAnalysisError(
+                "v2r3 authorization revision lineage is invalid"
+            )
+    tracked = _git_result(
+        root,
+        "ls-files",
+        "--error-unmatch",
+        "--",
+        relative,
+    )
+    if (
+        absolute != Path(os.path.abspath(authorization_path))
+        or tracked.returncode != 0
+        or tracked.stdout != f"{relative}\n".encode("utf-8")
+    ):
+        raise DiagnosticAnalysisError(
+            "v2r3 authorization is not one exact tracked file"
+        )
+    for revision in (reviewed, execution_head, current_head):
+        _require_regular_git_tree_entry(root, revision, relative)
+        blob = _git_result(root, "show", f"{revision}:{relative}")
+        if blob.returncode != 0 or blob.stdout != authorization_raw:
+            raise DiagnosticAnalysisError(
+                "v2r3 authorization bytes differ across reviewed provenance"
+            )
+
+
+def _preflight_v2r3_authorization_and_source(
+    repository_root: Path,
+    *,
+    authorization_path: Path,
+    authorization_raw: bytes,
+    authorization: Mapping[str, Any],
+    authorization_revision: str,
+) -> str:
+    """Validate non-outcome authority and source before opening the artifact."""
+
+    root = Path(repository_root).resolve()
+    if not _is_git_oid(authorization_revision):
+        raise DiagnosticAnalysisError("authorization revision is not a Git OID")
+    absolute, relative = _authorization_repository_location(
+        authorization_path,
+        root,
+    )
+    current_result = _git_result(root, "rev-parse", "HEAD")
+    try:
+        current_head = current_result.stdout.decode("utf-8").strip()
+    except UnicodeDecodeError as error:
+        raise DiagnosticAnalysisError("current Git HEAD is not UTF-8") from error
+    if current_result.returncode != 0 or not _is_git_oid(current_head):
+        raise DiagnosticAnalysisError("current Git HEAD is unavailable")
+    attestation = authorization["runner_build_attestation"]
+    authorized = attestation["authorized_runner_revision"]
+    for revision, label in (
+        (authorized, "authorized runner revision"),
+        (authorization_revision, "reviewed authorization revision"),
+        (current_head, "analysis HEAD"),
+    ):
+        _require_git_commit_object(root, revision, label)
+    if authorization_revision == authorized:
+        raise DiagnosticAnalysisError(
+            "reviewed authorization must strictly descend from runner"
+        )
+    for ancestor, descendant in (
+        (authorized, authorization_revision),
+        (authorization_revision, current_head),
+    ):
+        relation = _git_result(
+            root,
+            "merge-base",
+            "--is-ancestor",
+            ancestor,
+            descendant,
+        )
+        if relation.returncode != 0:
+            raise DiagnosticAnalysisError(
+                "preflight authorization revision lineage is invalid"
+            )
+    tracked = _git_result(
+        root,
+        "ls-files",
+        "--error-unmatch",
+        "--",
+        relative,
+    )
+    if (
+        absolute != Path(os.path.abspath(authorization_path))
+        or tracked.returncode != 0
+        or tracked.stdout != f"{relative}\n".encode("utf-8")
+    ):
+        raise DiagnosticAnalysisError("authorization is not one tracked file")
+    for revision in (authorization_revision, current_head):
+        _require_regular_git_tree_entry(root, revision, relative)
+        blob = _git_result(root, "show", f"{revision}:{relative}")
+        if blob.returncode != 0 or blob.stdout != authorization_raw:
+            raise DiagnosticAnalysisError(
+                "authorization bytes differ before artifact access"
+            )
+    return _validate_v2r3_source_provenance(
+        root,
+        attestation=attestation,
+        execution_head_revision=current_head,
+    )
+
+
 def _validate_run_manifest(
     payload: dict[str, Any],
     *,
@@ -2508,6 +2818,163 @@ def _validate_run_manifest(
     )
 
 
+def _validate_v2r3_run_manifest(
+    payload: dict[str, Any],
+    *,
+    verified: regular_file_publication.VerifiedDiagnosticPublicationV2,
+    records: Sequence[dict[str, Any]],
+    expected_cells: Sequence[DiagnosticCell],
+    bundle: object,
+    authorization: Mapping[str, Any],
+    execution_mode: str,
+    analyzer_build_digest: str,
+) -> tuple[str, str, str, str]:
+    if set(payload) != _RUN_MANIFEST_V2R3_FIELDS:
+        raise DiagnosticAnalysisError("v2r3 run-manifest fields drifted")
+    core = {
+        key: value for key, value in payload.items() if key != "deterministic_digest"
+    }
+    if (
+        payload.get("schema_version") != RUN_MANIFEST_V2R3_SCHEMA_VERSION
+        or payload.get("deterministic_digest") != sha256_json(core)
+        or payload.get("deterministic_digest") != verified.run_manifest_digest
+    ):
+        raise DiagnosticAnalysisError("v2r3 run-manifest digest drifted")
+    collective_manifest = verified.collective_manifest
+    common = {
+        "artifact_id": authorization["artifact_id"],
+        "artifact_layout": authorization["artifact_layout"],
+        "attempt_id": collective_manifest["attempt_receipt_digest"],
+        "attempt_receipt_digest": collective_manifest["attempt_receipt_digest"],
+        "authorization_schema_version": authorization["schema_version"],
+        "authorized_output_path": authorization["output_path"],
+        "bundle_id": authorization["bundle_id"],
+        "cell_count": EXPECTED_CELL_COUNT,
+        "diagnostic_seal_digest": authorization["diagnostic_seal_digest"],
+        "execution_authorization_digest": authorization["deterministic_digest"],
+        "execution_mode": execution_mode,
+        "method_manifest_digest": authorization["method_manifest_digest"],
+        "output_parent_binding_digest": authorization["output_parent_binding_digest"],
+        "output_path_digest": authorization["output_path_digest"],
+        "publication_backend": authorization["publication_backend"],
+        "schedule_digest": authorization["schedule_digest"],
+        "started_receipt_digest": collective_manifest["started_receipt_digest"],
+    }
+    if any(payload.get(key) != value for key, value in common.items()):
+        raise DiagnosticAnalysisError(
+            "v2r3 run manifest does not close over publication authority"
+        )
+    if (
+        payload.get("execution_authorization") != authorization
+        or payload.get("runner_build_attestation")
+        != authorization["runner_build_attestation"]
+        or payload.get("runtime_qualification")
+        != authorization["runtime_qualification"]
+    ):
+        raise DiagnosticAnalysisError("v2r3 embedded authorization material drifted")
+    expected_claim = (
+        _PRODUCTION_RUN_CLAIM_BOUNDARY
+        if execution_mode == _PRODUCTION_EXECUTION_MODE
+        else _FULL_SHAPE_FIXTURE_CLAIM_BOUNDARY
+    )
+    expected_fixture_digest = (
+        None
+        if execution_mode == _PRODUCTION_EXECUTION_MODE
+        else _FULL_SHAPE_FIXTURE_DESIGN_DIGEST
+    )
+    if (
+        payload.get("claim_boundary") != expected_claim
+        or payload.get("fixture_design_digest") != expected_fixture_digest
+    ):
+        raise DiagnosticAnalysisError("v2r3 execution claim boundary drifted")
+    expected_ids = [cell.cell_id for cell in expected_cells]
+    record_digests = [record.get("deterministic_digest") for record in records]
+    payload_records_raw = verified.payload_records_jsonl_bytes
+    if (
+        len(expected_cells) != EXPECTED_CELL_COUNT
+        or len(records) != EXPECTED_CELL_COUNT
+        or len(set(expected_ids)) != EXPECTED_CELL_COUNT
+        or payload.get("schedule_cell_ids") != expected_ids
+        or payload.get("record_digests") != record_digests
+        or payload.get("records_payload_jsonl_byte_count") != len(payload_records_raw)
+        or payload.get("records_payload_jsonl_sha256")
+        != _sha256_bytes(payload_records_raw)
+    ):
+        raise DiagnosticAnalysisError("v2r3 record collective closure drifted")
+    payloads = bundle.payloads  # type: ignore[attr-defined]
+    matrix = payloads["preregistration.json"]["execution_matrix"]
+    if (
+        payload.get("bundle_id") != payloads["preregistration.json"]["bundle_id"]
+        or payload.get("diagnostic_seal_digest") != bundle.seal_digest  # type: ignore[attr-defined]
+        or payload.get("method_manifest_digest")
+        != payloads["methods.json"]["deterministic_digest"]
+        or matrix.get("schedule") != [cell.to_dict() for cell in expected_cells]
+        or matrix.get("schedule_digest") != payload.get("schedule_digest")
+    ):
+        raise DiagnosticAnalysisError("v2r3 bundle authority drifted")
+    qualification = payload.get("runtime_qualification")
+    if type(qualification) is not dict or set(qualification) != {
+        "bundle_id",
+        "execution_authorized",
+        "runtime_bindings_digest",
+        "status",
+    }:
+        raise DiagnosticAnalysisError("v2r3 runtime qualification fields drifted")
+    expected_status = (
+        "RUNTIME_QUALIFIED"
+        if execution_mode == _PRODUCTION_EXECUTION_MODE
+        else "NONDIAGNOSTIC_FIXTURE_RUNTIME_QUALIFIED"
+    )
+    runtime_qualification_digest = sha256_json(qualification)
+    if (
+        qualification.get("bundle_id") != payload.get("bundle_id")
+        or qualification.get("execution_authorized") is not False
+        or qualification.get("status") != expected_status
+        or authorization.get("runtime_qualification_digest")
+        != runtime_qualification_digest
+    ):
+        raise DiagnosticAnalysisError("v2r3 runtime qualification drifted")
+    if execution_mode == _PRODUCTION_EXECUTION_MODE and qualification.get(
+        "runtime_bindings_digest"
+    ) != sha256_json(payloads["methods.json"]["runtime_bindings"]):
+        raise DiagnosticAnalysisError(
+            "v2r3 runtime binding digest differs from sealed bundle"
+        )
+    manifest_telemetry = payload.get("telemetry")
+    if (
+        type(manifest_telemetry) is not dict
+        or set(manifest_telemetry)
+        != {
+            "role",
+            "search_wall_time_ns_total",
+            "replay_wall_time_ns_total",
+        }
+        or manifest_telemetry.get("role") != _TELEMETRY_ROLE
+    ):
+        raise DiagnosticAnalysisError("v2r3 manifest telemetry drifted")
+    for field in ("search_wall_time_ns_total", "replay_wall_time_ns_total"):
+        _require_plain_nonnegative_int(
+            manifest_telemetry.get(field),
+            f"v2r3 manifest telemetry.{field}",
+        )
+    _validate_git_oid_field(payload, "execution_head_revision")
+    _validate_git_oid_field(payload, "reviewed_authorization_revision")
+    (
+        _search_receipts,
+        _runner_receipts,
+        runner_build_digest,
+        search_build_digest,
+    ) = _validate_build_attestation_structure(payload["runner_build_attestation"])
+    if not _is_sha256(analyzer_build_digest):
+        raise DiagnosticAnalysisError("v2r3 analyzer build digest is invalid")
+    return (
+        runner_build_digest,
+        search_build_digest,
+        runtime_qualification_digest,
+        analyzer_build_digest,
+    )
+
+
 @dataclass(frozen=True)
 class _ReplayInputs:
     tasks: dict[str, CountdownTask]
@@ -2516,7 +2983,194 @@ class _ReplayInputs:
     budgets: dict[str, TrackABudgetProfile]
 
 
-def _typed_replay_inputs(bundle: VerifiedDiagnosticBundle) -> _ReplayInputs:
+@dataclass(frozen=True)
+class _AnalysisBundleSnapshot:
+    _payloads_raw: bytes
+    _cells: tuple[DiagnosticCell, ...]
+    _seal_digest: str
+
+    @property
+    def payloads(self) -> dict[str, Any]:
+        parsed = strict_json_loads(self._payloads_raw.decode("utf-8"))
+        if type(parsed) is not dict:
+            raise DiagnosticAnalysisError("analysis bundle snapshot is invalid")
+        return parsed
+
+    @property
+    def cells(self) -> tuple[DiagnosticCell, ...]:
+        return self._cells
+
+    @property
+    def seal_digest(self) -> str:
+        return self._seal_digest
+
+
+_FULL_SHAPE_FIXTURE_TASKS = tuple(
+    (tuple((1, 2, 3, 4, 5, last)), 120 * last) for last in range(6, 18)
+)
+
+
+def _full_shape_fixture_analysis_bundle(
+    method_manifest_digest: str,
+) -> _AnalysisBundleSnapshot:
+    """Independently reconstruct the fixed fixture replay inputs and schedule."""
+
+    if not _is_sha256(method_manifest_digest):
+        raise DiagnosticAnalysisError("fixture method manifest digest is invalid")
+    tasks = [
+        CountdownTask(inputs, target) for inputs, target in _FULL_SHAPE_FIXTURE_TASKS
+    ]
+    if {task.task_fingerprint for task in tasks}.intersection(
+        _SEALED_DIAGNOSTIC_TASK_FINGERPRINTS
+    ):
+        raise DiagnosticAnalysisError(
+            "nondiagnostic fixture overlaps the sealed task cohort"
+        )
+    proposals = {
+        "heuristic": TrackAProposalSpec("greedy_rollout_target_error/v1"),
+        "oracle_positive_control": TrackAProposalSpec(
+            "oracle_path_count_positive_control/v1"
+        ),
+    }
+    methods = {
+        "greedy": TrackAMethodSpec.greedy(),
+        "beam_width_2": TrackAMethodSpec.beam_width_two(),
+        "puct_c1": TrackAMethodSpec.puct(),
+        "thompson_candidate_iid_v1": TrackAMethodSpec.candidate_thompson("iid"),
+        "thompson_dimnorm_iid_v2": (
+            TrackAMethodSpec.dimension_normalized_thompson("iid")
+        ),
+        "thompson_dense_iid_v3": (
+            TrackAMethodSpec.dimension_normalized_dense_thompson("iid")
+        ),
+        "thompson_greedy_anchor_dense_iid_v4": (
+            TrackAMethodSpec.greedy_anchored_dimension_normalized_dense_thompson("iid")
+        ),
+    }
+    budget = TrackABudgetProfile(
+        profile_id="score256",
+        primary_axis="legal_action_scores",
+        budget=TrackAWorkBudget(
+            proposal_state_evaluations=87,
+            proposal_action_scores=317,
+            legal_action_scores=256,
+            generated_perturbation_coordinates=316,
+            edge_selections=86,
+            transitions=86,
+            verifier_calls=18,
+        ),
+    )
+    schedule_design: list[dict[str, Any]] = []
+    for task in tasks:
+        for method_label in _DETERMINISTIC_BASELINES:
+            schedule_design.append(
+                {
+                    "budget_profile_id": budget.profile_id,
+                    "exploration_seed": 0,
+                    "method_label": method_label,
+                    "proposal_label": "heuristic",
+                    "task_fingerprint": task.task_fingerprint,
+                }
+            )
+        for method_label in _STOCHASTIC_METHOD_ORDER:
+            for exploration_seed in _DIAGNOSTIC_SEEDS:
+                schedule_design.append(
+                    {
+                        "budget_profile_id": budget.profile_id,
+                        "exploration_seed": exploration_seed,
+                        "method_label": method_label,
+                        "proposal_label": "heuristic",
+                        "task_fingerprint": task.task_fingerprint,
+                    }
+                )
+        schedule_design.append(
+            {
+                "budget_profile_id": budget.profile_id,
+                "exploration_seed": 0,
+                "method_label": "greedy",
+                "proposal_label": "oracle_positive_control",
+                "task_fingerprint": task.task_fingerprint,
+            }
+        )
+    design = {
+        "budget": budget.to_dict(),
+        "bundle_id": _FULL_SHAPE_FIXTURE_BUNDLE_ID,
+        "methods": [
+            {"label": label, "spec": methods[label].to_dict()}
+            for label in (*_DETERMINISTIC_BASELINES, *_STOCHASTIC_METHOD_ORDER)
+        ],
+        "proposals": [
+            {"label": label, "spec": proposals[label].to_dict()}
+            for label in ("heuristic", "oracle_positive_control")
+        ],
+        "schedule": schedule_design,
+        "tasks": [task.to_dict() for task in tasks],
+    }
+    if sha256_json(design) != _FULL_SHAPE_FIXTURE_DESIGN_DIGEST:
+        raise DiagnosticAnalysisError("fixture design digest drifted")
+    task_core = {
+        "bundle_id": _FULL_SHAPE_FIXTURE_BUNDLE_ID,
+        "schema_version": "qmc-bmgs-nondiagnostic-full-shape-tasks/v1",
+        "tasks": design["tasks"],
+    }
+    task_manifest_digest = sha256_json(task_core)
+    cells = tuple(
+        DiagnosticCell(
+            task_fingerprint=row["task_fingerprint"],
+            proposal_label=row["proposal_label"],
+            proposal_spec_digest=proposals[row["proposal_label"]].deterministic_digest,
+            method_label=row["method_label"],
+            method_spec_digest=sha256_json(methods[row["method_label"]].to_dict()),
+            method_manifest_digest=method_manifest_digest,
+            budget_profile_id=row["budget_profile_id"],
+            budget_profile_spec_digest=sha256_json(budget.to_dict()),
+            exploration_seed=row["exploration_seed"],
+            task_manifest_digest=task_manifest_digest,
+        )
+        for row in schedule_design
+    )
+    schedule_rows = [cell.to_dict() for cell in cells]
+    payloads = {
+        "budgets.json": {
+            "profiles": [{"spec": budget.to_dict()}],
+        },
+        "diagnostic_tasks.json": {"tasks": design["tasks"]},
+        "methods.json": {
+            "deterministic_digest": method_manifest_digest,
+            "methods": [
+                {"label": label, "spec": methods[label].to_dict()}
+                for label in (*_DETERMINISTIC_BASELINES, *_STOCHASTIC_METHOD_ORDER)
+            ],
+        },
+        "preregistration.json": {
+            "bundle_id": _FULL_SHAPE_FIXTURE_BUNDLE_ID,
+            "execution_matrix": {
+                "cell_count": len(cells),
+                "schedule": schedule_rows,
+                "schedule_digest": sha256_json(schedule_rows),
+            },
+        },
+        "proposals.json": {
+            "policies": [
+                {"label": label, "spec": proposals[label].to_dict()}
+                for label in ("heuristic", "oracle_positive_control")
+            ],
+        },
+    }
+    payloads_raw = _canonical_bytes(payloads)
+    if (
+        len(cells) != EXPECTED_CELL_COUNT
+        or len({cell.cell_id for cell in cells}) != EXPECTED_CELL_COUNT
+    ):
+        raise DiagnosticAnalysisError("fixture analysis schedule drifted")
+    return _AnalysisBundleSnapshot(
+        _payloads_raw=payloads_raw,
+        _cells=cells,
+        _seal_digest=_FULL_SHAPE_FIXTURE_DESIGN_DIGEST,
+    )
+
+
+def _typed_replay_inputs(bundle: object) -> _ReplayInputs:
     payloads = bundle.payloads
     tasks: dict[str, CountdownTask] = {}
     for row in payloads["diagnostic_tasks.json"]["tasks"]:
@@ -2752,10 +3406,11 @@ def _validate_one_record(
     runner_build_digest: str,
     search_build_digest: str,
     runtime_qualification_digest: str,
+    record_schema_version: str = RUN_RECORD_SCHEMA_VERSION,
 ) -> dict[str, Any]:
     if set(record) != _RUN_RECORD_FIELDS:
         raise DiagnosticAnalysisError(f"cell {cell.cell_id} record fields drifted")
-    if record["schema_version"] != RUN_RECORD_SCHEMA_VERSION:
+    if record["schema_version"] != record_schema_version:
         raise DiagnosticAnalysisError("runner record schema drifted")
     core = {
         key: value for key, value in record.items() if key != "deterministic_digest"
@@ -2881,9 +3536,131 @@ def _validate_one_record(
     }
 
 
+def _v2r3_publication_environment_requirements(
+    parent_binding: Mapping[str, Any],
+) -> dict[str, Any]:
+    core = {
+        "artifact_layout": regular_file_publication.ARTIFACT_LAYOUT,
+        "binding_scope": regular_file_publication.PARENT_BINDING_SCOPE,
+        "claim_boundary": (
+            "review must qualify these mechanics on the bound local host and "
+            "filesystem identity epoch; no NFS, SMB, FUSE, reboot, cross-host, "
+            "mount-namespace, device-inode ABA, or malicious-kernel guarantee"
+        ),
+        "output_parent_binding_digest": parent_binding["deterministic_digest"],
+        "publication_backend": regular_file_publication.PUBLICATION_BACKEND,
+        "required_mechanics": [
+            "absolute_normalized_ascii_commit_path/v1",
+            "componentwise_o_nofollow_parent_identity/v1",
+            "descriptor_relative_o_creat_o_excl_regular_files/v1",
+            "regular_file_and_directory_fsync/v1",
+            "stable_st_dev_st_ino_within_identity_epoch/v1",
+        ],
+        "schema_version": (
+            "qmc-bmgs-countdown-thompson-publication-environment-requirements/v1"
+        ),
+    }
+    return {**core, "deterministic_digest": sha256_json(core)}
+
+
+def _validate_v2r3_authorization(
+    authorization: Mapping[str, Any],
+    *,
+    output_path: Path | str,
+    supplied_digest: str,
+    execution_mode: str,
+) -> dict[str, Any]:
+    if type(authorization) is not dict or set(authorization) != (
+        _AUTHORIZATION_V2_FIELDS
+    ):
+        raise DiagnosticAnalysisError("v2r3 authorization fields drifted")
+    if not _is_sha256(supplied_digest):
+        raise DiagnosticAnalysisError("v2r3 authorization digest is invalid")
+    core = {
+        key: value
+        for key, value in authorization.items()
+        if key != "deterministic_digest"
+    }
+    if (
+        authorization.get("deterministic_digest") != sha256_json(core)
+        or authorization.get("deterministic_digest") != supplied_digest
+    ):
+        raise DiagnosticAnalysisError("v2r3 authorization digest does not close")
+    if execution_mode == _PRODUCTION_EXECUTION_MODE:
+        expected_schema = _AUTHORIZATION_V2_SCHEMA_VERSION
+        expected_scope = _AUTHORIZATION_SCOPE
+        expected_bundle_id = BUNDLE_ID
+        expected_claim = _AUTHORIZATION_CLAIM_BOUNDARY
+    elif execution_mode == _FULL_SHAPE_FIXTURE_EXECUTION_MODE:
+        expected_schema = _FULL_SHAPE_FIXTURE_AUTHORIZATION_SCHEMA_VERSION
+        expected_scope = _FULL_SHAPE_FIXTURE_AUTHORIZATION_SCOPE
+        expected_bundle_id = _FULL_SHAPE_FIXTURE_BUNDLE_ID
+        expected_claim = _FULL_SHAPE_FIXTURE_CLAIM_BOUNDARY
+    else:
+        raise DiagnosticAnalysisError("v2r3 execution mode is unsupported")
+    expected_runtime_status = (
+        "RUNTIME_QUALIFIED"
+        if execution_mode == _PRODUCTION_EXECUTION_MODE
+        else "NONDIAGNOSTIC_FIXTURE_RUNTIME_QUALIFIED"
+    )
+    try:
+        layout = regular_file_publication.RegularFileLayoutV2.from_output_path(
+            output_path
+        )
+        parent_binding = regular_file_publication.freeze_reviewed_parent_binding_v2(
+            layout.output_path,
+            authorization.get("output_parent_binding"),
+        )
+    except regular_file_publication.RegularFilePublicationV2Error as error:
+        raise DiagnosticAnalysisError(
+            "v2r3 authorization publication binding is invalid"
+        ) from error
+    requirements = _v2r3_publication_environment_requirements(parent_binding)
+    runtime = authorization.get("runtime_qualification")
+    if (
+        authorization.get("schema_version") != expected_schema
+        or authorization.get("authorization_scope") != expected_scope
+        or authorization.get("bundle_id") != expected_bundle_id
+        or authorization.get("claim_boundary") != expected_claim
+        or authorization.get("cell_count") != EXPECTED_CELL_COUNT
+        or type(authorization.get("cell_count")) is not int
+        or authorization.get("requires_explicit_digest_confirmation") is not True
+        or authorization.get("artifact_id") != layout.commit_name
+        or authorization.get("artifact_layout")
+        != regular_file_publication.ARTIFACT_LAYOUT
+        or authorization.get("publication_backend")
+        != regular_file_publication.PUBLICATION_BACKEND
+        or authorization.get("output_path") != os.fspath(layout.output_path)
+        or authorization.get("output_path_digest") != layout.output_path_digest
+        or authorization.get("output_parent_binding") != parent_binding
+        or authorization.get("output_parent_binding_digest")
+        != parent_binding.get("deterministic_digest")
+        or authorization.get("publication_environment_requirements") != requirements
+        or type(runtime) is not dict
+        or set(runtime)
+        != {
+            "bundle_id",
+            "execution_authorized",
+            "runtime_bindings_digest",
+            "status",
+        }
+        or runtime.get("bundle_id") != expected_bundle_id
+        or runtime.get("execution_authorized") is not False
+        or runtime.get("status") != expected_runtime_status
+        or not _is_sha256(runtime.get("runtime_bindings_digest"))
+        or authorization.get("runtime_qualification_digest") != sha256_json(runtime)
+        or not _is_sha256(authorization.get("diagnostic_seal_digest"))
+        or not _is_sha256(authorization.get("method_manifest_digest"))
+        or not _is_sha256(authorization.get("schedule_digest"))
+    ):
+        raise DiagnosticAnalysisError("v2r3 authorization identity drifted")
+    _validate_build_attestation_structure(authorization.get("runner_build_attestation"))
+    return parent_binding
+
+
 @dataclass(frozen=True)
 class _ValidatedRun:
-    bundle: VerifiedDiagnosticBundle
+    bundle: object
     records: tuple[dict[str, Any], ...]
     manifest: dict[str, Any]
     analyzer_build_digest: str
@@ -2891,6 +3668,113 @@ class _ValidatedRun:
     historical_attempt_path: Path | None = None
     attempt_state_receipt: _AttemptStateReceipt = ()
     historical_attempt_authority: _PinnedProtectedRoot | None = None
+
+
+def _validate_v2r3_verified_collective(
+    verified: regular_file_publication.VerifiedDiagnosticPublicationV2,
+    *,
+    authorization: dict[str, Any],
+    bundle: object,
+    execution_mode: str,
+    repository_root: Path,
+    authorization_path: Path | None = None,
+    authorization_raw: bytes | None = None,
+    authorization_revision: str | None = None,
+) -> _ValidatedRun:
+    manifest = verified.run_manifest
+    if set(manifest) != _RUN_MANIFEST_V2R3_FIELDS:
+        raise DiagnosticAnalysisError("v2r3 run-manifest fields drifted")
+    core = {
+        key: value for key, value in manifest.items() if key != "deterministic_digest"
+    }
+    if (
+        manifest.get("schema_version") != RUN_MANIFEST_V2R3_SCHEMA_VERSION
+        or manifest.get("deterministic_digest") != sha256_json(core)
+        or manifest.get("execution_mode") != execution_mode
+        or manifest.get("execution_authorization") != authorization
+    ):
+        raise DiagnosticAnalysisError("v2r3 run-manifest preflight drifted")
+    attestation = manifest.get("runner_build_attestation")
+    _validate_build_attestation_structure(attestation)
+    execution_head = manifest.get("execution_head_revision")
+    _validate_git_oid_field(manifest, "execution_head_revision")
+    analyzer_build_digest = _validate_v2r3_source_provenance(
+        Path(repository_root),
+        attestation=attestation,
+        execution_head_revision=execution_head,
+    )
+    if execution_mode == _PRODUCTION_EXECUTION_MODE:
+        if (
+            authorization_path is None
+            or authorization_raw is None
+            or authorization_revision is None
+        ):
+            raise DiagnosticAnalysisError(
+                "production v2r3 analysis lacks reviewed authorization provenance"
+            )
+        _validate_v2r3_authorization_provenance(
+            Path(repository_root),
+            authorization_path=authorization_path,
+            authorization_raw=authorization_raw,
+            manifest=manifest,
+            authorization_revision=authorization_revision,
+        )
+    else:
+        approved = attestation["authorized_runner_revision"]
+        if (
+            manifest.get("reviewed_authorization_revision") != approved
+            or execution_head != approved
+        ):
+            raise DiagnosticAnalysisError(
+                "fixture revisions must identify one unreviewed clean HEAD"
+            )
+    expected_cells = tuple(bundle.cells)  # type: ignore[attr-defined]
+    records = verified.records
+    (
+        runner_build_digest,
+        search_build_digest,
+        runtime_qualification_digest,
+        analyzer_build_digest,
+    ) = _validate_v2r3_run_manifest(
+        manifest,
+        verified=verified,
+        records=records,
+        expected_cells=expected_cells,
+        bundle=bundle,
+        authorization=authorization,
+        execution_mode=execution_mode,
+        analyzer_build_digest=analyzer_build_digest,
+    )
+    replay_inputs = _typed_replay_inputs(bundle)
+    payloads = bundle.payloads  # type: ignore[attr-defined]
+    validated_rows = tuple(
+        _validate_one_record(
+            record,
+            cell=cell,
+            bundle_id=payloads["preregistration.json"]["bundle_id"],
+            diagnostic_seal_digest=bundle.seal_digest,  # type: ignore[attr-defined]
+            method_manifest_digest=payloads["methods.json"]["deterministic_digest"],
+            replay_inputs=replay_inputs,
+            runner_build_digest=runner_build_digest,
+            search_build_digest=search_build_digest,
+            runtime_qualification_digest=runtime_qualification_digest,
+            record_schema_version=RUN_RECORD_V2R3_SCHEMA_VERSION,
+        )
+        for record, cell in zip(records, expected_cells, strict=True)
+    )
+    telemetry = manifest["telemetry"]
+    for field in ("search_wall_time_ns", "replay_wall_time_ns"):
+        expected_total = sum(row["telemetry"][field] for row in validated_rows)
+        if telemetry[f"{field}_total"] != expected_total:
+            raise DiagnosticAnalysisError(
+                f"v2r3 replay telemetry total drifted: {field}"
+            )
+    return _ValidatedRun(
+        bundle=bundle,
+        records=validated_rows,
+        manifest=manifest,
+        analyzer_build_digest=analyzer_build_digest,
+    )
 
 
 def _validate_artifact(
@@ -3682,15 +4566,30 @@ def _build_summary(validated: _ValidatedRun) -> dict[str, Any]:
     dense = _dense_terminal_metrics(validated)
     task_metrics, vectors, success_counts = _success_metrics(validated)
     readiness = _engineering_readiness(validated, vectors, success_counts)
+    is_v2r3 = (
+        validated.manifest.get("schema_version") == RUN_MANIFEST_V2R3_SCHEMA_VERSION
+    )
     summary = {
-        "schema_version": ANALYSIS_SCHEMA_VERSION,
+        "schema_version": (
+            ANALYSIS_V2R3_SCHEMA_VERSION if is_v2r3 else ANALYSIS_SCHEMA_VERSION
+        ),
         "analyzer_build_digest": validated.analyzer_build_digest,
         "bundle_id": validated.bundle.payloads["preregistration.json"]["bundle_id"],
         "claim_boundary": (
-            "Engineering diagnostic only. No confidence interval, p-value, "
-            "method-superiority claim, task-transfer claim, or locked-128 "
-            "execution authority. Source-file bytes and imports are attested; "
-            "already-loaded Python code objects remain outside this v1 claim."
+            (
+                "Engineering diagnostic only. No confidence interval, p-value, "
+                "method-superiority claim, task-transfer claim, retry authority, "
+                "or locked-128 execution authority. Protected source bytes close "
+                "against both authorized and execution revisions; already-loaded "
+                "Python code objects remain outside this v2r3 claim."
+            )
+            if is_v2r3
+            else (
+                "Engineering diagnostic only. No confidence interval, p-value, "
+                "method-superiority claim, task-transfer claim, or locked-128 "
+                "execution authority. Source-file bytes and imports are attested; "
+                "already-loaded Python code objects remain outside this v1 claim."
+            )
         ),
         "controls": {
             "oracle_greedy_positive_control": {
@@ -3718,6 +4617,391 @@ def _build_summary(validated: _ValidatedRun) -> dict[str, Any]:
         "task_success_metrics": task_metrics,
     }
     summary["deterministic_digest"] = sha256_json(summary)
+    return summary
+
+
+def _same_verified_v2r3_collective(
+    first: regular_file_publication.VerifiedDiagnosticPublicationV2,
+    second: regular_file_publication.VerifiedDiagnosticPublicationV2,
+) -> bool:
+    return (
+        first.output_path == second.output_path
+        and first.authorization_digest == second.authorization_digest
+        and first.output_parent_binding_digest == second.output_parent_binding_digest
+        and first.artifact_commit_digest == second.artifact_commit_digest
+        and first.collective_manifest_digest == second.collective_manifest_digest
+        and first.run_manifest_digest == second.run_manifest_digest
+        and first.collective_generation == second.collective_generation
+        and first.records_jsonl_bytes == second.records_jsonl_bytes
+        and first.payload_records_jsonl_bytes == second.payload_records_jsonl_bytes
+        and first.run_manifest == second.run_manifest
+        and first.collective_manifest == second.collective_manifest
+        and first.commit_receipt == second.commit_receipt
+    )
+
+
+def _preflight_v2r3_bundle_authority(
+    authorization: Mapping[str, Any],
+    bundle: object,
+) -> None:
+    payloads = bundle.payloads  # type: ignore[attr-defined]
+    matrix = payloads["preregistration.json"]["execution_matrix"]
+    qualification = authorization["runtime_qualification"]
+    if (
+        payloads["preregistration.json"]["bundle_id"] != authorization["bundle_id"]
+        or bundle.seal_digest  # type: ignore[attr-defined]
+        != authorization["diagnostic_seal_digest"]
+        or payloads["methods.json"]["deterministic_digest"]
+        != authorization["method_manifest_digest"]
+        or matrix["cell_count"] != EXPECTED_CELL_COUNT
+        or matrix["schedule_digest"] != authorization["schedule_digest"]
+        or matrix["schedule"] != [cell.to_dict() for cell in bundle.cells]  # type: ignore[attr-defined]
+        or qualification["runtime_bindings_digest"]
+        != sha256_json(payloads["methods.json"]["runtime_bindings"])
+    ):
+        raise DiagnosticAnalysisError(
+            "v2r3 authorization does not match the verified bundle"
+        )
+
+
+def analyze_countdown_thompson_diagnostic_artifact_v2r3(
+    artifact_path: Path | str,
+    bundle_dir: Path,
+    authorization_path: Path,
+    authorization_digest: str,
+    authorization_revision: str,
+    *,
+    repository_root: Path,
+) -> dict[str, Any]:
+    """Independently replay one exact production v2r3 diagnostic collective."""
+
+    repository = Path(repository_root).resolve()
+    authorization_file, _ = _authorization_repository_location(
+        Path(authorization_path),
+        repository,
+    )
+    authorization, authorization_raw = _reviewed_authorization(
+        authorization_file,
+        authorization_digest,
+    )
+    parent_binding = _validate_v2r3_authorization(
+        authorization,
+        output_path=artifact_path,
+        supplied_digest=authorization_digest,
+        execution_mode=_PRODUCTION_EXECUTION_MODE,
+    )
+    _preflight_v2r3_authorization_and_source(
+        repository,
+        authorization_path=authorization_file,
+        authorization_raw=authorization_raw,
+        authorization=authorization,
+        authorization_revision=authorization_revision,
+    )
+    try:
+        bundle = verify_countdown_thompson_diagnostic_bundle(
+            Path(bundle_dir),
+            repository_root=repository,
+        )
+    except (OSError, RecursionError, TraceValidationError, ValueError) as error:
+        raise DiagnosticAnalysisError(
+            "v2r3 diagnostic bundle verification failed"
+        ) from error
+    expected_cells = iter_countdown_thompson_diagnostic_cells(bundle)
+    if (
+        len(expected_cells) != EXPECTED_CELL_COUNT
+        or tuple(expected_cells) != bundle.cells
+    ):
+        raise DiagnosticAnalysisError("v2r3 diagnostic schedule drifted")
+    _preflight_v2r3_bundle_authority(authorization, bundle)
+    try:
+        verified = regular_file_publication.verify_countdown_thompson_diagnostic_v2(
+            artifact_path,
+            expected_parent_binding=parent_binding,
+            authorization_digest=authorization_digest,
+        )
+    except regular_file_publication.RegularFilePublicationV2Error as error:
+        raise DiagnosticAnalysisError(
+            "v2r3 diagnostic collective verification failed"
+        ) from error
+    validated = _validate_v2r3_verified_collective(
+        verified,
+        authorization=authorization,
+        bundle=bundle,
+        execution_mode=_PRODUCTION_EXECUTION_MODE,
+        repository_root=repository,
+        authorization_path=authorization_file,
+        authorization_raw=authorization_raw,
+        authorization_revision=authorization_revision,
+    )
+    second_authorization, second_raw = _reviewed_authorization(
+        authorization_file,
+        authorization_digest,
+    )
+    if second_authorization != authorization or second_raw != authorization_raw:
+        raise DiagnosticAnalysisError("v2r3 authorization changed during replay")
+    second_bundle = verify_countdown_thompson_diagnostic_bundle(
+        Path(bundle_dir),
+        repository_root=repository,
+    )
+    if (
+        _canonical_bytes(second_bundle.payloads) != _canonical_bytes(bundle.payloads)
+        or second_bundle.cells != bundle.cells
+        or second_bundle.seal_digest != bundle.seal_digest
+    ):
+        raise DiagnosticAnalysisError("v2r3 bundle changed during replay")
+    second_verified = regular_file_publication.verify_countdown_thompson_diagnostic_v2(
+        artifact_path,
+        expected_parent_binding=parent_binding,
+        authorization_digest=authorization_digest,
+    )
+    if not _same_verified_v2r3_collective(verified, second_verified):
+        raise DiagnosticAnalysisError("v2r3 collective changed during replay")
+    _validate_v2r3_source_provenance(
+        repository,
+        attestation=validated.manifest["runner_build_attestation"],
+        execution_head_revision=validated.manifest["execution_head_revision"],
+    )
+    _validate_v2r3_authorization_provenance(
+        repository,
+        authorization_path=authorization_file,
+        authorization_raw=authorization_raw,
+        manifest=validated.manifest,
+        authorization_revision=authorization_revision,
+    )
+    return _build_summary(validated)
+
+
+def analyze_countdown_thompson_nondiagnostic_full_shape_fixture_v2r3(
+    artifact_path: Path | str,
+    authorization: Mapping[str, Any],
+    *,
+    repository_root: Path,
+) -> dict[str, Any]:
+    """Replay the full-shaped fixture without granting diagnostic authority."""
+
+    if type(authorization) is not dict:
+        raise DiagnosticAnalysisError(
+            "full-shaped fixture authorization must be one exact object"
+        )
+    authorization_raw = _canonical_bytes(authorization)
+    authorization_snapshot = _strict_json_object(
+        authorization_raw,
+        "full-shaped fixture authorization",
+    )
+    authorization_digest = authorization_snapshot.get("deterministic_digest")
+    parent_binding = _validate_v2r3_authorization(
+        authorization_snapshot,
+        output_path=artifact_path,
+        supplied_digest=authorization_digest,
+        execution_mode=_FULL_SHAPE_FIXTURE_EXECUTION_MODE,
+    )
+    if (
+        authorization_snapshot["diagnostic_seal_digest"]
+        != _FULL_SHAPE_FIXTURE_DESIGN_DIGEST
+    ):
+        raise DiagnosticAnalysisError("fixture design authority drifted")
+    repository = Path(repository_root).resolve()
+    head_result = _git_result(repository, "rev-parse", "HEAD")
+    try:
+        current_head = head_result.stdout.decode("utf-8").strip()
+    except UnicodeDecodeError as error:
+        raise DiagnosticAnalysisError("fixture Git HEAD is not UTF-8") from error
+    attestation = authorization_snapshot["runner_build_attestation"]
+    if (
+        head_result.returncode != 0
+        or not _is_git_oid(current_head)
+        or attestation["authorized_runner_revision"] != current_head
+    ):
+        raise DiagnosticAnalysisError("fixture source revision drifted")
+    _validate_v2r3_source_provenance(
+        repository,
+        attestation=attestation,
+        execution_head_revision=current_head,
+    )
+    bundle = _full_shape_fixture_analysis_bundle(
+        authorization_snapshot["method_manifest_digest"]
+    )
+    payloads = bundle.payloads
+    matrix = payloads["preregistration.json"]["execution_matrix"]
+    if (
+        matrix["schedule_digest"] != authorization_snapshot["schedule_digest"]
+        or bundle.seal_digest != authorization_snapshot["diagnostic_seal_digest"]
+    ):
+        raise DiagnosticAnalysisError("fixture authorization schedule drifted")
+    try:
+        verified = regular_file_publication.verify_countdown_thompson_diagnostic_v2(
+            artifact_path,
+            expected_parent_binding=parent_binding,
+            authorization_digest=authorization_digest,
+        )
+    except regular_file_publication.RegularFilePublicationV2Error as error:
+        raise DiagnosticAnalysisError(
+            "fixture collective verification failed"
+        ) from error
+    validated = _validate_v2r3_verified_collective(
+        verified,
+        authorization=authorization_snapshot,
+        bundle=bundle,
+        execution_mode=_FULL_SHAPE_FIXTURE_EXECUTION_MODE,
+        repository_root=repository,
+    )
+    second_verified = regular_file_publication.verify_countdown_thompson_diagnostic_v2(
+        artifact_path,
+        expected_parent_binding=parent_binding,
+        authorization_digest=authorization_digest,
+    )
+    if not _same_verified_v2r3_collective(verified, second_verified):
+        raise DiagnosticAnalysisError("fixture collective changed during replay")
+    _validate_v2r3_source_provenance(
+        repository,
+        attestation=attestation,
+        execution_head_revision=current_head,
+    )
+    result = {
+        "analyzer_build_digest": validated.analyzer_build_digest,
+        "artifact_id": validated.manifest["artifact_id"],
+        "cell_count": EXPECTED_CELL_COUNT,
+        "claim_boundary": _FULL_SHAPE_FIXTURE_CLAIM_BOUNDARY,
+        "execution_authorization_digest": authorization_digest,
+        "fixture_design_digest": _FULL_SHAPE_FIXTURE_DESIGN_DIGEST,
+        "replay_status": "INDEPENDENT_240_CELL_TWO_STAGE_REPLAY_PASS",
+        "run_manifest_digest": validated.manifest["deterministic_digest"],
+        "schema_version": FIXTURE_ANALYSIS_V2R3_SCHEMA_VERSION,
+        "status": "PASS",
+    }
+    result["deterministic_digest"] = sha256_json(result)
+    return result
+
+
+def _validate_v2r3_summary_destination(
+    output_path: Path,
+    *,
+    artifact_path: Path | str,
+    repository_root: Path,
+    bundle_dir: Path | None = None,
+    authorization_path: Path | None = None,
+) -> Path:
+    destination = Path(os.path.abspath(os.fspath(output_path)))
+    try:
+        artifact = regular_file_publication.RegularFileLayoutV2.from_output_path(
+            artifact_path
+        ).output_path
+    except regular_file_publication.RegularFilePublicationV2Error as error:
+        raise DiagnosticAnalysisError("v2r3 artifact path is invalid") from error
+    repository = Path(repository_root).resolve()
+    if (
+        not destination.name
+        or destination.parent == artifact.parent
+        or destination == artifact
+        or destination == repository
+        or destination.is_relative_to(repository)
+    ):
+        raise DiagnosticAnalysisError(
+            "v2r3 summary must use a separate parent outside protected sources"
+        )
+    for protected in (bundle_dir, authorization_path):
+        if protected is None:
+            continue
+        candidate = Path(protected).resolve()
+        if destination == candidate or destination.is_relative_to(candidate):
+            raise DiagnosticAnalysisError(
+                "v2r3 summary destination overlaps protected input"
+            )
+    return destination
+
+
+def write_countdown_thompson_diagnostic_summary_v2r3(
+    artifact_path: Path | str,
+    bundle_dir: Path,
+    authorization_path: Path,
+    authorization_digest: str,
+    authorization_revision: str,
+    output_path: Path,
+    *,
+    repository_root: Path,
+) -> dict[str, Any]:
+    """Analyze v2r3, then publish one no-overwrite summary with revalidation."""
+
+    destination = _validate_v2r3_summary_destination(
+        output_path,
+        artifact_path=artifact_path,
+        repository_root=repository_root,
+        bundle_dir=bundle_dir,
+        authorization_path=authorization_path,
+    )
+    summary = analyze_countdown_thompson_diagnostic_artifact_v2r3(
+        artifact_path,
+        bundle_dir,
+        authorization_path,
+        authorization_digest,
+        authorization_revision,
+        repository_root=repository_root,
+    )
+    canonical = _canonical_bytes(summary)
+
+    def revalidate() -> None:
+        observed = analyze_countdown_thompson_diagnostic_artifact_v2r3(
+            artifact_path,
+            bundle_dir,
+            authorization_path,
+            authorization_digest,
+            authorization_revision,
+            repository_root=repository_root,
+        )
+        if _canonical_bytes(observed) != canonical:
+            raise DiagnosticAnalysisError(
+                "v2r3 inputs changed across summary publication"
+            )
+
+    _atomic_write_no_replace(
+        destination,
+        canonical,
+        post_durability_check=revalidate,
+    )
+    return summary
+
+
+def write_countdown_thompson_nondiagnostic_full_shape_summary_v2r3(
+    artifact_path: Path | str,
+    authorization: Mapping[str, Any],
+    output_path: Path,
+    *,
+    repository_root: Path,
+) -> dict[str, Any]:
+    """Publish only a nondiagnostic fixture replay receipt."""
+
+    destination = _validate_v2r3_summary_destination(
+        output_path,
+        artifact_path=artifact_path,
+        repository_root=repository_root,
+    )
+    authorization_snapshot = _strict_json_object(
+        _canonical_bytes(authorization),
+        "full-shaped fixture authorization",
+    )
+    summary = analyze_countdown_thompson_nondiagnostic_full_shape_fixture_v2r3(
+        artifact_path,
+        authorization_snapshot,
+        repository_root=repository_root,
+    )
+    canonical = _canonical_bytes(summary)
+
+    def revalidate() -> None:
+        observed = analyze_countdown_thompson_nondiagnostic_full_shape_fixture_v2r3(
+            artifact_path,
+            authorization_snapshot,
+            repository_root=repository_root,
+        )
+        if _canonical_bytes(observed) != canonical:
+            raise DiagnosticAnalysisError(
+                "full-shaped fixture changed across summary publication"
+            )
+
+    _atomic_write_no_replace(
+        destination,
+        canonical,
+        post_durability_check=revalidate,
+    )
     return summary
 
 
@@ -5675,10 +6959,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Fail-closed Thompson diagnostic artifact analyzer",
     )
     parser.add_argument("--analyze", type=Path, metavar="ARTIFACT")
+    parser.add_argument("--analyze-v2r3", type=Path, metavar="COMMIT_FILE")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--authorization-file", type=Path)
     parser.add_argument("--authorization-digest")
+    parser.add_argument("--authorization-revision")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--repository-root", type=Path)
     try:
@@ -5687,10 +6973,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(canonical_json(_invalid_cli_result(str(error))))
         return 2
 
-    if int(arguments.analyze is not None) + int(arguments.self_test) != 1:
+    if (
+        int(arguments.analyze is not None)
+        + int(arguments.analyze_v2r3 is not None)
+        + int(arguments.self_test)
+        != 1
+    ):
         print(
             canonical_json(
-                _invalid_cli_result("select exactly one of --analyze or --self-test")
+                _invalid_cli_result(
+                    "select exactly one of --analyze, --analyze-v2r3, or --self-test"
+                )
             )
         )
         return 2
@@ -5700,6 +6993,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 arguments.bundle,
                 arguments.authorization_file,
                 arguments.authorization_digest,
+                arguments.authorization_revision,
                 arguments.output,
                 arguments.repository_root,
             )
@@ -5709,7 +7003,48 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "repository paths"
                 )
             result = _self_test()
+        elif arguments.analyze_v2r3 is not None:
+            required = {
+                "analyze_v2r3": arguments.analyze_v2r3,
+                "bundle": arguments.bundle,
+                "authorization_file": arguments.authorization_file,
+                "authorization_digest": arguments.authorization_digest,
+                "authorization_revision": arguments.authorization_revision,
+                "output": arguments.output,
+                "repository_root": arguments.repository_root,
+            }
+            missing = [label for label, value in required.items() if value is None]
+            if missing:
+                raise DiagnosticAnalysisError(
+                    "--analyze-v2r3 is missing required arguments: "
+                    f"{', '.join(missing)}"
+                )
+            requested_output = Path(os.path.abspath(os.fspath(arguments.output)))
+            summary = write_countdown_thompson_diagnostic_summary_v2r3(
+                arguments.analyze_v2r3,
+                arguments.bundle,
+                arguments.authorization_file,
+                arguments.authorization_digest,
+                arguments.authorization_revision,
+                requested_output,
+                repository_root=arguments.repository_root,
+            )
+            result = {
+                "analyzer_build_digest": summary["analyzer_build_digest"],
+                "claim_boundary": (
+                    "v2r3 diagnostic result emitted only after exact collective, "
+                    "authorization, source, bundle, and replay closure; no "
+                    "inferential, superiority, retry, or locked-evaluation authority"
+                ),
+                "output_path": str(requested_output),
+                "status": "PASS",
+                "summary_digest": summary["deterministic_digest"],
+            }
         else:
+            if arguments.authorization_revision is not None:
+                raise DiagnosticAnalysisError(
+                    "legacy --analyze does not accept --authorization-revision"
+                )
             required = {
                 "analyze": arguments.analyze,
                 "bundle": arguments.bundle,

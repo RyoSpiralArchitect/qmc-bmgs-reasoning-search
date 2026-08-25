@@ -1,7 +1,8 @@
 # Countdown Thompson regular-file publication v2 contract
 
-Status: implemented and verified for non-diagnostic synthetic fixtures only.
-Production diagnostic execution remains disabled.
+Status: production wire, verifier, runner, and analyzer integrated and verified
+on a distinct 240-cell nondiagnostic full-shaped fixture. No production
+authorization candidate or diagnostic outcome exists at this revision.
 
 Wire revision: `v2r3`. The superseded `.qmc-bmgs-v2-` and
 `.qmc-bmgs-v2r2-` namespaces are not adopted or migrated by this revision.
@@ -148,6 +149,18 @@ therefore bounds accepted/persisted record bytes and stops further caller data
 consumption; it is not a bound on the temporary computation required to
 canonicalize one individual caller-supplied record.
 
+The production callback is a separate API and must return one exact
+`DiagnosticPublicationBatchV2`: exactly 240 canonical digest-bearing record
+payloads plus one digest-bearing run manifest. The substrate wraps each payload
+in an indexed production record frame, recomputes the payload-only JSONL digest,
+and requires the run manifest to close over the authorization, ATTEMPT, STARTED,
+output path/binding, ordered cell IDs, ordered record digests, and exact byte
+receipt. The outer collective manifest embeds that run manifest. READY closes
+the sidecars, and the output-path commit receipt closes READY, both sidecars,
+and the nested run-manifest digest. The independent verifier regenerates these
+objects, performs two stable generation snapshots with forward durability
+barriers, and exposes only immutable byte snapshots for COMMITTED.
+
 ## State machine
 
 ```text
@@ -227,10 +240,11 @@ The phase-1 module provides:
   same opaque authorization digest plus a freshly captured D2 binding can invoke
   the callback a second time.
 
-The legacy v1 directory publisher and analyzer remain present only as unexposed
-compatibility code. Production planning now emits authorization v2 material for
-this layout, while the public diagnostic entry point remains fail-closed and the
-production v2r3 publisher/analyzer remain unintegrated.
+The legacy v1 directory publisher and analyzer remain present only as
+compatibility code. Production planning emits authorization v2 material for
+this layout. The public diagnostic entry point now accepts only that strict
+reviewed schema and calls a distinct production v2r3 publisher; the synthetic
+wire cannot be relabeled as production.
 
 ## Claim boundary
 
@@ -257,14 +271,18 @@ Observed:
 - the strict reviewed loader freezes authorization bytes before output access,
   never calls the planning capture helper, and reports a replaced parent as
   `PUBLICATION_STATE_AMBIGUOUS` rather than recapturing an empty namespace.
+- the production wire closes an exact 240-frame collective, nested run manifest,
+  READY receipt, and commit receipt, and its independent verifier returns only
+  immutable-byte snapshots after two stable generations;
+- a fixed-design 240-cell nondiagnostic fixture uses the same production
+  publisher, runner action, record schema, and replay validator; its distinct
+  authorization schema is rejected by the production loader.
 
 Not established:
 
 - creation, separate review, or merge of an actual 240-cell authorization
   candidate;
 - authorization or execution of the sealed 240-cell diagnostic;
-- a production v2r3 publisher or analyzer; the public run entry point refuses
-  before loading inputs;
 - qualification of an actual target host/filesystem identity epoch; the schema
   binds exact review requirements, but this implementation PR creates no target
   candidate;
@@ -280,12 +298,11 @@ Not established:
   retained descriptors;
 - any scientific result, direction, quality, or performance claim.
 
-Production execution still requires a production v2r3 runner and analyzer, a
-nondiagnostic full-shaped fixture closing their exact artifact schemas and
-replay, qualification of the actual platform/filesystem/identity epoch during a
-separate authorization review, and a fresh exact-head authority review. The
-planning capture helper remains planning-only; only the strict reviewed loader
-may supply expected binding bytes to future execution.
+Production execution still requires qualification of the actual
+platform/filesystem/identity epoch during a separate authorization review and a
+fresh exact-head authority review of this integration. The planning capture
+helper remains planning-only; only the strict reviewed loader may supply
+expected binding bytes to production execution.
 
 ## Residual assumptions
 

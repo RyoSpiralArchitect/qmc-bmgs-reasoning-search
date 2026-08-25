@@ -399,8 +399,10 @@ raceを閉じられない。次のpublication substrateとして、固定名のr
 planning用のmechanicsに限られる。authorization v2のplanning/strict loaderは、backend、layout、
 lexical output path digest、exact binding bytesとその環境review要件を一つのdigestに閉じ、loaderは
 live pathからexpected bindingを再生成しない。regular-file module自身もrunner source attestationへ加えた。
-ただしproduction v2r3 publisher/analyzerは未統合で、public `--run`はauthorization、sealed input、
-output stateを読む前にfail-closedする。このrevisionでは実authorization candidateも生成していない。
+production v2r3 publisher/analyzerは、同じ公開APIを使う240-cell nondiagnostic full-shaped fixtureで
+統合・全cell replay済みになった。public `--run`はauthorization v2のstrict loaderだけを入口とし、
+別schema/scopeのfixture authorityを拒否する。このrevisionでは実authorization candidateを生成せず、
+sealed 240-cell diagnosticも実行・分析していない。
 これはauthorization closureとpublication mechanicsの証拠であり、240-cell diagnosticの実行許可や科学的結果ではない。
 設計、不変条件、残余仮定、production移行条件は
 [`docs/countdown_thompson_regular_file_publication_v2_contract.md`](docs/countdown_thompson_regular_file_publication_v2_contract.md)
@@ -410,16 +412,19 @@ output stateを読む前にfail-closedする。このrevisionでは実authorizat
 PYTHONPATH=src python -m \
   qmc_bmgs.experiments.countdown_thompson_regular_file_publication_v2 \
   --self-test
+
+PYTHONPATH=src python -m pytest -q \
+  tests/test_countdown_thompson_v2r3_full_shape_fixture.py
 ```
 
-将来production integrationを再承認した実行時は、clean source checkoutからmodule invocationを使い、
-`--repository-root .`を明示する。現revisionで有効なのはself-testとauthorization-v2 planningまでであり、
-run/analyze commandはまだ凍結していない。plan、別PRでのauthorization review、1回限りのrun、
+将来の実run時はclean source checkoutからmodule invocationを使い、`--repository-root .`を明示する。
+現revisionではproduction run/analyze実装までが有効だが、実runにはこのrevisionからstrictに派生した
+別PRのreviewed authorizationが必要である。plan、別PRでのauthorization review、1回限りのrun、
 独立analysisの順序と現在の実装境界は
 [`docs/countdown_thompson_diagnostic_execution_contract.md`](docs/countdown_thompson_diagnostic_execution_contract.md)
 に固定した。binding不一致や親差替えは空namespaceとして再捕捉せず
-`PUBLICATION_STATE_AMBIGUOUS`に分離する。実行・解析のterminal receipt、bounded read、summary
-publicationは次のproduction integrationでv2r3 layoutに対して改めて閉じる。
+`PUBLICATION_STATE_AMBIGUOUS`に分離する。実行・解析はv2r3 terminal collective、bounded read、
+authorization/source/bundleの前後再検証、no-overwrite summary publicationに閉じている。
 v2/v3/v4のどれもbase searchとしてgreedy/beamを上回れなければ、locked-128は
 開かず`STOP_REPAIR_NO_LOCKED_128_RUN`とする。
 

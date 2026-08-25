@@ -108,6 +108,7 @@ _RUNNER_SOURCE_PATHS = (
     "src/qmc_bmgs/experiments/__init__.py",
     "src/qmc_bmgs/experiments/countdown_track_a_canary_manifest.py",
     "src/qmc_bmgs/experiments/countdown_thompson_diagnostic_manifest.py",
+    "src/qmc_bmgs/experiments/countdown_thompson_regular_file_publication_v2.py",
     "src/qmc_bmgs/experiments/countdown_thompson_diagnostic_runner.py",
     ANALYZER_RELATIVE_PATH.as_posix(),
 )
@@ -126,7 +127,7 @@ _CURRENT_REPLAY_MODULE_PATHS = {
     "qmc_bmgs.experiments.countdown_thompson_diagnostic_manifest": (
         _RUNNER_SOURCE_PATHS[2]
     ),
-    __name__: _RUNNER_SOURCE_PATHS[4],
+    __name__: _RUNNER_SOURCE_PATHS[5],
 }
 
 _LOWER_HEX = frozenset("0123456789abcdef")

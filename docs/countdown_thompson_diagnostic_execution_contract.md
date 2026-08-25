@@ -22,6 +22,14 @@ authority. `READY_TO_PREREGISTER_LOCKED_128_EXECUTION` means that a new locked
 execution contract may be proposed and reviewed; it is not permission to run
 that cohort.
 
+At this revision, only authorization-v2 planning and strict reviewed loading are
+closed against the regular-file `v2r3` publication identity. The public `--run`
+entry point still refuses before reading authorization, sealed inputs, or output
+state because the production v2r3 publisher and analyzer are not integrated.
+This implementation revision does not create or commit a real authorization
+candidate and opens no diagnostic outcome. Stages 3 and 4 below remain future
+review boundaries, not executable instructions.
+
 ## Source-checkout authority
 
 The runner and analyzer are source-checkout tools. Their authority comes from a
@@ -35,9 +43,10 @@ Every operational invocation must therefore:
 2. use `PYTHONPATH=src python -m ...`; and
 3. pass `--repository-root .` explicitly.
 
-The runner protects exactly 14 imported modules: nine search modules and five
-runner-side modules. The five runner-side modules are the experiments package
-initializer, Track A canary manifest, diagnostic manifest, runner, and analyzer.
+The runner protects exactly 15 imported modules: nine search modules and six
+runner-side modules. The six runner-side modules are the experiments package
+initializer, Track A canary manifest, diagnostic manifest, regular-file v2r3
+publication substrate, runner, and analyzer.
 The analyzer's current replay closure contains exactly 13 imported modules: the
 same nine search modules plus the experiments package initializer, Track A
 canary manifest, diagnostic manifest, and analyzer. The historical runner leaf
@@ -74,15 +83,22 @@ tracked Git blob.
 
 ## Stage 1: planning only
 
-Choose a new absolute output directory outside the repository and a new
-authorization path inside the repository. Neither destination may already
-exist. From the repository root, run:
+After production integration has passed its own exact-head review, choose a new
+absolute output commit-file path outside the repository and a new authorization
+path inside the repository. The output spelling must already be absolute and
+lexically normalized; the basename must be ASCII and must not begin the reserved
+`.qmc-bmgs-` prefix. Its parent must already exist as a stable component-wise
+no-follow directory path. The output and every v2r3 reserved sidecar name must be
+absent, and the parent must contain no superseded v2/v2r2 namespace. Neither the
+output nor authorization destination may already exist. From the repository
+root, the future planning invocation is:
 
 ```bash
 PYTHONPATH=src python -m \
   qmc_bmgs.experiments.countdown_thompson_diagnostic_runner \
   --plan docs/preregistrations/countdown_thompson_diagnostic_v1 \
-  --output /absolute/outside/repository/countdown_thompson_diagnostic_v1_run \
+  --output \
+    /absolute/outside/repository/countdown_thompson_diagnostic_v1.commit.json \
   --authorization-out \
     docs/preregistrations/countdown_thompson_diagnostic_v1_execution_authorization.json \
   --repository-root .
@@ -98,11 +114,50 @@ proven, planning reports `PUBLICATION_STATE_AMBIGUOUS`. A file left at that path
 is not an authorization candidate, must not be committed or used, and the
 storage failure must be resolved before planning again at a new path.
 
-The authorization candidate binds at least the exact output identity, 240-cell
-scope, bundle and schedule digests, runtime qualification, runner/search source
-receipts, authorized runner revision, and deterministic digest. Reviewers must
-check those fields against the clean planning revision. Reviewers must not
-inspect or generate search outcomes while reviewing authorization.
+The v2 authorization candidate binds the exact raw output path and its byte
+digest, `publication_backend=posix_regular_files/v2r3`,
+`artifact_layout=flat_commit_root/v2r3`, the complete canonical root-to-parent
+`(st_dev, st_ino)` binding and nested digest, the exact mechanics that separate
+review must qualify for that host/filesystem identity epoch, 240-cell scope,
+bundle and schedule digests, runtime qualification, runner/search source
+receipts, authorized runner revision, and its top-level deterministic digest.
+Planning captures the parent binding once and then revalidates that exact object
+around source and sealed-bundle reads. Reviewed loading parses and freezes the
+stored binding before output access and never regenerates an expected binding
+from the live path. Reviewers must check those fields against the clean planning
+revision without inspecting or generating search outcomes.
+
+### Authorization v2 frozen surface
+
+The top-level schema is
+`qmc-bmgs-countdown-thompson-diagnostic-execution-authorization/v2`. It accepts
+exactly these fields and rejects missing or unknown fields before Git review or
+output access:
+
+```text
+artifact_id                         artifact_layout
+authorization_scope                 bundle_id
+cell_count                          claim_boundary
+deterministic_digest                diagnostic_seal_digest
+method_manifest_digest              output_parent_binding
+output_parent_binding_digest        output_path
+output_path_digest                  publication_backend
+publication_environment_requirements
+requires_explicit_digest_confirmation
+runner_build_attestation            runtime_qualification
+runtime_qualification_digest        schedule_digest
+schema_version
+```
+
+`output_parent_binding` is the exact canonical
+`qmc-bmgs-posix-output-parent-binding/v1` object defined by the v2r3 publication
+contract. `publication_environment_requirements` is an independently
+digest-closed
+`qmc-bmgs-countdown-thompson-publication-environment-requirements/v1` object
+binding the backend, layout, parent-binding digest, required local POSIX
+mechanics, scope, and exclusions. The top-level digest closes both nested
+objects. Canonical-byte comparison, not Python mapping or numeric equality,
+decides identity.
 
 ## Stage 2: authorization review
 
@@ -113,7 +168,17 @@ review must establish all of the following before merge:
 - the scope is `one_exact_complete_240_cell_diagnostic_run`;
 - the sealed bundle, schedule, method manifest, runtime bindings, and output
   path match the preregistration;
-- the protected path sets and all source receipts are exact;
+- the backend and layout are exactly `posix_regular_files/v2r3` and
+  `flat_commit_root/v2r3`;
+- the output path digest closes over its exact filesystem-encoded lexical bytes;
+- the complete parent binding and its digest close, and review occurs on the
+  same host, filesystem identity epoch, and mount interpretation;
+- the stated local POSIX `openat(O_EXCL)`, no-follow identity, regular-file and
+  directory `fsync`, and ASCII alias assumptions are qualified; NFS, SMB, FUSE,
+  reboot, cross-host, mount-namespace drift, and device/inode ABA remain outside
+  authority;
+- the protected path sets and all source receipts exact-match non-executable
+  regular blobs at both the authorized runner revision and execution HEAD;
 - the authorized runner revision is the reviewed implementation revision; and
 - the claim boundary grants one diagnostic execution only, with no method
   superiority or locked-128 authority.
@@ -124,136 +189,28 @@ authorized runner revision. The later execution HEAD must descend from the
 authorization revision, and the authorization bytes at both revisions must be
 identical.
 
-## Stage 3: one authorized run attempt
+## Stage 3: one authorized run attempt — not enabled
 
-Replace the placeholders below only after authorization review and merge. Use
-the same new absolute output path bound into the authorization candidate:
+There is no authorized production command at this revision. `--run` returns
+canonical `NOT_RUN` before loading authorization, sealed bundle, or output state.
+A later integration must replace the legacy directory publisher with a
+production v2r3 runner, bind every phase receipt and the final commit file to the
+authorization's exact parent-binding bytes, preserve the one-shot
+NOT_RUN/INVALID/AMBIGUOUS rules, add a nondiagnostic full-shaped fixture, and
+pass a fresh exact-head authority review. Only that reviewed revision may freeze
+the one-attempt command.
 
-```bash
-PYTHONPATH=src python -m \
-  qmc_bmgs.experiments.countdown_thompson_diagnostic_runner \
-  --run docs/preregistrations/countdown_thompson_diagnostic_v1 \
-  --output /absolute/outside/repository/countdown_thompson_diagnostic_v1_run \
-  --authorization-file \
-    docs/preregistrations/countdown_thompson_diagnostic_v1_execution_authorization.json \
-  --authorization-digest <64-character-lowercase-sha256> \
-  --authorization-revision <full-merged-authorization-commit-oid> \
-  --repository-root .
-```
+## Stage 4: independent analysis — not enabled
 
-Do not retry an authorization that has a durable attempt marker. Before
-`STARTED`, a refusal is `NOT_RUN` and opens no diagnostic search outcome. Once
-`STARTED` is durable, any incomplete or failed execution is `INVALID`; the
-attempt evidence is retained and the one-shot authority is spent. Operators
-must preserve that evidence rather than delete it and rerun. If commit
-durability and exact commit-receipt rollback both cannot be proven, the runner
-reports `PUBLICATION_STATE_AMBIGUOUS`. This also spends the one-shot authority:
-preserve the attempt and output paths, do not analyze the artifact, and do not
-retry.
-
-An attempt reservation is durable only after its parent directory is synced.
-If that barrier persistently fails, `NOT_RUN` is permitted only after the exact
-reservation is atomically moved out of its public name into a retained,
-inode-and-byte-verified tombstone, the parent directory barrier completes, and
-the public name is re-observed as non-authoritative. `STARTED`, `NOT_RUN`, and
-`INVALID` receipts likewise require their containing-directory barrier and an
-exact re-observation. An I/O error that prevents either durability or rollback
-from being proven is `PUBLICATION_STATE_AMBIGUOUS`, never inferred absence.
-Retained tombstones are non-authoritative incident evidence; preserve them and
-never treat them as a completed artifact.
-
-A valid completed artifact is one directory containing exactly:
-
-- `commit.json`
-- `manifest.json`
-- `records.jsonl`
-
-The artifact must close all 240 cell identities in preregistered order, retain
-zero provider calls, bind the reviewed authorization and execution HEAD, satisfy
-budget closure, and carry two-stage replay evidence. Partial output, an extra or
-missing artifact entry, schema drift, replay drift, source drift, or publication
-failure is not a valid diagnostic result.
-
-The READY staging directory is renamed from the attempt directory into the
-authorized output parent. A completed publication requires durability barriers
-for both namespace parents: the source attempt directory after `staging` is
-removed and the destination output parent after the artifact and commit receipt
-are inserted. Both the authorization-candidate parent and run-artifact output
-parent must already exist as stable non-symlink directories; the runner does
-not recursively create publication ancestors whose entries lack an independent
-durability barrier.
-
-## Stage 4: independent analysis
-
-Choose a new summary path that does not exist and cannot modify the run artifact
-or sealed bundle. Its parent must already exist as a stable non-symlink
-directory and must not be any raw or canonical path component of the run
-artifact, relocated artifact, sealed bundle, or committed attempt. In
-particular, do not place the summary directly beside one of those protected
-sources: inserting the summary would change that source path generation.
-
-Create a dedicated publication directory before analysis starts, then run from
-the same reviewed source checkout:
-
-```bash
-mkdir \
-  /absolute/outside/repository/countdown_thompson_diagnostic_v1_summary_publication
-PYTHONPATH=src python -m \
-  qmc_bmgs.experiments.countdown_thompson_diagnostic_analysis \
-  --analyze \
-    /absolute/outside/repository/countdown_thompson_diagnostic_v1_run \
-  --bundle docs/preregistrations/countdown_thompson_diagnostic_v1 \
-  --authorization-file \
-    docs/preregistrations/countdown_thompson_diagnostic_v1_execution_authorization.json \
-  --authorization-digest <64-character-lowercase-sha256> \
-  --output \
-    /absolute/outside/repository/countdown_thompson_diagnostic_v1_summary_publication/countdown_thompson_diagnostic_v1_summary.json \
-  --repository-root .
-```
-
-The analyzer verifies the bundle, reviewed authorization lineage, exact
-three-file artifact closure, all 240 records, provider-call zero, budget
-evidence, source attestations, and both replay stages before constructing a
-summary. A byte-identical committed artifact may be analyzed from a relocated
-copy only while the historical `authorized_output_path` still exists and can be
-opened through its raw name with `O_NOFOLLOW` and pinned by descriptor and inode
-through publication. A symlink alias or absent historical path is refused before
-summary staging begins. Before publication, the analyzer also requires exact
-three-file closure and matching filename, byte-count, and SHA-256 receipts for
-the historical and validated relocated artifacts. Both artifacts remain
-protected and the summary path may not modify either one. Runner recovery and
-analyzer reads reject
-non-regular members before opening, require an exact bounded EOF, and freeze the
-v1 member caps at 1 MiB for `commit.json`, 8 MiB for `manifest.json`, and 256 MiB
-for `records.jsonl`; historical receipt comparison streams within the validated
-byte counts instead of retaining the raw artifact. After the summary parent
-durability barrier, the analyzer collectively revalidates both pinned artifact
-receipts; drift requires durable summary quarantine or an explicit ambiguous
-publication state. The analyzer writes
-one canonical no-overwrite summary only after every gate passes. Success
-reports `PASS`; any CLI, integrity, analysis, or publication
-failure with durably proven absence reports canonical `INVALID` and emits no
-diagnostic result. If summary durability and exact rollback both cannot be
-proven, it reports `PUBLICATION_STATE_AMBIGUOUS`; any file at the requested
-destination remains unauthoritative and must not be used as diagnostic
-evidence. Summary publication follows the same rule: an exact summary is
-accepted only after inode, canonical bytes, stable non-symlink ancestry, and
-the parent barrier all close. Rollback atomically moves an exact summary into a
-retained quarantine; a moved exact summary that cannot be revoked is ambiguous,
-not `INVALID`.
-
-The dedicated summary publication directory must remain outside every protected
-source path. A summary placed directly in a protected source parent is rejected
-before staging, even when the destination filename itself is outside the
-artifact and bundle directories.
-
-The summary decision is exactly one of:
-
-- `READY_TO_PREREGISTER_LOCKED_128_EXECUTION`
-- `STOP_REPAIR_NO_LOCKED_128_RUN`
-
-The first permits only a new preregistration and review step. The second keeps
-the locked-128 cohort closed while the mechanism or implementation is repaired.
+The current analyzer validates only the legacy v1 three-file directory artifact;
+it is not compatible with the v2r3 flat commit-root layout or authorization v2.
+Do not invoke it on a future v2r3 diagnostic artifact. A later integration must
+add a production v2r3 analyzer, exact collective/authorization/source replay
+closure, bounded regular-file reads, and no-overwrite summary publication before
+any 240-cell outcome is opened. The eventual decision remains exactly one of
+`READY_TO_PREREGISTER_LOCKED_128_EXECUTION` and
+`STOP_REPAIR_NO_LOCKED_128_RUN`; the first grants only authority to propose and
+review a new locked execution contract.
 
 ## Outcome-blind validation surface
 
@@ -266,6 +223,8 @@ PYTHONPATH=src python -m \
   qmc_bmgs.experiments.countdown_thompson_diagnostic_runner --self-test
 PYTHONPATH=src python -m \
   qmc_bmgs.experiments.countdown_thompson_diagnostic_analysis --self-test
+PYTHONPATH=src python -m \
+  qmc_bmgs.experiments.countdown_thompson_regular_file_publication_v2 --self-test
 ```
 
 `python scripts/validate.py` invokes both self-tests from outside the repository

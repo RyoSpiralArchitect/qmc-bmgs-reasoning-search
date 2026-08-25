@@ -39,10 +39,13 @@ unsupported claim that dense feedback was causally harmful.
 - authorized runner revision embedded in that authorization:
   `a0111868aae556d6fd7cdbb8c7670c1b11e68f34`
 
-The first draft of this audit design incorrectly placed the authorized runner
-revision in the reviewed-authorization field. The first real audit attempt
-therefore failed closed in source preflight and emitted no receipt. This
-provenance correction was made before any post-hoc reduction was returned.
+The first draft supplied the nonexistent, mistyped revision
+`a0111868d6549597b19cd0e2ac81952974ea9c52` as the reviewed authorization
+revision. It was neither the reviewed revision nor the runner revision embedded
+in the authorization. The operator observed the first real audit invocation
+fail closed in source preflight before any post-hoc reduction was returned.
+That invocation history is operator evidence; it is not proven by the canonical
+receipt itself.
 
 The audit must first rerun the existing v2r3 analyzer, require exact summary
 object equality, and independently reverify the committed collective. It must
@@ -150,3 +153,26 @@ closed. It is not positive scientific evidence, retry authority, or
 locked-128 execution authority. The handoff decision remains
 `STOP_REPAIR_NO_LOCKED_128_RUN` unless a separate future authorization changes
 it.
+
+## Post-review v2 receipt amendment
+
+Amendment date: 2026-08-26
+
+The first frozen performance reductions above are unchanged. A fresh read-only
+review identified three receipt-presentation gaps, so schema v2 additionally:
+
+- resolves artifact, bundle, authorization, repository, and summary paths to
+  canonical existing absolute paths before hashing provenance;
+- records V4 anchor versus heuristic-greedy selection and terminal identity as
+  a post-review support check;
+- records how many V3 backup update entries changed posterior mean.
+
+The latter two values live under `supplemental_validation` with scope
+`POST_REVIEW_SUPPORT_CHECKS_NOT_FROZEN_PERFORMANCE_REDUCTIONS`. They were added
+after the v1 result was visible and cannot influence the frozen v2/v3 direction
+label, V4 rescue classification, or handoff decision.
+
+The analyzer deliberately regenerates each historical search from empty state
+and requires byte-identical replay. Therefore “read-only” and “no new run” mean
+no new outcome-bearing cohort, retry, provider call, or locked evaluation; they
+do not mean that deterministic search replay is skipped.

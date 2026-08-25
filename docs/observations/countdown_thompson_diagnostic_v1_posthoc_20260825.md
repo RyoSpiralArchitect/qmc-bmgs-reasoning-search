@@ -4,13 +4,16 @@ Date: 2026-08-25
 
 ## Bottom line
 
-既存240-cell traceだけをread-onlyで再検証・集計した。新しいsearch、provider call、
-retry、locked-128実行は行っていない。
+既存240-cell traceだけをread-onlyで再検証・集計した。新しいoutcome-bearing cohort、
+retry、provider call、locked-128実行は行っていない。既存analyzerは各historical
+searchをempty stateからdeterministically regenerateし、byte-identical replayを
+要求するため、固定search replayそのものは実行している。
 
-Dense terminal feedbackはtrace上ではactiveだったが、現行budget内の選択をほとんど
-変えなかった。v2/v3のtrajectory 0は48/48 pairで一致し、1回目のbackup後に始まる
-trajectory 1も48/48で一致した。差が初めて出たのは2回backup後のtrajectory 2で、
-そこまで開始できた44 pair中4 pairだけだった。
+Dense terminal backupはtraceに存在し、post-review supplemental checkではV3の
+565 update entries中540 entriesでposterior meanが変化した。しかし現行budget内の
+選択はほとんど変わらなかった。v2/v3のtrajectory 0は48/48 pairで一致し、1回目の
+backup後に始まるtrajectory 1も48/48で一致した。差が初めて出たのは2回backup後の
+trajectory 2で、そこまで開始できた44 pair中4 pairだけだった。
 
 その4 pairにもexact rescueはない。post-first best absolute errorは3 pairで不変、
 1 pairだけ`2 -> 1`に改善した。全48 pairではv3-only exactが0、v2-only exactも0で、
@@ -43,10 +46,13 @@ V4を追加探索の成功としてpromoteする根拠はない。
 
 これはoutcomeを既に知った後のexploratory auditであり、preregistrationではない。
 
-最初の実行要求ではreviewed authorization revisionとauthorization内のauthorized
-runner revisionを取り違えたため、既存analyzerがsource preflightでfail closedした。
-receiptは作られなかった。正しい二つのrevisionをdesignに明記してcommitした後、
-初めてreductionを実行した。
+最初の実行要求では、reviewed authorization revisionとして
+`a0111868d654...`というnonexistent / mistyped revisionを渡した。これは正しい
+reviewed revisionでも、authorization内のrunner revision `a0111868aae...`でもない。
+operatorが観測したCLIはsource preflightで`INVALID`となり、output pathは
+作られなかった。このfailed invocation historyはoperator evidenceであり、canonical
+receipt自身が証明する事実ではない。正しい二つのrevisionをdesignに明記してcommit
+した後、初めてreductionを実行した。
 
 ## V2 versus V3
 
@@ -105,9 +111,11 @@ posterior leverageがあったとも言えない。追加updateなら成功し�
 | no completed post-anchor terminal | 0 | 0 |
 | exact rescue | - | 0 |
 
-Anchor successは20/48 cellsで、元のgreedy 5/12 tasksを4 seedsずつ再現したものだった。
-そのうち19 cellsではpost-anchor trajectoryもexactだったが、anchorが既に成功している
-ためrescueではない。
+Anchor successは20/48 cellsだった。Post-review supplemental validationで、V4
+anchorと対応するheuristic greedyのselection identityおよびterminal identityが
+48/48 pairsで一致することを別途確認した。したがって20 cellsは元のgreedy 5/12
+tasksを4 seedsずつ再現したものだった。そのうち19 cellsではpost-anchor trajectoryも
+exactだったが、anchorが既に成功しているためrescueではない。
 
 唯一のanchor-failure improvementも
 `c4871dc359ba... / seed 7171`の`2 -> 1`で、v2/v3比較の唯一のstrict improvementと
@@ -152,8 +160,9 @@ Decisionは`STOP_REPAIR_NO_LOCKED_128_RUN`のまま維持する。
 - post-hoc receipt raw SHA-256:
   `ede8d2caedf75ebf6d29a5861bd2e9a68792155307c788a2f553e64b73effff8`
 - repository receipt and external receipt: byte-identical, 82,996 bytes
-- implementation validation before real reduction: 567 tests and 310 subtests
-  passed; six new synthetic post-hoc tests passed
+- operator validation outside the canonical receipt: implementation validation
+  before real reduction passed 567 tests and 310 subtests; the first six new
+  synthetic post-hoc tests passed
 
 Canonical receipt:
 [`posthoc_mechanism.json`](../results/countdown_thompson_diagnostic_v1/posthoc_mechanism.json)

@@ -26,7 +26,7 @@ from qmc_bmgs.experiments import (
 from qmc_bmgs.substrate.trace import canonical_json, sha256_json, strict_json_loads
 
 
-SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-posthoc-mechanism/v1"
+SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-posthoc-mechanism/v2"
 MODULE_RELATIVE_PATH = Path(
     "src/qmc_bmgs/experiments/countdown_thompson_posthoc_mechanism.py"
 )
@@ -597,6 +597,188 @@ def _feedback_exposure(cells: Mapping[str, Sequence[_Cell]]) -> dict[str, Any]:
     return result
 
 
+def _raw_selection_identity_sequence(
+    record: Mapping[str, Any], trajectory_index: int
+) -> list[list[object]]:
+    search_record = _strict_object(record.get("search_record"), "search record")
+    events = search_record.get("events")
+    if type(events) is not list:
+        raise PosthocMechanismAuditError("search events must be a list")
+    result: list[list[object]] = []
+    for event_index, raw_event in enumerate(events):
+        event = _strict_object(raw_event, f"event {event_index}")
+        if event.get("kind") != "selection_committed":
+            continue
+        payload = _strict_object(event.get("payload"), "selection payload")
+        observed_trajectory = _plain_nonnegative_int(
+            payload.get("trajectory_index"), "selection trajectory_index"
+        )
+        if observed_trajectory != trajectory_index:
+            continue
+        result.append(
+            [
+                _plain_nonnegative_int(payload.get("depth"), "selection depth"),
+                list(_plain_int_vector(payload.get("state"), "selection state")),
+                _plain_nonnegative_int(
+                    payload.get("action_index"), "selection action_index"
+                ),
+                list(
+                    _plain_int_vector(
+                        payload.get("child_state"), "selection child_state"
+                    )
+                ),
+            ]
+        )
+    if not result:
+        raise PosthocMechanismAuditError("selection identity sequence is empty")
+    return result
+
+
+def _raw_terminal_identity(
+    record: Mapping[str, Any], trajectory_index: int
+) -> dict[str, Any]:
+    search_record = _strict_object(record.get("search_record"), "search record")
+    events = search_record.get("events")
+    if type(events) is not list:
+        raise PosthocMechanismAuditError("search events must be a list")
+    matches: list[dict[str, Any]] = []
+    for event_index, raw_event in enumerate(events):
+        event = _strict_object(raw_event, f"event {event_index}")
+        if event.get("kind") != "terminal_verified":
+            continue
+        payload = _strict_object(event.get("payload"), "terminal payload")
+        observed_trajectory = _plain_nonnegative_int(
+            payload.get("trajectory_index"), "terminal trajectory_index"
+        )
+        if observed_trajectory == trajectory_index:
+            matches.append(
+                {
+                    "actions": payload.get("actions"),
+                    "states": payload.get("states"),
+                    "verification": payload.get("verification"),
+                }
+            )
+    if len(matches) != 1:
+        raise PosthocMechanismAuditError("terminal identity coverage drifted")
+    return matches[0]
+
+
+def _supplemental_validation(
+    records: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Run post-review support checks outside the frozen performance reduction."""
+
+    greedy_by_task: dict[str, Mapping[str, Any]] = {}
+    v4_records: list[Mapping[str, Any]] = []
+    v3_records: list[Mapping[str, Any]] = []
+    for record in records:
+        labels = _strict_object(record.get("labels"), "record labels")
+        method = labels.get("method_label")
+        proposal = labels.get("proposal_label")
+        task = labels.get("task_fingerprint")
+        seed = labels.get("exploration_seed")
+        if method == "greedy" and proposal == "heuristic":
+            if type(task) is not str or type(seed) is not int or seed != 0:
+                raise PosthocMechanismAuditError("greedy support identity drifted")
+            if task in greedy_by_task:
+                raise PosthocMechanismAuditError("greedy support task is duplicated")
+            greedy_by_task[task] = record
+        elif method == V4_METHOD:
+            v4_records.append(record)
+        elif method == V3_METHOD:
+            v3_records.append(record)
+    if (
+        len(greedy_by_task) != EXPECTED_TASK_COUNT
+        or len(v4_records) != EXPECTED_METHOD_CELL_COUNT
+        or len(v3_records) != EXPECTED_METHOD_CELL_COUNT
+    ):
+        raise PosthocMechanismAuditError("supplemental method coverage drifted")
+
+    anchor_selection_equal = 0
+    anchor_terminal_equal = 0
+    for record in v4_records:
+        labels = _strict_object(record.get("labels"), "v4 labels")
+        task = labels.get("task_fingerprint")
+        if type(task) is not str or task not in greedy_by_task:
+            raise PosthocMechanismAuditError("v4 task lacks greedy support pair")
+        greedy = greedy_by_task[task]
+        anchor_selection_equal += int(
+            _raw_selection_identity_sequence(record, 0)
+            == _raw_selection_identity_sequence(greedy, 0)
+        )
+        anchor_terminal_equal += int(
+            _raw_terminal_identity(record, 0) == _raw_terminal_identity(greedy, 0)
+        )
+    if (
+        anchor_selection_equal != EXPECTED_METHOD_CELL_COUNT
+        or anchor_terminal_equal != EXPECTED_METHOD_CELL_COUNT
+    ):
+        raise PosthocMechanismAuditError("v4 anchor differs from heuristic greedy")
+
+    total_updates = 0
+    changed_updates = 0
+    changed_by_trajectory: Counter[int] = Counter()
+    unchanged_by_trajectory: Counter[int] = Counter()
+    for record in v3_records:
+        search_record = _strict_object(record.get("search_record"), "v3 search record")
+        events = search_record.get("events")
+        if type(events) is not list:
+            raise PosthocMechanismAuditError("v3 search events must be a list")
+        for event_index, raw_event in enumerate(events):
+            event = _strict_object(raw_event, f"v3 event {event_index}")
+            if event.get("kind") != "trajectory_backed_up":
+                continue
+            payload = _strict_object(event.get("payload"), "v3 backup payload")
+            trajectory = _plain_nonnegative_int(
+                payload.get("trajectory_index"), "v3 backup trajectory_index"
+            )
+            updates = payload.get("updates")
+            if type(updates) is not list:
+                raise PosthocMechanismAuditError("v3 backup updates must be a list")
+            for raw_update in updates:
+                update = _strict_object(raw_update, "v3 backup update")
+                before = _strict_object(update.get("before"), "v3 update before")
+                after = _strict_object(update.get("after"), "v3 update after")
+                before_mean = before.get("mean")
+                after_mean = after.get("mean")
+                if type(before_mean) not in (int, float) or type(after_mean) not in (
+                    int,
+                    float,
+                ):
+                    raise PosthocMechanismAuditError("v3 update mean type drifted")
+                total_updates += 1
+                if before_mean != after_mean:
+                    changed_updates += 1
+                    changed_by_trajectory[trajectory] += 1
+                else:
+                    unchanged_by_trajectory[trajectory] += 1
+    if total_updates == 0:
+        raise PosthocMechanismAuditError("v3 supplemental update evidence is empty")
+
+    return {
+        "scope": "POST_REVIEW_SUPPORT_CHECKS_NOT_FROZEN_PERFORMANCE_REDUCTIONS",
+        "status": "PASS",
+        "v3_backup_update_mean_change": {
+            "changed_entry_count": changed_updates,
+            "changed_entry_count_by_trajectory": {
+                str(key): changed_by_trajectory[key]
+                for key in sorted(changed_by_trajectory)
+            },
+            "total_entry_count": total_updates,
+            "unchanged_entry_count": total_updates - changed_updates,
+            "unchanged_entry_count_by_trajectory": {
+                str(key): unchanged_by_trajectory[key]
+                for key in sorted(unchanged_by_trajectory)
+            },
+        },
+        "v4_anchor_vs_heuristic_greedy": {
+            "pair_count": EXPECTED_METHOD_CELL_COUNT,
+            "selection_identity_equal_count": anchor_selection_equal,
+            "terminal_identity_equal_count": anchor_terminal_equal,
+        },
+    }
+
+
 def reduce_verified_records(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Reduce already verified records under the frozen post-hoc definitions."""
 
@@ -623,6 +805,19 @@ def _read_strict_json_object(path: Path, label: str) -> tuple[dict[str, Any], by
     except (OSError, UnicodeDecodeError, ValueError) as error:
         raise PosthocMechanismAuditError(f"{label} could not be read exactly") from error
     return _strict_object(parsed, label), raw
+
+
+def _resolved_existing_path(
+    path: Path | str, label: str, *, directory: bool
+) -> Path:
+    try:
+        resolved = Path(path).resolve(strict=True)
+    except OSError as error:
+        raise PosthocMechanismAuditError(f"{label} could not be resolved") from error
+    if (directory and not resolved.is_dir()) or (not directory and not resolved.is_file()):
+        expected = "directory" if directory else "regular file"
+        raise PosthocMechanismAuditError(f"{label} must resolve to a {expected}")
+    return resolved
 
 
 def _git(repository: Path, *arguments: str) -> bytes:
@@ -675,14 +870,24 @@ def build_receipt(
 ) -> dict[str, Any]:
     """Revalidate fixed inputs and construct one deterministic audit receipt."""
 
-    repository = repository_root.resolve()
+    repository = _resolved_existing_path(
+        repository_root, "repository root", directory=True
+    )
+    artifact = _resolved_existing_path(artifact_path, "artifact", directory=False)
+    bundle = _resolved_existing_path(bundle_dir, "bundle", directory=True)
+    authorization_file = _resolved_existing_path(
+        authorization_path, "execution authorization", directory=False
+    )
+    summary_file = _resolved_existing_path(
+        summary_path, "published diagnostic summary", directory=False
+    )
     source = _source_attestation(repository)
     try:
         recomputed_summary = (
             analysis.analyze_countdown_thompson_diagnostic_artifact_v2r3(
-                artifact_path,
-                bundle_dir,
-                authorization_path,
+                artifact,
+                bundle,
+                authorization_file,
                 authorization_digest,
                 authorization_revision,
                 repository_root=repository,
@@ -693,7 +898,7 @@ def build_receipt(
             "v2r3 diagnostic replay and analysis did not close"
         ) from error
     observed_summary, summary_raw = _read_strict_json_object(
-        summary_path, "published diagnostic summary"
+        summary_file, "published diagnostic summary"
     )
     summary_core = {
         key: value
@@ -707,14 +912,14 @@ def build_receipt(
     ):
         raise PosthocMechanismAuditError("published summary does not exactly recompute")
 
-    authorization, _ = _read_strict_json_object(
-        authorization_path, "execution authorization"
+    authorization, authorization_raw = _read_strict_json_object(
+        authorization_file, "execution authorization"
     )
     if authorization.get("deterministic_digest") != authorization_digest:
         raise PosthocMechanismAuditError("execution authorization digest drifted")
     try:
         verified = regular_file_publication.verify_countdown_thompson_diagnostic_v2(
-            artifact_path,
+            artifact,
             expected_parent_binding=authorization["output_parent_binding"],
             authorization_digest=authorization_digest,
         )
@@ -729,25 +934,36 @@ def build_receipt(
         raise PosthocMechanismAuditError("committed collective provenance drifted")
 
     reductions = reduce_verified_records(records)
+    supplemental = _supplemental_validation(records)
     second_source = _source_attestation(repository)
-    if second_source != source or summary_path.read_bytes() != summary_raw:
-        raise PosthocMechanismAuditError("audit source or summary changed during reduction")
+    if (
+        second_source != source
+        or summary_file.read_bytes() != summary_raw
+        or authorization_file.read_bytes() != authorization_raw
+    ):
+        raise PosthocMechanismAuditError(
+            "audit source, summary, or authorization changed during reduction"
+        )
     core: dict[str, Any] = {
         "claim_boundary": CLAIM_BOUNDARY,
         "input_provenance": {
             "artifact_commit_digest": verified.artifact_commit_digest,
-            "artifact_path": os.fspath(artifact_path),
+            "artifact_path": os.fspath(artifact),
             "authorization_digest": authorization_digest,
+            "authorization_path": os.fspath(authorization_file),
             "authorization_revision": authorization_revision,
+            "bundle_path": os.fspath(bundle),
             "collective_manifest_digest": verified.collective_manifest_digest,
             "record_count": len(records),
             "records_jsonl_byte_count": len(verified.records_jsonl_bytes),
             "records_jsonl_sha256": hashlib.sha256(
                 verified.records_jsonl_bytes
             ).hexdigest(),
+            "repository_path": os.fspath(repository),
             "run_manifest_digest": verified.run_manifest_digest,
             "summary_deterministic_digest": summary_digest,
-            "summary_path": os.fspath(summary_path),
+            "path_identity_semantics": "resolved_absolute_paths/v1",
+            "summary_path": os.fspath(summary_file),
             "summary_raw_byte_count": len(summary_raw),
             "summary_raw_sha256": hashlib.sha256(summary_raw).hexdigest(),
         },
@@ -755,6 +971,7 @@ def build_receipt(
         "reductions": reductions,
         "schema_version": SCHEMA_VERSION,
         "source_attestation": source,
+        "supplemental_validation": supplemental,
     }
     return {**core, "deterministic_digest": sha256_json(core)}
 

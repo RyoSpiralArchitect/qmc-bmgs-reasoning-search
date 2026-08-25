@@ -149,29 +149,31 @@ Decisionは`STOP_REPAIR_NO_LOCKED_128_RUN`のまま維持する。
 
 ## Provenance and validation
 
-- audit source revision: `d366af83b0e06bf2a32bab6356425405b136cb8c`
+- audit source revision: `a4e4d8809146b7a861c6bf0dee645794683dddd0`
 - artifact commit digest:
   `ffd5f875f3d560382dd21fddec95b47ad0d4442913d8a5fb7faf104d12f209b9`
 - records JSONL: 22,113,649 bytes,
   SHA-256 `352e225eefe3a8ef8ebc1718b3bb0162913af81cc7211c1cd4acfaff00ab9669`
 - existing summary deterministic digest:
   `46ebdb1eabcaa91220ed8bb10370f70aad0c61d37a2ef6150d09ca29beac0db5`
-- canonical schema-v2 receipt deterministic digest:
-  `380660d5f68fb41b805864bded9d68f8d55263551c8b2dc6061489fcaefa6851`
-- canonical schema-v2 receipt raw SHA-256:
-  `c606f9c26145f7676a9eb567868f044fbcff21d17de8464cb16877a4976da764`
-- repository and external schema-v2 receipts: byte-identical, 83,868 bytes
+- canonical schema-v3 receipt deterministic digest:
+  `02a0ecd90f6e695d22f06d77ee74a41210045811913c9e5b2bd793110089c262`
+- canonical schema-v3 receipt raw SHA-256:
+  `07c747aaaef5709c3b215b7c7645d34e8968712c5b273fe29b016510d9ac596c`
+- lowercase `/users/...` external input and normal `/Users/...` repository input
+  produced byte-identical schema-v3 receipts, 83,885 bytes
 - operator validation outside the canonical receipt: implementation validation
-  after review hardening passed 577 tests and 310 subtests; 16 focused post-hoc
+  after review hardening passed 578 tests and 310 subtests; 17 focused post-hoc
   tests passed
 
 Canonical receipt:
-[`posthoc_mechanism_v2.json`](../results/countdown_thompson_diagnostic_v1/posthoc_mechanism_v2.json)
+[`posthoc_mechanism_v3.json`](../results/countdown_thompson_diagnostic_v1/posthoc_mechanism_v3.json)
 
-The historical schema-v1 receipt remains at `posthoc_mechanism.json`, digest
-`880f9453...`. Its frozen reductions are byte-equivalent to the v2 reductions,
-but v2 supersedes it for citation because v2 canonicalizes path identity and
-separates the post-review support checks.
+Historical schema-v1 and v2 receipts remain at `posthoc_mechanism.json` and
+`posthoc_mechanism_v2.json`. Their frozen reductions are byte-equivalent to v3;
+v2 and v3 supplemental values are also identical. V3 supersedes both for
+citation because it additionally canonicalizes the actual filesystem
+directory-entry spelling across case-equivalent aliases.
 
 ## Next handoff
 

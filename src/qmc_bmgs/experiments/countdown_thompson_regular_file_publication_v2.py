@@ -808,6 +808,44 @@ def preflight_reviewed_parent_binding_v2(
         parent.close()
 
 
+def revalidate_reviewed_parent_binding_v2(
+    output_path: Path | str,
+    expected_parent_binding: object,
+) -> dict[str, Any]:
+    """Revalidate one reviewed parent after publication ownership exists.
+
+    Unlike :func:`preflight_reviewed_parent_binding_v2`, this callback-time
+    check deliberately does not require the v2r3 reserved namespace to be
+    empty: the publisher already owns ATTEMPT and may already own STARTED.
+    It grants no authority over those names.  The publisher must retain and
+    reprove their exact descriptors and collective state around this check.
+    """
+
+    _require_posix_capabilities()
+    layout = RegularFileLayoutV2.from_output_path(output_path)
+    parent_binding = _freeze_expected_parent_binding(
+        expected_parent_binding,
+        layout.output_path.parent,
+    )
+    parent = _open_bound_parent(layout.output_path.parent, parent_binding)
+    try:
+        _validate_layout_against_parent(parent, layout)
+        _assert_no_legacy_namespace(parent)
+        before_parent = _parent_generation(parent)
+        parent.fsync()
+        parent.assert_path()
+        _assert_no_legacy_namespace(parent)
+        after_parent = _parent_generation(parent)
+        parent.assert_path()
+        if before_parent != after_parent:
+            raise RegularFilePublicationV2AmbiguousError(
+                "output parent changed during reviewed-binding revalidation"
+            )
+        return parent_binding
+    finally:
+        parent.close()
+
+
 def _open_bound_parent(
     parent_path: Path,
     expected_parent_binding: Mapping[str, Any],

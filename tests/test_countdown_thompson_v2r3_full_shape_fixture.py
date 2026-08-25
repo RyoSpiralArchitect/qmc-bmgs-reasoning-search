@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +16,74 @@ from qmc_bmgs.experiments import (
     countdown_thompson_regular_file_publication_v2 as publication,
 )
 from qmc_bmgs.substrate.trace import sha256_json
+
+
+def _clean_checkout_with_current_sources(
+    repository: Path,
+    destination: Path,
+) -> Path:
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "--quiet",
+            "--no-hardlinks",
+            os.fspath(repository),
+            os.fspath(destination),
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    source_root = repository / "src"
+    for source in source_root.rglob("*.py"):
+        target = destination / source.relative_to(repository)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    subprocess.run(
+        ["git", "add", "src"],
+        cwd=destination,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=destination,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ).stdout
+    if status:
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=QMC Fixture Test",
+                "-c",
+                "user.email=qmc-fixture@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "Test current v2r3 source snapshot",
+            ],
+            cwd=destination,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    final_status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=destination,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ).stdout
+    if final_status:
+        raise AssertionError(f"temporary fixture checkout is dirty: {final_status}")
+    return destination
 
 
 def _dummy_build() -> runner._BuildAttestation:
@@ -243,23 +315,116 @@ class CountdownThompsonV2R3FullShapeFixtureTests(unittest.TestCase):
                     repository_root=root,
                 )
 
-    def test_shared_wire_executes_and_independently_replays_all_240_cells(
+    def test_public_fixture_executes_and_replays_all_240_cells_in_clean_clone(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory(prefix="qmc-v2r3-full-shape-") as raw:
             root = Path(raw).resolve()
-            output = root / "fixture.commit.json"
-            snapshot, authorization, binding = _fixture_inputs(output)
-            with patch.object(
-                runner,
-                "verify_countdown_thompson_diagnostic_bundle",
-                side_effect=AssertionError("sealed diagnostic bundle must not open"),
-            ):
-                published = runner._publish_v2r3_execution(
-                    snapshot,
-                    pre_outcome_check=lambda: None,
-                    post_execution_check=lambda: None,
+            repository = Path(__file__).resolve().parents[1]
+            checkout = _clean_checkout_with_current_sources(
+                repository,
+                root / "checkout",
+            )
+            artifact_parent = root / "artifact-parent"
+            artifact_parent.mkdir()
+            output = artifact_parent / "fixture.commit.json"
+            environment = os.environ.copy()
+            environment["PYTHONPATH"] = os.fspath(checkout / "src")
+            environment["PYTHONPYCACHEPREFIX"] = os.fspath(root / "pycache")
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            executed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "qmc_bmgs.experiments.countdown_thompson_diagnostic_runner",
+                    "--full-shape-fixture",
+                    "--output",
+                    os.fspath(output),
+                    "--repository-root",
+                    os.fspath(checkout),
+                ],
+                cwd=checkout,
+                env=environment,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=300,
+            )
+            self.assertEqual(
+                executed.returncode,
+                0,
+                msg=f"stdout={executed.stdout}\nstderr={executed.stderr}",
+            )
+            runner_lines = [line for line in executed.stdout.splitlines() if line]
+            self.assertEqual(len(runner_lines), 1)
+            published = json.loads(runner_lines[0])
+            authorization = published["fixture_authorization"]
+            binding = authorization["output_parent_binding"]
+
+            analyzer_program = "\n".join(
+                (
+                    "import json, sys",
+                    "from pathlib import Path",
+                    "from qmc_bmgs.experiments import "
+                    "countdown_thompson_diagnostic_analysis as analysis",
+                    "from qmc_bmgs.substrate.trace import canonical_json",
+                    "request = json.load(sys.stdin)",
+                    "original = analysis._validate_v2r3_verified_collective",
+                    "captured = []",
+                    "def capture(*args, **kwargs):",
+                    "    value = original(*args, **kwargs)",
+                    "    captured.append(value)",
+                    "    return value",
+                    "analysis._validate_v2r3_verified_collective = capture",
+                    "result = analysis."
+                    "analyze_countdown_thompson_nondiagnostic_full_shape_fixture_v2r3(",
+                    "    Path(sys.argv[1]),",
+                    "    request['fixture_authorization'],",
+                    "    repository_root=Path(sys.argv[2]),",
+                    ")",
+                    "if len(captured) != 1:",
+                    "    raise RuntimeError('fixture validation capture drifted')",
+                    "try:",
+                    "    analysis._build_summary(captured[0])",
+                    "except analysis.DiagnosticAnalysisError as error:",
+                    "    boundary = {'reason': str(error), 'status': 'BLOCKED'}",
+                    "else:",
+                    "    boundary = {'reason': None, 'status': 'CROSSED'}",
+                    "print(canonical_json({",
+                    "    'analysis_result': result,",
+                    "    'captured_execution_mode': captured[0].execution_mode,",
+                    "    'fixture_readiness_boundary': boundary,",
+                    "}))",
                 )
+            )
+            analyzed = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    analyzer_program,
+                    os.fspath(output),
+                    os.fspath(checkout),
+                ],
+                cwd=checkout,
+                env=environment,
+                check=False,
+                input=executed.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=300,
+            )
+            self.assertEqual(
+                analyzed.returncode,
+                0,
+                msg=f"stdout={analyzed.stdout}\nstderr={analyzed.stderr}",
+            )
+            analyzer_lines = [line for line in analyzed.stdout.splitlines() if line]
+            self.assertEqual(len(analyzer_lines), 1)
+            analysis_evidence = json.loads(analyzer_lines[0])
+            result = analysis_evidence["analysis_result"]
+
             verified = publication.verify_countdown_thompson_diagnostic_v2(
                 output,
                 expected_parent_binding=binding,
@@ -269,36 +434,9 @@ class CountdownThompsonV2R3FullShapeFixtureTests(unittest.TestCase):
                 authorization["method_manifest_digest"]
             )
             self.assertEqual(
-                [cell.to_dict() for cell in independent_bundle.cells],
-                [cell.to_dict() for cell in snapshot.cells],
+                [record["cell_id"] for record in verified.records],
+                [cell.cell_id for cell in independent_bundle.cells],
             )
-
-            def git_result(
-                repository_root: Path,
-                *arguments: str,
-            ) -> subprocess.CompletedProcess[bytes]:
-                if arguments == ("rev-parse", "HEAD"):
-                    return subprocess.CompletedProcess(
-                        ["git", *arguments],
-                        0,
-                        ("d" * 40 + "\n").encode("utf-8"),
-                        b"",
-                    )
-                raise AssertionError(f"unexpected Git lookup: {arguments}")
-
-            with (
-                patch.object(
-                    analysis,
-                    "_validate_v2r3_source_provenance",
-                    return_value="a" * 64,
-                ),
-                patch.object(analysis, "_git_result", side_effect=git_result),
-            ):
-                result = analysis.analyze_countdown_thompson_nondiagnostic_full_shape_fixture_v2r3(
-                    output,
-                    authorization,
-                    repository_root=Path(__file__).resolve().parents[1],
-                )
             self.assertEqual(published["status"], "COMMITTED")
             self.assertEqual(len(verified.records), 240)
             self.assertEqual(result["status"], "PASS")
@@ -306,6 +444,29 @@ class CountdownThompsonV2R3FullShapeFixtureTests(unittest.TestCase):
                 result["replay_status"],
                 "INDEPENDENT_240_CELL_TWO_STAGE_REPLAY_PASS",
             )
+            self.assertEqual(
+                analysis_evidence["captured_execution_mode"],
+                analysis._FULL_SHAPE_FIXTURE_EXECUTION_MODE,
+            )
+            self.assertEqual(
+                analysis_evidence["fixture_readiness_boundary"],
+                {
+                    "reason": (
+                        "v2r3 readiness summary requires exact production "
+                        "diagnostic authority"
+                    ),
+                    "status": "BLOCKED",
+                },
+            )
+            checkout_status = subprocess.run(
+                ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+                cwd=checkout,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            ).stdout
+            self.assertEqual(checkout_status, "")
             mutable = verified.records[0]
             mutable["cell_id"] = "mutated"
             self.assertNotEqual(verified.records[0]["cell_id"], "mutated")

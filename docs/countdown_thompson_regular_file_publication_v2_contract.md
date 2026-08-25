@@ -161,6 +161,14 @@ and the nested run-manifest digest. The independent verifier regenerates these
 objects, performs two stable generation snapshots with forward durability
 barriers, and exposes only immutable byte snapshots for COMMITTED.
 
+The initial reviewed-binding preflight requires the entire reserved namespace
+to be absent. After the publisher durably owns ATTEMPT, callback-time input
+rechecks use a distinct parent-binding revalidation that permits publisher-owned
+ATTEMPT/STARTED names but grants no authority over them. The publisher alone
+retains and reproves their descriptors, exact bytes, and collective state.
+Reusing the empty-namespace preflight after ATTEMPT would consume every valid
+attempt as NOT_RUN and is forbidden by the public full-shaped integration test.
+
 ## State machine
 
 ```text

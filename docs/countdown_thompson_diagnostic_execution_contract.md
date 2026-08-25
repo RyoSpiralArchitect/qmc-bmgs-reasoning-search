@@ -47,11 +47,12 @@ The runner protects exactly 15 imported modules: nine search modules and six
 runner-side modules. The six runner-side modules are the experiments package
 initializer, Track A canary manifest, diagnostic manifest, regular-file v2r3
 publication substrate, runner, and analyzer.
-The analyzer's current replay closure contains exactly 13 imported modules: the
+The analyzer's current replay closure contains exactly 14 imported modules: the
 same nine search modules plus the experiments package initializer, Track A
-canary manifest, diagnostic manifest, and analyzer. The historical runner leaf
-remains required in the run's attested receipt set even though the analyzer does
-not import that leaf for current replay.
+canary manifest, diagnostic manifest, regular-file v2r3 publication substrate,
+and analyzer. The historical runner leaf remains required in the run's attested
+receipt set even though the analyzer does not import that leaf for current
+replay.
 
 The tools pin imported module origins to the checkout. Protected source files
 must be regular files whose descriptor-read bytes match both their receipts and
@@ -217,7 +218,10 @@ remains private compatibility surface.
 
 The full-shaped nondiagnostic fixture passes the same record/publication/replay
 core but emits only a fixture PASS receipt, never a diagnostic readiness
-decision. No production diagnostic artifact has been analyzed at this revision.
+decision. Its validated run retains the fixture execution mode, and production
+summary construction independently requires the exact production authorization
+schema, scope, bundle, seal, claim boundary, and a null fixture-design digest.
+No production diagnostic artifact has been analyzed at this revision.
 The eventual production decision remains exactly one of
 `READY_TO_PREREGISTER_LOCKED_128_EXECUTION` and
 `STOP_REPAIR_NO_LOCKED_128_RUN`; the first grants only authority to propose and

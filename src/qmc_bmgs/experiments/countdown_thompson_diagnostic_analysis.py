@@ -417,6 +417,7 @@ _SEALED_DIAGNOSTIC_TASK_FINGERPRINTS = frozenset(
 )
 _PRODUCTION_EXECUTION_MODE = "authorized_diagnostic"
 _FULL_SHAPE_FIXTURE_EXECUTION_MODE = "nondiagnostic_full_shape_fixture"
+_LEGACY_DIAGNOSTIC_EXECUTION_MODE = "legacy_directory_diagnostic_v1"
 _PRODUCTION_RUN_CLAIM_BOUNDARY = (
     "authorized engineering diagnostic only; no method-superiority, task-transfer, "
     "retry, or locked-128 execution authority"
@@ -3668,6 +3669,7 @@ class _ValidatedRun:
     historical_attempt_path: Path | None = None
     attempt_state_receipt: _AttemptStateReceipt = ()
     historical_attempt_authority: _PinnedProtectedRoot | None = None
+    execution_mode: str = _LEGACY_DIAGNOSTIC_EXECUTION_MODE
 
 
 def _validate_v2r3_verified_collective(
@@ -3774,6 +3776,7 @@ def _validate_v2r3_verified_collective(
         records=validated_rows,
         manifest=manifest,
         analyzer_build_digest=analyzer_build_digest,
+        execution_mode=execution_mode,
     )
 
 
@@ -4549,7 +4552,52 @@ def _method_summaries(
     return summaries
 
 
+def _require_summary_authority(validated: _ValidatedRun) -> bool:
+    """Return whether this is v2r3 after closing production-only authority."""
+
+    manifest = validated.manifest
+    if manifest.get("schema_version") != RUN_MANIFEST_V2R3_SCHEMA_VERSION:
+        if validated.execution_mode != _LEGACY_DIAGNOSTIC_EXECUTION_MODE:
+            raise DiagnosticAnalysisError(
+                "non-v2r3 readiness summary has non-legacy execution authority"
+            )
+        return False
+
+    authorization = manifest.get("execution_authorization")
+    payloads = getattr(validated.bundle, "payloads", None)
+    preregistration = (
+        payloads.get("preregistration.json") if type(payloads) is dict else None
+    )
+    bundle_seal_digest = getattr(validated.bundle, "seal_digest", None)
+    if (
+        validated.execution_mode != _PRODUCTION_EXECUTION_MODE
+        or manifest.get("execution_mode") != _PRODUCTION_EXECUTION_MODE
+        or type(authorization) is not dict
+        or set(authorization) != _AUTHORIZATION_V2_FIELDS
+        or authorization.get("schema_version") != _AUTHORIZATION_V2_SCHEMA_VERSION
+        or authorization.get("authorization_scope") != _AUTHORIZATION_SCOPE
+        or authorization.get("claim_boundary") != _AUTHORIZATION_CLAIM_BOUNDARY
+        or authorization.get("bundle_id") != BUNDLE_ID
+        or authorization.get("deterministic_digest")
+        != manifest.get("execution_authorization_digest")
+        or authorization.get("diagnostic_seal_digest") != bundle_seal_digest
+        or manifest.get("authorization_schema_version")
+        != _AUTHORIZATION_V2_SCHEMA_VERSION
+        or manifest.get("bundle_id") != BUNDLE_ID
+        or manifest.get("claim_boundary") != _PRODUCTION_RUN_CLAIM_BOUNDARY
+        or manifest.get("diagnostic_seal_digest") != bundle_seal_digest
+        or manifest.get("fixture_design_digest") is not None
+        or type(preregistration) is not dict
+        or preregistration.get("bundle_id") != BUNDLE_ID
+    ):
+        raise DiagnosticAnalysisError(
+            "v2r3 readiness summary requires exact production diagnostic authority"
+        )
+    return True
+
+
 def _build_summary(validated: _ValidatedRun) -> dict[str, Any]:
+    is_v2r3 = _require_summary_authority(validated)
     oracle_rows = [
         row
         for row in validated.records
@@ -4566,9 +4614,6 @@ def _build_summary(validated: _ValidatedRun) -> dict[str, Any]:
     dense = _dense_terminal_metrics(validated)
     task_metrics, vectors, success_counts = _success_metrics(validated)
     readiness = _engineering_readiness(validated, vectors, success_counts)
-    is_v2r3 = (
-        validated.manifest.get("schema_version") == RUN_MANIFEST_V2R3_SCHEMA_VERSION
-    )
     summary = {
         "schema_version": (
             ANALYSIS_V2R3_SCHEMA_VERSION if is_v2r3 else ANALYSIS_SCHEMA_VERSION

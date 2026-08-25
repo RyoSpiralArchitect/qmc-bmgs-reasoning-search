@@ -3496,6 +3496,21 @@ def _preflight_reviewed_parent_binding(
         raise DiagnosticNotRunError(str(error)) from error
 
 
+def _revalidate_reviewed_parent_binding(
+    output_path: Path | str,
+    expected_parent_binding: object,
+) -> dict[str, Any]:
+    try:
+        return regular_file_publication.revalidate_reviewed_parent_binding_v2(
+            output_path,
+            expected_parent_binding,
+        )
+    except regular_file_publication.RegularFilePublicationV2AmbiguousError as error:
+        raise DiagnosticPublicationStateAmbiguousError(str(error)) from error
+    except regular_file_publication.RegularFilePublicationV2NotRunError as error:
+        raise DiagnosticNotRunError(str(error)) from error
+
+
 def _capture_planning_parent_binding(
     output_path: Path | str,
 ) -> dict[str, Any]:
@@ -6436,7 +6451,7 @@ def _recheck_v2r3_fixture_inputs(
         current_head=snapshot.execution_head_revision,
     )
     _recheck_source_closure(Path(repository_root), build)
-    parent_binding = _preflight_reviewed_parent_binding(
+    parent_binding = _revalidate_reviewed_parent_binding(
         snapshot.output_path,
         snapshot.output_parent_binding,
     )
@@ -6499,7 +6514,7 @@ def _recheck_v2r3_production_inputs(
         reviewed_authorization_revision=snapshot.reviewed_authorization_revision,
     )
     _recheck_source_closure(repository, build)
-    parent_binding = _preflight_reviewed_parent_binding(
+    parent_binding = _revalidate_reviewed_parent_binding(
         snapshot.output_path,
         snapshot.output_parent_binding,
     )

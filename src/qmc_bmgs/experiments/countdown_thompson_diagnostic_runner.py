@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Fail-closed controls for the sealed Countdown Thompson diagnostic.
 
-Planning retains the outcome-blind authorization protocol, but production
-execution is disabled until artifact creation and descriptor authority share
-one atomic primitive.  The legacy directory publisher is reachable only by
+Planning can bind a reviewed v2r3 regular-file namespace, but production
+execution remains disabled until the production publisher and analyzer are
+integrated and reviewed.  The legacy directory publisher is reachable only by
 explicit non-diagnostic fixtures.  ``--self-test`` never reads the sealed task
 cohort.
 """
@@ -33,6 +33,9 @@ from qmc_bmgs.experiments import countdown_thompson_diagnostic_manifest as manif
 from qmc_bmgs.experiments import (
     countdown_track_a_canary_manifest as canary_manifest,
 )
+from qmc_bmgs.experiments import (
+    countdown_thompson_regular_file_publication_v2 as regular_file_publication,
+)
 from qmc_bmgs.experiments.countdown_thompson_diagnostic_manifest import (
     BUNDLE_ID,
     EXPECTED_CELL_COUNT,
@@ -59,8 +62,39 @@ from qmc_bmgs.substrate.trace import (
 
 RUN_MANIFEST_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-diagnostic-run-manifest/v1"
 RUN_RECORD_SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-diagnostic-run-record/v1"
-AUTHORIZATION_SCHEMA_VERSION = (
+_LEGACY_AUTHORIZATION_SCHEMA_VERSION = (
     "qmc-bmgs-countdown-thompson-diagnostic-execution-authorization/v1"
+)
+AUTHORIZATION_SCHEMA_VERSION = (
+    "qmc-bmgs-countdown-thompson-diagnostic-execution-authorization/v2"
+)
+PUBLICATION_ENVIRONMENT_REQUIREMENTS_SCHEMA_VERSION = (
+    "qmc-bmgs-countdown-thompson-publication-environment-requirements/v1"
+)
+_AUTHORIZATION_V2_FIELDS = frozenset(
+    {
+        "artifact_id",
+        "artifact_layout",
+        "authorization_scope",
+        "bundle_id",
+        "cell_count",
+        "claim_boundary",
+        "deterministic_digest",
+        "diagnostic_seal_digest",
+        "method_manifest_digest",
+        "output_parent_binding",
+        "output_parent_binding_digest",
+        "output_path",
+        "output_path_digest",
+        "publication_backend",
+        "publication_environment_requirements",
+        "requires_explicit_digest_confirmation",
+        "runner_build_attestation",
+        "runtime_qualification",
+        "runtime_qualification_digest",
+        "schedule_digest",
+        "schema_version",
+    }
 )
 BUILD_ATTESTATION_SCHEMA_VERSION = (
     "qmc-bmgs-countdown-thompson-diagnostic-build-attestation/v1"
@@ -106,6 +140,7 @@ _RUNNER_SOURCE_PATHS = (
     "src/qmc_bmgs/experiments/__init__.py",
     "src/qmc_bmgs/experiments/countdown_track_a_canary_manifest.py",
     "src/qmc_bmgs/experiments/countdown_thompson_diagnostic_manifest.py",
+    "src/qmc_bmgs/experiments/countdown_thompson_regular_file_publication_v2.py",
     "src/qmc_bmgs/experiments/countdown_thompson_diagnostic_runner.py",
     "src/qmc_bmgs/experiments/countdown_thompson_diagnostic_analysis.py",
 )
@@ -122,8 +157,9 @@ _PROTECTED_MODULE_PATHS = {
     "qmc_bmgs.experiments": _RUNNER_SOURCE_PATHS[0],
     canary_manifest.__name__: _RUNNER_SOURCE_PATHS[1],
     manifest.__name__: _RUNNER_SOURCE_PATHS[2],
-    __name__: _RUNNER_SOURCE_PATHS[3],
-    analysis.__name__: _RUNNER_SOURCE_PATHS[4],
+    regular_file_publication.__name__: _RUNNER_SOURCE_PATHS[3],
+    __name__: _RUNNER_SOURCE_PATHS[4],
+    analysis.__name__: _RUNNER_SOURCE_PATHS[5],
 }
 _MICRO_TASK = CountdownTask((1, 2, 3, 4, 5, 6), target=720)
 _TELEMETRY_ROLE = "descriptive_only_excluded_from_search_core_identity_and_gates"
@@ -133,6 +169,8 @@ _MAX_CONTROL_FILE_BYTES = 8 * 1024 * 1024
 _MAX_ATTESTED_FILE_BYTES = 512 * 1024 * 1024
 _MAX_RECORDS_FILE_BYTES = 256 * 1024 * 1024
 _PUBLICATION_BACKEND_UNAVAILABLE = "atomic_directory_authority_unavailable/v1"
+_REGULAR_FILE_PUBLICATION_BACKEND = regular_file_publication.PUBLICATION_BACKEND
+_REGULAR_FILE_ARTIFACT_LAYOUT = regular_file_publication.ARTIFACT_LAYOUT
 _SYNTHETIC_PUBLICATION_BACKEND = "nondiagnostic_fixture_mkdir_open/v1"
 _SYNTHETIC_AUTHORIZATION_SCHEMA_VERSION = (
     "qmc-bmgs-countdown-thompson-nondiagnostic-fixture-authorization/v1"
@@ -143,8 +181,9 @@ _SYNTHETIC_AUTHORIZATION_CLAIM_BOUNDARY = (
     "inferential, superiority, retry, or locked-evaluation authority is granted"
 )
 _PUBLICATION_BACKEND_REFUSAL = (
-    "diagnostic execution is fail-closed because portable atomic directory "
-    "creation authority is unavailable; no attempt or outcome was opened"
+    "diagnostic execution remains fail-closed: portable atomic directory "
+    "creation authority is unavailable and the production v2r3 publisher and "
+    "analyzer are not integrated; no attempt or outcome was opened"
 )
 _SYNTHETIC_RUN_CLAIM_BOUNDARY = (
     "non-diagnostic synthetic protocol fixture; byte replay exercises plumbing "
@@ -2804,6 +2843,10 @@ class _Preflight:
     output_path: Path
     publication_backend: str
     synthetic_fixture_digest: str | None
+    artifact_layout: str | None = None
+    output_path_digest: str | None = None
+    output_parent_binding: dict[str, Any] | None = None
+    publication_environment_requirements: dict[str, Any] | None = None
     synthetic_components: _ResolvedComponents | None = None
     synthetic_method_manifest_digest: str | None = None
     synthetic_expected_cell_count: int | None = None
@@ -3016,19 +3059,125 @@ def _snapshot_exact_synthetic_preflight(preflight: _Preflight) -> _Preflight:
         raise DiagnosticNotRunError(_PUBLICATION_BACKEND_REFUSAL) from error
 
 
+def _regular_file_layout(
+    output_path: Path | str,
+) -> regular_file_publication.RegularFileLayoutV2:
+    try:
+        return regular_file_publication.RegularFileLayoutV2.from_output_path(
+            output_path
+        )
+    except regular_file_publication.RegularFilePublicationV2NotRunError as error:
+        raise DiagnosticRunnerError(str(error)) from error
+
+
+def _freeze_reviewed_parent_binding(
+    output_path: Path | str,
+    expected_parent_binding: object,
+) -> dict[str, Any]:
+    try:
+        return regular_file_publication.freeze_reviewed_parent_binding_v2(
+            output_path,
+            expected_parent_binding,
+        )
+    except regular_file_publication.RegularFilePublicationV2NotRunError as error:
+        raise DiagnosticRunnerError(str(error)) from error
+
+
+def _preflight_reviewed_parent_binding(
+    output_path: Path | str,
+    expected_parent_binding: object,
+) -> dict[str, Any]:
+    try:
+        return regular_file_publication.preflight_reviewed_parent_binding_v2(
+            output_path,
+            expected_parent_binding,
+        )
+    except regular_file_publication.RegularFilePublicationV2AmbiguousError as error:
+        raise DiagnosticPublicationStateAmbiguousError(str(error)) from error
+    except regular_file_publication.RegularFilePublicationV2NotRunError as error:
+        raise DiagnosticNotRunError(str(error)) from error
+
+
+def _capture_planning_parent_binding(
+    output_path: Path | str,
+) -> dict[str, Any]:
+    try:
+        return regular_file_publication.build_synthetic_parent_binding_v2(
+            output_path
+        )
+    except regular_file_publication.RegularFilePublicationV2AmbiguousError as error:
+        raise DiagnosticPublicationStateAmbiguousError(str(error)) from error
+    except regular_file_publication.RegularFilePublicationV2NotRunError as error:
+        raise DiagnosticRunnerError(str(error)) from error
+
+
+def _publication_environment_requirements(
+    output_parent_binding: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Freeze the mechanics that separate review must qualify for this binding."""
+
+    return _with_digest(
+        {
+            "artifact_layout": _REGULAR_FILE_ARTIFACT_LAYOUT,
+            "binding_scope": regular_file_publication.PARENT_BINDING_SCOPE,
+            "claim_boundary": (
+                "review must qualify these mechanics on the bound local host and "
+                "filesystem identity epoch; no NFS, SMB, FUSE, reboot, cross-host, "
+                "mount-namespace, device-inode ABA, or malicious-kernel guarantee"
+            ),
+            "output_parent_binding_digest": output_parent_binding[
+                "deterministic_digest"
+            ],
+            "publication_backend": _REGULAR_FILE_PUBLICATION_BACKEND,
+            "required_mechanics": [
+                "absolute_normalized_ascii_commit_path/v1",
+                "componentwise_o_nofollow_parent_identity/v1",
+                "descriptor_relative_o_creat_o_excl_regular_files/v1",
+                "regular_file_and_directory_fsync/v1",
+                "stable_st_dev_st_ino_within_identity_epoch/v1",
+            ],
+            "schema_version": (
+                PUBLICATION_ENVIRONMENT_REQUIREMENTS_SCHEMA_VERSION
+            ),
+        }
+    )
+
+
 def _fresh_preflight(
     bundle_path: Path,
-    output_path: Path,
+    output_path: Path | str,
     repository_root: Path,
     *,
     authorized_runner_revision: str | None,
+    expected_output_parent_binding: object | None = None,
 ) -> _Preflight:
-    output = Path(output_path).resolve()
+    layout = _regular_file_layout(output_path)
+    output = layout.output_path
+    lexical_repository = Path(os.path.abspath(os.fspath(repository_root)))
     repository = Path(repository_root).resolve()
-    if output == repository or output.is_relative_to(repository):
+    if (
+        output == lexical_repository
+        or output.is_relative_to(lexical_repository)
+        or output == repository
+        or output.is_relative_to(repository)
+    ):
         raise DiagnosticRunnerError("run output must lie outside the source repository")
-    if output.exists() or output.is_symlink():
-        raise DiagnosticRunnerError(f"output destination already exists: {output}")
+    if authorized_runner_revision is None:
+        if expected_output_parent_binding is not None:
+            raise DiagnosticRunnerError(
+                "planning must capture rather than accept a parent binding"
+            )
+        parent_binding = _capture_planning_parent_binding(output)
+    else:
+        if expected_output_parent_binding is None:
+            raise DiagnosticRunnerError(
+                "reviewed authorization must supply its exact parent binding"
+            )
+        parent_binding = _freeze_reviewed_parent_binding(
+            output,
+            expected_output_parent_binding,
+        )
+    parent_binding = _preflight_reviewed_parent_binding(output, parent_binding)
     qualification = _qualify_diagnostic_runtime()
     if set(qualification) != {
         "bundle_id",
@@ -3072,6 +3221,8 @@ def _fresh_preflight(
     # verification.  Close the race by checking the same HEAD, clean worktree,
     # import origins, descriptor-read bytes, and HEAD blobs again afterwards.
     _recheck_source_closure(repository, build)
+    # Close parent and namespace drift around all source and sealed-bundle reads.
+    parent_binding = _preflight_reviewed_parent_binding(output, parent_binding)
     return _Preflight(
         bundle=verified,
         cells=cells,
@@ -3079,8 +3230,14 @@ def _fresh_preflight(
         runtime_qualification_digest=sha256_json(qualification),
         build=build,
         output_path=output,
-        publication_backend=_PUBLICATION_BACKEND_UNAVAILABLE,
+        publication_backend=_REGULAR_FILE_PUBLICATION_BACKEND,
         synthetic_fixture_digest=None,
+        artifact_layout=_REGULAR_FILE_ARTIFACT_LAYOUT,
+        output_path_digest=layout.output_path_digest,
+        output_parent_binding=parent_binding,
+        publication_environment_requirements=(
+            _publication_environment_requirements(parent_binding)
+        ),
     )
 
 
@@ -3090,6 +3247,16 @@ def _authorization_payload_from_preflight(
     synthetic_fixture: bool,
 ) -> dict[str, Any]:
     payloads = preflight.bundle.payloads  # type: ignore[attr-defined]
+    regular_file_authorization = (
+        not synthetic_fixture
+        and preflight.publication_backend == _REGULAR_FILE_PUBLICATION_BACKEND
+    )
+    if (
+        not synthetic_fixture
+        and not regular_file_authorization
+        and preflight.publication_backend != _PUBLICATION_BACKEND_UNAVAILABLE
+    ):
+        raise DiagnosticRunnerError("production publication backend is unsupported")
     core = {
         "artifact_id": preflight.output_path.name,
         "authorization_scope": (
@@ -3122,11 +3289,55 @@ def _authorization_payload_from_preflight(
         "schema_version": (
             _SYNTHETIC_AUTHORIZATION_SCHEMA_VERSION
             if synthetic_fixture
-            else AUTHORIZATION_SCHEMA_VERSION
+            else (
+                AUTHORIZATION_SCHEMA_VERSION
+                if regular_file_authorization
+                else _LEGACY_AUTHORIZATION_SCHEMA_VERSION
+            )
         ),
     }
     if synthetic_fixture:
         core["synthetic_fixture_digest"] = preflight.synthetic_fixture_digest
+    elif regular_file_authorization:
+        layout = _regular_file_layout(preflight.output_path)
+        if (
+            preflight.artifact_layout != _REGULAR_FILE_ARTIFACT_LAYOUT
+            or preflight.output_path_digest != layout.output_path_digest
+            or preflight.output_parent_binding is None
+            or preflight.publication_environment_requirements is None
+        ):
+            raise DiagnosticRunnerError(
+                "regular-file authorization preflight is incomplete"
+            )
+        parent_binding = _freeze_reviewed_parent_binding(
+            preflight.output_path,
+            preflight.output_parent_binding,
+        )
+        if _canonical_bytes(parent_binding) != _canonical_bytes(
+            preflight.output_parent_binding
+        ):
+            raise DiagnosticRunnerError(
+                "regular-file parent binding is not exact canonical material"
+            )
+        requirements = _publication_environment_requirements(parent_binding)
+        if _canonical_bytes(requirements) != _canonical_bytes(
+            preflight.publication_environment_requirements
+        ):
+            raise DiagnosticRunnerError(
+                "publication environment requirements drifted"
+            )
+        core.update(
+            {
+                "artifact_layout": _REGULAR_FILE_ARTIFACT_LAYOUT,
+                "output_parent_binding": parent_binding,
+                "output_parent_binding_digest": parent_binding[
+                    "deterministic_digest"
+                ],
+                "output_path_digest": layout.output_path_digest,
+                "publication_backend": _REGULAR_FILE_PUBLICATION_BACKEND,
+                "publication_environment_requirements": requirements,
+            }
+        )
     return _with_digest(core)
 
 
@@ -3242,19 +3453,22 @@ def _validate_reviewed_authorization_blob(
 
 def write_countdown_thompson_diagnostic_execution_plan(
     bundle_path: Path,
-    output_path: Path,
+    output_path: Path | str,
     authorization_path: Path,
     *,
     repository_root: Path,
 ) -> dict[str, Any]:
     """Write an exclusive pre-outcome authorization candidate."""
 
+    output = _regular_file_layout(output_path).output_path
+    raw_authorization = Path(authorization_path)
+    if raw_authorization == output or raw_authorization.is_relative_to(output):
+        raise DiagnosticRunnerError("authorization file must lie outside output")
     repository = Path(repository_root).resolve()
     authorization, _ = _authorization_repository_location(
-        Path(authorization_path),
+        raw_authorization,
         repository,
     )
-    output = Path(output_path).resolve()
     if authorization == output or authorization.is_relative_to(output):
         raise DiagnosticRunnerError("authorization file must lie outside output")
     if authorization.exists() or authorization.is_symlink():
@@ -3284,30 +3498,92 @@ def write_countdown_thompson_diagnostic_execution_plan(
     }
 
 
+def _reviewed_authorization_parent_binding(
+    authorization: Mapping[str, Any],
+    output_path: Path | str,
+) -> dict[str, Any]:
+    """Freeze v2 publication fields before reviewed output access."""
+
+    layout = _regular_file_layout(output_path)
+    if (
+        type(authorization.get("artifact_id")) is not str
+        or authorization.get("artifact_id") != layout.output_path.name
+        or type(authorization.get("output_path")) is not str
+        or authorization.get("output_path") != os.fspath(layout.output_path)
+        or authorization.get("artifact_layout") != _REGULAR_FILE_ARTIFACT_LAYOUT
+        or authorization.get("publication_backend")
+        != _REGULAR_FILE_PUBLICATION_BACKEND
+    ):
+        raise DiagnosticRunnerError(
+            "authorization publication identity does not match requested output"
+        )
+    output_path_digest = _require_sha256(
+        authorization.get("output_path_digest"),
+        "authorization output path digest",
+    )
+    if output_path_digest != layout.output_path_digest:
+        raise DiagnosticRunnerError(
+            "authorization output path digest does not exact-match"
+        )
+    parent_binding = _freeze_reviewed_parent_binding(
+        layout.output_path,
+        authorization.get("output_parent_binding"),
+    )
+    if _canonical_bytes(parent_binding) != _canonical_bytes(
+        authorization["output_parent_binding"]
+    ):
+        raise DiagnosticRunnerError(
+            "authorization parent binding is not exact canonical material"
+        )
+    binding_digest = _require_sha256(
+        authorization.get("output_parent_binding_digest"),
+        "authorization parent binding digest",
+    )
+    if binding_digest != parent_binding["deterministic_digest"]:
+        raise DiagnosticRunnerError(
+            "authorization parent binding digest does not exact-match"
+        )
+    requirements = _publication_environment_requirements(parent_binding)
+    observed_requirements = authorization.get(
+        "publication_environment_requirements"
+    )
+    if type(observed_requirements) is not dict or _canonical_bytes(
+        observed_requirements
+    ) != _canonical_bytes(requirements):
+        raise DiagnosticRunnerError(
+            "authorization publication environment requirements do not exact-match"
+        )
+    return parent_binding
+
+
 def _load_and_match_authorization(
     authorization_path: Path,
     supplied_digest: str,
     authorization_revision: str,
     *,
     bundle_path: Path,
-    output_path: Path,
+    output_path: Path | str,
     repository_root: Path,
 ) -> tuple[_Preflight, dict[str, Any]]:
     supplied = _require_sha256(supplied_digest, "authorization digest")
+    output = _regular_file_layout(output_path).output_path
+    raw_authorization = Path(authorization_path)
+    if raw_authorization == output or raw_authorization.is_relative_to(output):
+        raise DiagnosticRunnerError("authorization file must lie outside output")
     repository = Path(repository_root).resolve()
     authorization_file, _ = _authorization_repository_location(
-        Path(authorization_path),
+        raw_authorization,
         repository,
     )
     resolved_authorization = authorization_file.resolve()
-    output = Path(output_path).resolve()
     if resolved_authorization == output or resolved_authorization.is_relative_to(
         output
     ):
         raise DiagnosticRunnerError("authorization file must lie outside output")
     observed, observed_raw = _strict_canonical_object(authorization_file)
-    if set(observed) == set() or observed.get("schema_version") != (
-        AUTHORIZATION_SCHEMA_VERSION
+    if (
+        set(observed) != _AUTHORIZATION_V2_FIELDS
+        or observed.get("schema_version") != AUTHORIZATION_SCHEMA_VERSION
     ):
         raise DiagnosticRunnerError("authorization schema is unsupported")
     observed_digest = _require_sha256(
@@ -3319,6 +3595,7 @@ def _load_and_match_authorization(
     }
     if sha256_json(core) != observed_digest or observed_digest != supplied:
         raise DiagnosticRunnerError("authorization digest does not exact-match")
+    parent_binding = _reviewed_authorization_parent_binding(observed, output)
     build = _validate_authorized_build_attestation_structure(
         observed.get("runner_build_attestation")
     )
@@ -3338,6 +3615,7 @@ def _load_and_match_authorization(
         output,
         repository,
         authorized_runner_revision=approved_revision,
+        expected_output_parent_binding=parent_binding,
     )
     _validate_reviewed_authorization_blob(
         repository_root=repository,
@@ -5282,7 +5560,7 @@ def _publish_run_artifact_locked(
 
 def run_countdown_thompson_diagnostic(
     bundle_path: Path,
-    output_path: Path,
+    output_path: Path | str,
     authorization_path: Path,
     authorization_digest: str,
     authorization_revision: str,
@@ -5374,7 +5652,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     modes.add_argument("--plan", type=Path, metavar="SEALED_BUNDLE")
     modes.add_argument("--run", type=Path, metavar="SEALED_BUNDLE")
     modes.add_argument("--self-test", action="store_true")
-    parser.add_argument("--output", type=Path)
+    # Preserve the exact lexical spelling; v2r3 hashes and reviews these bytes.
+    parser.add_argument("--output")
     parser.add_argument("--authorization-out", type=Path)
     parser.add_argument("--authorization-file", type=Path)
     parser.add_argument("--authorization-digest")

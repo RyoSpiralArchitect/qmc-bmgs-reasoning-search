@@ -170,6 +170,10 @@ def _preflight(output: Path) -> runner._Preflight:
 
 def _production_preflight(output: Path) -> runner._Preflight:
     fixture = _preflight(output)
+    layout = runner._regular_file_layout(output.resolve())
+    parent_binding = runner.regular_file_publication.build_synthetic_parent_binding_v2(
+        layout.output_path
+    )
     return replace(
         fixture,
         bundle=_FakeBundle(
@@ -177,8 +181,14 @@ def _production_preflight(output: Path) -> runner._Preflight:
             fixture.cells,
             seal_digest=runner.EXPECTED_SEAL_DIGEST,
         ),
-        publication_backend=runner._PUBLICATION_BACKEND_UNAVAILABLE,
+        publication_backend=runner._REGULAR_FILE_PUBLICATION_BACKEND,
         synthetic_fixture_digest=None,
+        artifact_layout=runner._REGULAR_FILE_ARTIFACT_LAYOUT,
+        output_path_digest=layout.output_path_digest,
+        output_parent_binding=parent_binding,
+        publication_environment_requirements=(
+            runner._publication_environment_requirements(parent_binding)
+        ),
     )
 
 
@@ -312,7 +322,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
         )
         payload = json.loads(completed.stdout)
         self.assertEqual(payload["loaded"], payload["protected"])
-        self.assertEqual(len(payload["protected"]), 14)
+        self.assertEqual(len(payload["protected"]), 15)
 
     def test_single_cell_embeds_replayable_search_and_all_bindings(self) -> None:
         task, proposal, method, profile, cell = _fixture()
@@ -394,7 +404,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
         }
         with tempfile.TemporaryDirectory() as temporary:
             repository = Path(temporary) / "repository"
-            output = Path(temporary) / "output"
+            output = Path(temporary).resolve() / "output"
             with (
                 patch.object(
                     runner,
@@ -431,7 +441,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
     def test_authorization_is_separate_canonical_reviewed_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            output = root / "artifact"
+            output = root.resolve() / "artifact"
             authorization_path = root / "authorization.json"
             preflight = _production_preflight(output)
             with patch.object(runner, "_fresh_preflight", return_value=preflight):
@@ -447,8 +457,28 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             self.assertEqual(
                 receipt["authorization_digest"], parsed["deterministic_digest"]
             )
+            self.assertEqual(parsed["schema_version"], runner.AUTHORIZATION_SCHEMA_VERSION)
+            self.assertEqual(
+                parsed["publication_backend"],
+                runner._REGULAR_FILE_PUBLICATION_BACKEND,
+            )
+            self.assertEqual(
+                parsed["artifact_layout"], runner._REGULAR_FILE_ARTIFACT_LAYOUT
+            )
+            self.assertEqual(
+                parsed["output_path_digest"], preflight.output_path_digest
+            )
+            self.assertEqual(
+                parsed["output_parent_binding"], preflight.output_parent_binding
+            )
+            self.assertEqual(
+                parsed["output_parent_binding_digest"],
+                preflight.output_parent_binding["deterministic_digest"],  # type: ignore[index]
+            )
             with (
-                patch.object(runner, "_fresh_preflight", return_value=preflight),
+                patch.object(
+                    runner, "_fresh_preflight", return_value=preflight
+                ) as fresh_preflight,
                 patch.object(
                     runner,
                     "_validate_reviewed_authorization_blob",
@@ -465,6 +495,14 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 )
             self.assertIs(observed_preflight, preflight)
             self.assertEqual(observed, parsed)
+            self.assertEqual(
+                runner._canonical_bytes(
+                    fresh_preflight.call_args.kwargs[
+                        "expected_output_parent_binding"
+                    ]
+                ),
+                runner._canonical_bytes(parsed["output_parent_binding"]),
+            )
 
             with patch.object(
                 runner,
@@ -484,10 +522,267 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         repository_root=root,
                     )
 
+    def test_malformed_v2_binding_stops_before_git_parent_or_sealed_preflight(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output = root / "artifact"
+            authorization_path = root / "authorization.json"
+            payload = runner._authorization_payload(_production_preflight(output))
+            binding = json.loads(json.dumps(payload["output_parent_binding"]))
+            binding["component_identities"][-1]["st_dev"] = True
+            binding_core = dict(binding)
+            binding_core.pop("deterministic_digest")
+            binding["deterministic_digest"] = sha256_json(binding_core)
+            payload["output_parent_binding"] = binding
+            payload["output_parent_binding_digest"] = binding[
+                "deterministic_digest"
+            ]
+            requirements = payload["publication_environment_requirements"]
+            self.assertIsInstance(requirements, dict)
+            requirements["output_parent_binding_digest"] = binding[
+                "deterministic_digest"
+            ]
+            requirements_core = dict(requirements)
+            requirements_core.pop("deterministic_digest")
+            requirements["deterministic_digest"] = sha256_json(requirements_core)
+            payload_core = dict(payload)
+            payload_core.pop("deterministic_digest")
+            payload["deterministic_digest"] = sha256_json(payload_core)
+            authorization_path.write_bytes(runner._canonical_bytes(payload))
+
+            with (
+                patch.object(
+                    runner.regular_file_publication,
+                    "_open_bound_parent",
+                    side_effect=AssertionError("malformed binding must not open parent"),
+                ) as parent_open,
+                patch.object(
+                    runner,
+                    "_validate_reviewed_authorization_blob",
+                    side_effect=AssertionError("Git gate must not be reached"),
+                ) as review_gate,
+                patch.object(
+                    runner,
+                    "_fresh_preflight",
+                    side_effect=AssertionError("sealed preflight must not start"),
+                ) as fresh_preflight,
+                patch.object(
+                    runner,
+                    "run_countdown_track_a_search",
+                    side_effect=AssertionError("diagnostic search must not run"),
+                ) as search,
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticRunnerError,
+                    "plain identities",
+                ):
+                    runner._load_and_match_authorization(
+                        authorization_path,
+                        payload["deterministic_digest"],
+                        _AUTHORIZATION_REVISION,
+                        bundle_path=root / "sealed-bundle",
+                        output_path=output,
+                        repository_root=root,
+                    )
+            parent_open.assert_not_called()
+            review_gate.assert_not_called()
+            fresh_preflight.assert_not_called()
+            search.assert_not_called()
+
+    def test_v2_publication_identity_drift_stops_before_git_and_preflight(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output = root / "artifact"
+            authorization_path = root / "authorization.json"
+            baseline = runner._authorization_payload(_production_preflight(output))
+            cases = (
+                ("unexpected_field", True, "schema is unsupported"),
+                ("artifact_id", "other", "publication identity"),
+                ("publication_backend", "foreign/v1", "publication identity"),
+                ("artifact_layout", "foreign/v1", "publication identity"),
+                ("output_path", f"{output}.other", "publication identity"),
+                ("output_path_digest", "0" * 64, "path digest"),
+                ("output_parent_binding_digest", "0" * 64, "binding digest"),
+            )
+            with (
+                patch.object(
+                    runner,
+                    "_validate_reviewed_authorization_blob",
+                    side_effect=AssertionError("Git gate must not be reached"),
+                ) as review_gate,
+                patch.object(
+                    runner,
+                    "_fresh_preflight",
+                    side_effect=AssertionError("sealed preflight must not start"),
+                ) as fresh_preflight,
+            ):
+                for field, value, reason in cases:
+                    with self.subTest(field=field):
+                        payload = json.loads(json.dumps(baseline))
+                        payload[field] = value
+                        core = dict(payload)
+                        core.pop("deterministic_digest")
+                        payload["deterministic_digest"] = sha256_json(core)
+                        authorization_path.write_bytes(
+                            runner._canonical_bytes(payload)
+                        )
+                        with self.assertRaisesRegex(
+                            runner.DiagnosticRunnerError,
+                            reason,
+                        ):
+                            runner._load_and_match_authorization(
+                                authorization_path,
+                                payload["deterministic_digest"],
+                                _AUTHORIZATION_REVISION,
+                                bundle_path=root / "sealed-bundle",
+                                output_path=output,
+                                repository_root=root,
+                            )
+            review_gate.assert_not_called()
+            fresh_preflight.assert_not_called()
+
+    def test_reviewed_loader_uses_authorized_binding_without_recapture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repository = root / "repository"
+            repository.mkdir()
+            output_parent = root / "output-parent"
+            output_parent.mkdir()
+            output = output_parent / "artifact.commit.json"
+            authorization_path = repository / "authorization.json"
+            planned = _production_preflight(output)
+            payload = runner._authorization_payload(planned)
+            authorization_path.write_bytes(runner._canonical_bytes(payload))
+            fresh_payloads = json.loads(json.dumps(planned.bundle.payloads))  # type: ignore[attr-defined]
+            fresh_payloads["diagnostic_tasks.json"] = {"tasks": []}
+            fresh_bundle = _FakeBundle(
+                fresh_payloads,
+                planned.cells,
+                seal_digest=runner.EXPECTED_SEAL_DIGEST,
+            )
+
+            with (
+                patch.object(
+                    runner.regular_file_publication,
+                    "build_synthetic_parent_binding_v2",
+                    side_effect=AssertionError("reviewed loader must not recapture"),
+                ) as recapture,
+                patch.object(
+                    runner,
+                    "_validate_reviewed_authorization_blob",
+                    return_value=_AUTHORIZATION_REVISION,
+                ),
+                patch.object(
+                    runner,
+                    "_qualify_diagnostic_runtime",
+                    return_value=planned.qualification,
+                ),
+                patch.object(
+                    runner,
+                    "_frozen_diagnostic_runtime_bindings",
+                    return_value={"fixture": True},
+                ),
+                patch.object(
+                    runner,
+                    "_attest_clean_source_build",
+                    return_value=planned.build,
+                ),
+                patch.object(
+                    runner,
+                    "verify_countdown_thompson_diagnostic_bundle",
+                    return_value=fresh_bundle,
+                ),
+                patch.object(
+                    runner,
+                    "_validate_schedule",
+                    return_value=planned.cells,
+                ),
+                patch.object(runner, "_validate_outcome_blind_budget_guards"),
+                patch.object(runner, "_recheck_source_closure"),
+                patch.object(
+                    runner,
+                    "run_countdown_track_a_search",
+                    side_effect=AssertionError("diagnostic search must not run"),
+                ) as search,
+            ):
+                fresh, observed = runner._load_and_match_authorization(
+                    authorization_path,
+                    payload["deterministic_digest"],
+                    _AUTHORIZATION_REVISION,
+                    bundle_path=root / "sealed-bundle",
+                    output_path=output,
+                    repository_root=repository,
+                )
+            recapture.assert_not_called()
+            search.assert_not_called()
+            self.assertEqual(observed, payload)
+            self.assertEqual(
+                runner._canonical_bytes(fresh.output_parent_binding),
+                runner._canonical_bytes(payload["output_parent_binding"]),
+            )
+
+    def test_reviewed_loader_treats_replaced_parent_as_ambiguous(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repository = root / "repository"
+            repository.mkdir()
+            output_parent = root / "output-parent"
+            output_parent.mkdir()
+            output = output_parent / "artifact.commit.json"
+            authorization_path = repository / "authorization.json"
+            payload = runner._authorization_payload(_production_preflight(output))
+            authorization_path.write_bytes(runner._canonical_bytes(payload))
+            displaced_parent = root / "displaced-output-parent"
+            output_parent.rename(displaced_parent)
+            output_parent.mkdir()
+
+            with (
+                patch.object(
+                    runner.regular_file_publication,
+                    "build_synthetic_parent_binding_v2",
+                    side_effect=AssertionError("reviewed loader must not recapture"),
+                ) as recapture,
+                patch.object(
+                    runner,
+                    "_validate_reviewed_authorization_blob",
+                    return_value=_AUTHORIZATION_REVISION,
+                ) as review_gate,
+                patch.object(
+                    runner,
+                    "_qualify_diagnostic_runtime",
+                    side_effect=AssertionError("sealed preflight must not start"),
+                ) as qualify,
+                patch.object(
+                    runner,
+                    "run_countdown_track_a_search",
+                    side_effect=AssertionError("diagnostic search must not run"),
+                ) as search,
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticPublicationStateAmbiguousError,
+                    "reviewed binding",
+                ):
+                    runner._load_and_match_authorization(
+                        authorization_path,
+                        payload["deterministic_digest"],
+                        _AUTHORIZATION_REVISION,
+                        bundle_path=root / "sealed-bundle",
+                        output_path=output,
+                        repository_root=repository,
+                    )
+            recapture.assert_not_called()
+            review_gate.assert_called_once()
+            qualify.assert_not_called()
+            search.assert_not_called()
+
     def test_missing_authorization_parent_is_not_created_or_published(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            output = root / "artifact"
+            output = root.resolve() / "artifact"
             missing_ancestor = root / "missing"
             authorization_path = missing_ancestor / "reviews" / "authorization.json"
             preflight = _production_preflight(output)
@@ -525,7 +820,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
     def test_authorization_parent_sync_failure_returns_exact_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            output = root / "artifact"
+            output = root.resolve() / "artifact"
             authorization_path = root / "authorization.json"
             preflight = _production_preflight(output)
             original_fsync = runner.os.fsync
@@ -575,7 +870,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            output = root / "artifact"
+            output = root.resolve() / "artifact"
             authorization_path = root / "authorization.json"
             preflight = _production_preflight(output)
             original_fsync = runner.os.fsync
@@ -613,7 +908,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            output = root / "artifact"
+            output = root.resolve() / "artifact"
             authorization_path = root / "authorization.json"
             preflight = _production_preflight(output)
             original_fsync = runner.os.fsync
@@ -649,7 +944,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
     def test_authorization_parent_drift_revokes_candidate_before_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            output = root / "artifact"
+            output = root.resolve() / "artifact"
             authorization_path = root / "authorization.json"
             preflight = _production_preflight(output)
             original_assert = runner._assert_directory_path_identity
@@ -691,7 +986,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 tempfile.TemporaryDirectory() as temporary,
             ):
                 root = Path(temporary)
-                output = root / "artifact"
+                output = root.resolve() / "artifact"
                 authorization_path = root / "authorization.json"
                 stolen = root / "stolen-authorization.json"
                 foreign = root / "foreign-authorization.json"
@@ -756,7 +1051,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            output = root / "artifact"
+            output = root.resolve() / "artifact"
             authorization_path = root / "authorization.json"
             payload = runner._authorization_payload(_production_preflight(output))
             build = payload["runner_build_attestation"]
@@ -808,7 +1103,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
     def test_authorization_symlink_and_preflight_swap_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            output = root / "artifact"
+            output = root.resolve() / "artifact"
             authorization_path = root / "authorization.json"
             preflight = _production_preflight(output)
             payload = runner._authorization_payload(preflight)
@@ -1412,9 +1707,37 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     repository_root=root,
                 )
 
+    def test_plan_rejects_noncanonical_output_spelling_before_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repository = root / "repository"
+            repository.mkdir()
+            candidates = (
+                "relative/artifact.commit.json",
+                f"{root}/nested/../artifact.commit.json",
+                f"{root}/成果.commit.json",
+            )
+            with patch.object(
+                runner,
+                "_fresh_preflight",
+                side_effect=AssertionError("invalid lexical path must fail first"),
+            ) as fresh_preflight:
+                for index, output in enumerate(candidates):
+                    with self.subTest(output=output):
+                        authorization = repository / f"authorization-{index}.json"
+                        with self.assertRaises(runner.DiagnosticRunnerError):
+                            runner.write_countdown_thompson_diagnostic_execution_plan(
+                                root / "sealed-bundle",
+                                output,
+                                authorization,
+                                repository_root=repository,
+                            )
+                        self.assertFalse(authorization.exists())
+            fresh_preflight.assert_not_called()
+
     def test_plan_candidate_must_be_written_inside_repository(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             repository = root / "repository"
             repository.mkdir()
             with patch.object(
@@ -1452,11 +1775,45 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                         authorized_runner_revision=None,
                     )
 
+    def test_preflight_does_not_resolve_through_output_parent_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repository = root / "repository"
+            repository.mkdir()
+            actual_parent = root / "actual-parent"
+            actual_parent.mkdir()
+            alias_parent = root / "alias-parent"
+            alias_parent.symlink_to(actual_parent, target_is_directory=True)
+            with (
+                patch.object(
+                    runner,
+                    "_qualify_diagnostic_runtime",
+                    side_effect=AssertionError("sealed preflight must not start"),
+                ) as qualify,
+                patch.object(
+                    runner,
+                    "run_countdown_track_a_search",
+                    side_effect=AssertionError("diagnostic search must not run"),
+                ) as search,
+            ):
+                with self.assertRaisesRegex(
+                    runner.DiagnosticRunnerError,
+                    "stable no-follow directory path",
+                ):
+                    runner._fresh_preflight(
+                        root / "sealed-bundle",
+                        alias_parent / "artifact.commit.json",
+                        repository,
+                        authorized_runner_revision=None,
+                    )
+            qualify.assert_not_called()
+            search.assert_not_called()
+
     def test_fresh_preflight_rechecks_source_after_microfixture_and_bundle(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             repository = root / "repository"
             output = root / "output"
             runtime_bindings = runner._frozen_diagnostic_runtime_bindings()
@@ -7176,6 +7533,8 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 ]
             )
         planned.assert_called_once()
+        self.assertIs(type(planned.call_args.args[1]), str)
+        self.assertEqual(planned.call_args.args[1], "artifact")
         self.assertEqual(planned.call_args.kwargs["repository_root"], Path("."))
 
         with (
@@ -7232,6 +7591,8 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             executed.call_args.args[4],
             _AUTHORIZATION_REVISION,
         )
+        self.assertIs(type(executed.call_args.args[1]), str)
+        self.assertEqual(executed.call_args.args[1], "artifact")
 
         with (
             patch.object(
@@ -7330,6 +7691,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
             "src/qmc_bmgs/experiments/__init__.py",
             "src/qmc_bmgs/experiments/countdown_track_a_canary_manifest.py",
             "src/qmc_bmgs/experiments/countdown_thompson_diagnostic_manifest.py",
+            "src/qmc_bmgs/experiments/countdown_thompson_regular_file_publication_v2.py",
             "src/qmc_bmgs/experiments/countdown_thompson_diagnostic_runner.py",
             "src/qmc_bmgs/experiments/countdown_thompson_diagnostic_analysis.py",
         )
@@ -7339,8 +7701,9 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 "qmc_bmgs.experiments": expected_runner_sources[0],
                 runner.canary_manifest.__name__: expected_runner_sources[1],
                 runner.manifest.__name__: expected_runner_sources[2],
-                runner.__name__: expected_runner_sources[3],
-                runner.analysis.__name__: expected_runner_sources[4],
+                runner.regular_file_publication.__name__: expected_runner_sources[3],
+                runner.__name__: expected_runner_sources[4],
+                runner.analysis.__name__: expected_runner_sources[5],
             },
             {
                 module: runner._PROTECTED_MODULE_PATHS[module]
@@ -7348,6 +7711,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                     "qmc_bmgs.experiments",
                     runner.canary_manifest.__name__,
                     runner.manifest.__name__,
+                    runner.regular_file_publication.__name__,
                     runner.__name__,
                     runner.analysis.__name__,
                 )
@@ -7493,7 +7857,7 @@ print(json.dumps({"loaded": loaded, "protected": sorted(runner._PROTECTED_MODULE
                 ):
                     runner._fresh_preflight(
                         repository / "sealed-bundle",
-                        Path(temporary) / "artifact",
+                        Path(temporary).resolve() / "artifact",
                         repository,
                         authorized_runner_revision=None,
                     )

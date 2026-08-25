@@ -422,6 +422,47 @@ publication.publish_synthetic_fixture_v2(
             binding_digest,
         )
 
+    def test_reviewed_binding_preflight_never_recaptures_expected_identity(
+        self,
+    ) -> None:
+        with mock.patch.object(
+            publication,
+            "build_synthetic_parent_binding_v2",
+            side_effect=AssertionError("reviewed preflight must not recapture"),
+        ) as recapture:
+            frozen = publication.freeze_reviewed_parent_binding_v2(
+                self.output,
+                self.parent_binding,
+            )
+            observed = publication.preflight_reviewed_parent_binding_v2(
+                self.output,
+                frozen,
+            )
+        recapture.assert_not_called()
+        self.assertEqual(observed, self.parent_binding)
+
+    def test_reviewed_binding_preflight_rejects_malformed_bytes_before_parent(
+        self,
+    ) -> None:
+        forged = json.loads(publication.canonical_json(self.parent_binding))
+        forged["component_identities"][-1]["st_dev"] = True
+        core = dict(forged)
+        core.pop("deterministic_digest")
+        forged = publication._with_digest(core)
+        with mock.patch.object(
+            publication,
+            "_open_bound_parent",
+            side_effect=AssertionError("malformed binding must not access parent"),
+        ) as parent_open:
+            with self.assertRaises(
+                publication.RegularFilePublicationV2NotRunError
+            ):
+                publication.preflight_reviewed_parent_binding_v2(
+                    self.output,
+                    forged,
+                )
+        parent_open.assert_not_called()
+
     def test_invalid_parent_bindings_are_not_run_before_parent_access(self) -> None:
         digest_tamper = json.loads(publication.canonical_json(self.parent_binding))
         digest_tamper["deterministic_digest"] = "0" * 64

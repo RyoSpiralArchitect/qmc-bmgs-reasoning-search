@@ -227,9 +227,10 @@ The phase-1 module provides:
   same opaque authorization digest plus a freshly captured D2 binding can invoke
   the callback a second time.
 
-The existing v1 schemas, directory publisher, analyzer, and production entry
-point are unchanged. The v1 fixture publisher remains private and the real
-diagnostic entry point remains fail-closed.
+The legacy v1 directory publisher and analyzer remain present only as unexposed
+compatibility code. Production planning now emits authorization v2 material for
+this layout, while the public diagnostic entry point remains fail-closed and the
+production v2r3 publisher/analyzer remain unintegrated.
 
 ## Claim boundary
 
@@ -246,13 +247,27 @@ Observed:
 - the broader hypothesis is false for this synthetic API: if a caller retains
   the same opaque authorization digest but supplies a freshly captured binding
   for the replacement parent, the callback can run a second time.
+- authorization v2 binds `publication_backend`, `artifact_layout`, the exact
+  lexical output path and digest, the complete canonical parent binding and
+  digest, and explicit environment-review requirements into one top-level
+  digest;
+- planning captures the parent binding once, revalidates that exact object
+  around source and sealed-bundle reads, and attests this substrate's source
+  bytes;
+- the strict reviewed loader freezes authorization bytes before output access,
+  never calls the planning capture helper, and reports a replaced parent as
+  `PUBLICATION_STATE_AMBIGUOUS` rather than recapturing an empty namespace.
 
 Not established:
 
-- authorization of the sealed 240-cell diagnostic;
-- production closure between the opaque `authorization_digest` argument and the
-  separately supplied parent binding; the synthetic API tests the mechanism but
-  deliberately does not invent that authorization schema;
+- creation, separate review, or merge of an actual 240-cell authorization
+  candidate;
+- authorization or execution of the sealed 240-cell diagnostic;
+- a production v2r3 publisher or analyzer; the public run entry point refuses
+  before loading inputs;
+- qualification of an actual target host/filesystem identity epoch; the schema
+  binds exact review requirements, but this implementation PR creates no target
+  candidate;
 - compatibility with the existing v1 analyzer, authorizations, or the
   superseded pre-release regular-file namespace;
 - correctness on NFS, SMB, FUSE, or other unqualified filesystems;
@@ -265,13 +280,12 @@ Not established:
   retained descriptors;
 - any scientific result, direction, quality, or performance claim.
 
-Production integration requires a separate authorization schema that binds
-`publication_backend=posix_regular_files/v2r3`,
-`artifact_layout=flat_commit_root/v2r3`, and the exact external parent binding;
-a production v2r3 analyzer; source/seal closure integration;
-platform/filesystem/identity-epoch qualification; and a fresh exact-head
-authority review. The synthetic planning helper is mechanism evidence, not a
-production authorization loader.
+Production execution still requires a production v2r3 runner and analyzer, a
+nondiagnostic full-shaped fixture closing their exact artifact schemas and
+replay, qualification of the actual platform/filesystem/identity epoch during a
+separate authorization review, and a fresh exact-head authority review. The
+planning capture helper remains planning-only; only the strict reviewed loader
+may supply expected binding bytes to future execution.
 
 ## Residual assumptions
 

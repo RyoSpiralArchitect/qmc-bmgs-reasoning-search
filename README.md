@@ -390,15 +390,18 @@ PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_diagnostic_runn
 PYTHONPATH=src python -m qmc_bmgs.experiments.countdown_thompson_diagnostic_analysis --self-test
 ```
 
-production runnerは、portable POSIXの`mkdir`後にdescriptor authorityを取得するまでの
-raceを閉じられないため、現在もsealed inputやoutput filesystemへ触れる前にfail-closedする。
-次のpublication substrateとして、固定名のregular fileを`openat(O_EXCL)`で直接取得し、
+legacy production runnerは、portable POSIXの`mkdir`後にdescriptor authorityを取得するまでの
+raceを閉じられない。次のpublication substrateとして、固定名のregular fileを`openat(O_EXCL)`で直接取得し、
 出力path自体を最後のcommit receiptにするflat v2を非diagnostic fixtureだけで実装した。
 現在のwire revisionはv2r3で、実行前に外部レビュー済みのroot-to-parent
 `(st_dev, st_ino)` bindingを必須とする。lexical parentを別directoryへ差し替えても、
 同じbindingでは空namespaceとして再実行できず`AMBIGUOUS`になる。bindingの生成helperは
-planning用のmechanicsに限られ、productionではauthorization自身がexact bindingを閉じる必要がある。
-これはpublication mechanicsの証拠であり、240-cell diagnosticの実行許可や科学的結果ではない。
+planning用のmechanicsに限られる。authorization v2のplanning/strict loaderは、backend、layout、
+lexical output path digest、exact binding bytesとその環境review要件を一つのdigestに閉じ、loaderは
+live pathからexpected bindingを再生成しない。regular-file module自身もrunner source attestationへ加えた。
+ただしproduction v2r3 publisher/analyzerは未統合で、public `--run`はauthorization、sealed input、
+output stateを読む前にfail-closedする。このrevisionでは実authorization candidateも生成していない。
+これはauthorization closureとpublication mechanicsの証拠であり、240-cell diagnosticの実行許可や科学的結果ではない。
 設計、不変条件、残余仮定、production移行条件は
 [`docs/countdown_thompson_regular_file_publication_v2_contract.md`](docs/countdown_thompson_regular_file_publication_v2_contract.md)
 に固定している。
@@ -410,22 +413,13 @@ PYTHONPATH=src python -m \
 ```
 
 将来production integrationを再承認した実行時は、clean source checkoutからmodule invocationを使い、
-`--repository-root .`を明示する。
-plan、別PRでのauthorization review、1回限りのrun、独立analysisの順序と完全なコマンドは
+`--repository-root .`を明示する。現revisionで有効なのはself-testとauthorization-v2 planningまでであり、
+run/analyze commandはまだ凍結していない。plan、別PRでのauthorization review、1回限りのrun、
+独立analysisの順序と現在の実装境界は
 [`docs/countdown_thompson_diagnostic_execution_contract.md`](docs/countdown_thompson_diagnostic_execution_contract.md)
-に固定した。通常の拒否は`NOT_RUN`/`INVALID`、directory durabilityとexact rollbackの両方が
-証明不能なI/O障害は`PUBLICATION_STATE_AMBIGUOUS`として分離し、残存fileをevidenceに使わない。
-attempt予約のparent fsync失敗は、public nameからinode/bytes検証済みretained tombstoneへの
-atomic移動、parent fsync、public authority不在の再確認まで閉じた場合だけ`NOT_RUN`とする。
-authorization candidateとrun artifactの出力parentは事前に作成済みのstable directoryを要求し、
-runner自身は未同期のancestorを暗黙作成しない。
-summaryもstableなnon-symlink ancestry・inode・canonical bytes・parent fsyncをすべて確認する。
-relocated artifactの解析は、元の`authorized_output_path`が現存しdescriptorでpinできる場合だけ
-許可し、両artifactの厳密3-file byte receipt一致もpublication前に検証する。exact rollback不能な
-移動済みcopyは`INVALID`ではなくambiguityとして保持する。artifact memberはnon-regularを
-open前に拒否し、v1上限（commit 1 MiB / manifest 8 MiB / records 256 MiB）内でexact EOFまで
-bounded readする。historical byte receiptはvalidated sizeに従いstreaming hashで照合し、summary
-durability barrier後にもhistorical/relocated両receiptを集合的に再確認する。
+に固定した。binding不一致や親差替えは空namespaceとして再捕捉せず
+`PUBLICATION_STATE_AMBIGUOUS`に分離する。実行・解析のterminal receipt、bounded read、summary
+publicationは次のproduction integrationでv2r3 layoutに対して改めて閉じる。
 v2/v3/v4のどれもbase searchとしてgreedy/beamを上回れなければ、locked-128は
 開かず`STOP_REPAIR_NO_LOCKED_128_RUN`とする。
 

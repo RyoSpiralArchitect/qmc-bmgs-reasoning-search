@@ -621,6 +621,64 @@ def build_synthetic_parent_binding_v2(
         parent.close()
 
 
+def freeze_reviewed_parent_binding_v2(
+    output_path: Path | str,
+    expected_parent_binding: object,
+) -> dict[str, Any]:
+    """Validate reviewed binding bytes without consulting the live filesystem.
+
+    This is the production-integration boundary for parsing authorization
+    material.  It deliberately cannot synthesize, repair, or refresh the
+    expected identity chain.
+    """
+
+    _require_posix_capabilities()
+    layout = RegularFileLayoutV2.from_output_path(output_path)
+    return _freeze_expected_parent_binding(
+        expected_parent_binding,
+        layout.output_path.parent,
+    )
+
+
+def preflight_reviewed_parent_binding_v2(
+    output_path: Path | str,
+    expected_parent_binding: object,
+) -> dict[str, Any]:
+    """Verify one reviewed binding and an unused v2r3 namespace.
+
+    The expected binding is frozen before the parent is opened and is never
+    recaptured from live state.  Success proves only the local descriptor and
+    durability mechanics exercised here; it is not execution authority.
+    """
+
+    _require_posix_capabilities()
+    layout = RegularFileLayoutV2.from_output_path(output_path)
+    parent_binding = _freeze_expected_parent_binding(
+        expected_parent_binding,
+        layout.output_path.parent,
+    )
+    parent = _open_bound_parent(layout.output_path.parent, parent_binding)
+    try:
+        _validate_layout_against_parent(parent, layout)
+        _assert_no_legacy_namespace(parent)
+        before_parent = _parent_generation(parent)
+        before_reserved = _reserved_generation(parent, layout.reserved_names)
+        parent.fsync()
+        parent.assert_path()
+        _assert_no_legacy_namespace(parent)
+        _preflight_reserved_names_absent(parent, layout.reserved_names)
+        after_reserved = _reserved_generation(parent, layout.reserved_names)
+        after_parent = _parent_generation(parent)
+        parent.assert_path()
+        if before_parent != after_parent or before_reserved != after_reserved:
+            raise RegularFilePublicationV2AmbiguousError(
+                "output namespace changed during reviewed-binding preflight"
+            )
+        return parent_binding
+    finally:
+        parent.close()
+
+
 def _open_bound_parent(
     parent_path: Path,
     expected_parent_binding: Mapping[str, Any],

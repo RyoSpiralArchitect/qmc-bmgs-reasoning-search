@@ -1,6 +1,7 @@
 # Countdown Thompson diagnostic v1: post-hoc mechanism observation
 
 Date: 2026-08-25
+Post-review amendment: 2026-08-26
 
 ## Bottom line
 
@@ -148,24 +149,29 @@ Decisionは`STOP_REPAIR_NO_LOCKED_128_RUN`のまま維持する。
 
 ## Provenance and validation
 
-- audit source revision: `c07ee042feb2e3cedf3d2713f4fb236fad40495b`
+- audit source revision: `d366af83b0e06bf2a32bab6356425405b136cb8c`
 - artifact commit digest:
   `ffd5f875f3d560382dd21fddec95b47ad0d4442913d8a5fb7faf104d12f209b9`
 - records JSONL: 22,113,649 bytes,
   SHA-256 `352e225eefe3a8ef8ebc1718b3bb0162913af81cc7211c1cd4acfaff00ab9669`
 - existing summary deterministic digest:
   `46ebdb1eabcaa91220ed8bb10370f70aad0c61d37a2ef6150d09ca29beac0db5`
-- post-hoc receipt deterministic digest:
-  `880f9453f2d85a6e2490c80424dc54d5d88c8838c9a5e5ece53c26172840b17e`
-- post-hoc receipt raw SHA-256:
-  `ede8d2caedf75ebf6d29a5861bd2e9a68792155307c788a2f553e64b73effff8`
-- repository receipt and external receipt: byte-identical, 82,996 bytes
+- canonical schema-v2 receipt deterministic digest:
+  `380660d5f68fb41b805864bded9d68f8d55263551c8b2dc6061489fcaefa6851`
+- canonical schema-v2 receipt raw SHA-256:
+  `c606f9c26145f7676a9eb567868f044fbcff21d17de8464cb16877a4976da764`
+- repository and external schema-v2 receipts: byte-identical, 83,868 bytes
 - operator validation outside the canonical receipt: implementation validation
-  before real reduction passed 567 tests and 310 subtests; the first six new
-  synthetic post-hoc tests passed
+  after review hardening passed 577 tests and 310 subtests; 16 focused post-hoc
+  tests passed
 
 Canonical receipt:
-[`posthoc_mechanism.json`](../results/countdown_thompson_diagnostic_v1/posthoc_mechanism.json)
+[`posthoc_mechanism_v2.json`](../results/countdown_thompson_diagnostic_v1/posthoc_mechanism_v2.json)
+
+The historical schema-v1 receipt remains at `posthoc_mechanism.json`, digest
+`880f9453...`. Its frozen reductions are byte-equivalent to the v2 reductions,
+but v2 supersedes it for citation because v2 canonicalizes path identity and
+separates the post-review support checks.
 
 ## Next handoff
 

@@ -1429,6 +1429,7 @@ def write_countdown_thompson_dense_scale_bundle(
         _write_all(member_fd, raw)
         os.fchmod(member_fd, 0o644)
         os.fsync(member_fd)
+        member_state = os.fstat(member_fd)
         member_state = _require_pinned_member_bytes(
             directory_fd=staging_fd,
             member_fd=member_fd,

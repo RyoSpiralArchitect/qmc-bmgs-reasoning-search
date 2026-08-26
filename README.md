@@ -447,6 +447,6 @@ PYTHONPATH=src python -m \
 ```
 
 seal digestは
-`c9f667db2a2ec36e193ce6a8dea32b95a0327028cc121c7e72bc365424ecb09b`です。
+`424da84aca539e11eae16fb4e4a534c70f2a903e377a2143ac90b193868a0172`です。
 
 自然言語reasoningへの一般化や一般的なQMC優位は、まだ主張しません。

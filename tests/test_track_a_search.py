@@ -12,12 +12,14 @@ from unittest.mock import patch
 from qmc_bmgs.benchmarks.countdown import CountdownTask
 from qmc_bmgs.substrate.budget import TRACK_A_WORK_AXES, TrackAWorkBudget
 from qmc_bmgs.substrate.countdown_search import (
+    ANCHOR_EQUIVALENCE_PROJECTION_SCHEMA_VERSION,
     DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
     DENSE_TERMINAL_VALUE_SCALES,
     DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION,
     DIMENSION_NORMALIZED_SELECTION_RULE_ID,
     GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION,
     GREEDY_ANCHORED_SELECTION_RULE_ID,
+    METHOD_SPEC_SCHEMA_VERSION,
     MIN_POSITIVE_BINARY64,
     RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID,
     SCALED_DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
@@ -26,6 +28,7 @@ from qmc_bmgs.substrate.countdown_search import (
     TrackAMethodSpec,
     _action_dimension_noise_normalizer,
     build_search_run_identity,
+    project_track_a_anchor_equivalence_trace,
     replay_countdown_track_a_search_bytes,
     run_countdown_track_a_search,
 )
@@ -283,6 +286,75 @@ class TrackASearchTests(unittest.TestCase):
                         "iid",
                         invalid_scale,  # type: ignore[arg-type]
                     )
+
+    def test_v5_appends_without_breaking_legacy_positional_specs(self) -> None:
+        positional_and_factory = (
+            (
+                TrackAMethodSpec(
+                    "thompson",
+                    "iid",
+                    None,
+                    1.0,
+                    1.0,
+                    None,
+                    None,
+                    None,
+                    None,
+                    METHOD_SPEC_SCHEMA_VERSION,
+                ),
+                TrackAMethodSpec.candidate_thompson("iid"),
+            ),
+            (
+                TrackAMethodSpec(
+                    "thompson",
+                    "iid",
+                    None,
+                    1.0,
+                    1.0,
+                    None,
+                    DIMENSION_NORMALIZED_SELECTION_RULE_ID,
+                    None,
+                    None,
+                    DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION,
+                ),
+                TrackAMethodSpec.dimension_normalized_thompson("iid"),
+            ),
+            (
+                TrackAMethodSpec(
+                    "thompson",
+                    "iid",
+                    None,
+                    1.0,
+                    1.0,
+                    None,
+                    DIMENSION_NORMALIZED_SELECTION_RULE_ID,
+                    RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID,
+                    0,
+                    DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
+                ),
+                TrackAMethodSpec.dimension_normalized_dense_thompson("iid"),
+            ),
+            (
+                TrackAMethodSpec(
+                    "thompson",
+                    "sobol",
+                    None,
+                    1.0,
+                    1.0,
+                    None,
+                    GREEDY_ANCHORED_SELECTION_RULE_ID,
+                    RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID,
+                    1,
+                    GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION,
+                ),
+                TrackAMethodSpec.greedy_anchored_dimension_normalized_dense_thompson(
+                    "sobol"
+                ),
+            ),
+        )
+        for positional, factory in positional_and_factory:
+            with self.subTest(schema=factory.schema_version):
+                self.assertEqual(positional, factory)
 
     def test_budget_profile_requires_one_supported_positive_primary_axis(self) -> None:
         with self.assertRaisesRegex(ValueError, "primary_axis"):
@@ -822,18 +894,37 @@ class TrackASearchTests(unittest.TestCase):
                             authority_backup["payload"]["updates"],
                             scaled_backup["payload"]["updates"],
                         )
-                    self.assertEqual(
-                        replay_countdown_track_a_search_bytes(
-                            scaled.canonical_bytes,
-                            task=TASK,
-                            proposal=HEURISTIC,
-                            method=scaled_method,
-                            budget_profile=profile,
-                            exploration_seed=7168,
-                            expected_run_identity_digest=scaled.run_identity_digest,
-                        ),
-                        scaled.canonical_bytes,
+                    for result, result_method in (
+                        (authority, authority_method),
+                        (scaled, scaled_method),
+                    ):
+                        self.assertEqual(
+                            replay_countdown_track_a_search_bytes(
+                                result.canonical_bytes,
+                                task=TASK,
+                                proposal=HEURISTIC,
+                                method=result_method,
+                                budget_profile=profile,
+                                exploration_seed=7168,
+                                expected_run_identity_digest=(
+                                    result.run_identity_digest
+                                ),
+                            ),
+                            result.canonical_bytes,
+                        )
+                    authority_projection = project_track_a_anchor_equivalence_trace(
+                        authority.canonical_bytes,
+                        method=authority_method,
                     )
+                    scaled_projection = project_track_a_anchor_equivalence_trace(
+                        scaled.canonical_bytes,
+                        method=scaled_method,
+                    )
+                    self.assertEqual(
+                        authority_projection["projection_schema_version"],
+                        ANCHOR_EQUIVALENCE_PROJECTION_SCHEMA_VERSION,
+                    )
+                    self.assertEqual(authority_projection, scaled_projection)
 
     def test_scaled_dense_terminal_grid_is_monotone_and_replays(self) -> None:
         profile = _verifier_profile(1)
@@ -960,7 +1051,7 @@ class TrackASearchTests(unittest.TestCase):
         backup = _events(scale_tamper, "trajectory_backed_up")[0]["payload"]
         backup["terminal_value_scale"] = 8
         _rehash_trace(scale_tamper)
-        with self.assertRaisesRegex(TraceValidationError, "scale drifted"):
+        with self.assertRaisesRegex(TraceValidationError, "terminal-linked"):
             replay_countdown_track_a_search_bytes(
                 canonical_trace_bytes(scale_tamper),
                 task=TASK,
@@ -975,9 +1066,42 @@ class TrackASearchTests(unittest.TestCase):
         backup = _events(evidence_tamper, "trajectory_backed_up")[0]["payload"]
         backup["terminal_value_denominator"] += 1
         _rehash_trace(evidence_tamper)
-        with self.assertRaisesRegex(TraceValidationError, "evidence drifted"):
+        with self.assertRaisesRegex(TraceValidationError, "terminal-linked"):
             replay_countdown_track_a_search_bytes(
                 canonical_trace_bytes(evidence_tamper),
+                task=TASK,
+                proposal=HEURISTIC,
+                method=method,
+                budget_profile=profile,
+                exploration_seed=7168,
+                expected_run_identity_digest=result.run_identity_digest,
+            )
+
+        coherent_tamper = copy.deepcopy(result.record)
+        backup = _events(coherent_tamper, "trajectory_backed_up")[0]["payload"]
+        backup["terminal_absolute_error"] += 1
+        backup["terminal_value_denominator"] = (
+            backup["terminal_value_scale"] + backup["terminal_absolute_error"]
+        )
+        terminal_value = (
+            backup["terminal_value_numerator"]
+            / backup["terminal_value_denominator"]
+        )
+        backup["terminal_value"] = terminal_value
+        for update in backup["updates"]:
+            before = update["before"]
+            visits = before["visits"] + 1
+            delta = terminal_value - before["mean"]
+            mean = before["mean"] + delta / visits
+            update["after"] = {
+                "m2": before["m2"] + delta * (terminal_value - mean),
+                "mean": mean,
+                "visits": visits,
+            }
+        _rehash_trace(coherent_tamper)
+        with self.assertRaisesRegex(TraceValidationError, "terminal-linked"):
+            replay_countdown_track_a_search_bytes(
+                canonical_trace_bytes(coherent_tamper),
                 task=TASK,
                 proposal=HEURISTIC,
                 method=method,
@@ -1192,7 +1316,7 @@ class TrackASearchTests(unittest.TestCase):
         backup = _events(dense_tamper, "trajectory_backed_up")[0]["payload"]
         backup["terminal_value_rule_id"] = "wrong/v1"
         _rehash_trace(dense_tamper)
-        with self.assertRaisesRegex(TraceValidationError, "terminal-value rule"):
+        with self.assertRaisesRegex(TraceValidationError, "terminal-linked"):
             replay_countdown_track_a_search_bytes(
                 canonical_trace_bytes(dense_tamper),
                 task=TASK,
@@ -1207,7 +1331,7 @@ class TrackASearchTests(unittest.TestCase):
         backup = _events(dense_evidence_tamper, "trajectory_backed_up")[0]["payload"]
         backup["terminal_value_denominator"] += 1
         _rehash_trace(dense_evidence_tamper)
-        with self.assertRaisesRegex(TraceValidationError, "value evidence"):
+        with self.assertRaisesRegex(TraceValidationError, "terminal-linked"):
             replay_countdown_track_a_search_bytes(
                 canonical_trace_bytes(dense_evidence_tamper),
                 task=TASK,

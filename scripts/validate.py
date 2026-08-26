@@ -76,6 +76,21 @@ def main() -> None:
         if module == "qmc_bmgs.experiments.countdown_thompson_dense_scale_manifest":
             command.extend(["--repository-root", str(ROOT)])
         _run(command, cwd=outside)
+    _run(
+        [
+            sys.executable,
+            "-m",
+            "qmc_bmgs.experiments.countdown_thompson_dense_scale_manifest",
+            "--verify",
+            str(
+                ROOT
+                / "docs/preregistrations/countdown_thompson_dense_scale_v5"
+            ),
+            "--repository-root",
+            str(ROOT),
+        ],
+        cwd=outside,
+    )
     print("repository validation: PASS")
 
 

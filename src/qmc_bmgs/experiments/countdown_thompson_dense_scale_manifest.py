@@ -10,10 +10,13 @@ and never materializes a proposal row, perturbation point, or search outcome.
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import hashlib
 import os
 import shutil
 import stat
+import sys
 import tempfile
 from copy import deepcopy
 from dataclasses import dataclass
@@ -28,6 +31,7 @@ from qmc_bmgs.benchmarks.countdown import (
 from qmc_bmgs.experiments import countdown_thompson_diagnostic_manifest as diagnostic
 from qmc_bmgs.substrate.budget import TrackAWorkBudget
 from qmc_bmgs.substrate.countdown_search import (
+    ANCHOR_EQUIVALENCE_PROJECTION_SCHEMA_VERSION,
     DENSE_TERMINAL_VALUE_SCALES,
     TrackABudgetProfile,
     TrackAMethodSpec,
@@ -60,9 +64,9 @@ DIAGNOSTIC_SEAL_DIGEST = (
 FROZEN_DESIGN_PATH = Path(
     "docs/strategy/countdown_thompson_dense_scale_dose_response_v5.md"
 )
-FROZEN_DESIGN_REVISION = "11743b98746eae9f13721e3d91250ad0e4874acc"
+FROZEN_DESIGN_REVISION = "d5af6269e9ad2f039bf58e4a8f5dcc36355624f8"
 FROZEN_DESIGN_SHA256 = (
-    "85b97eed28b79997f202a2e484b63ab79cb7f54b712ed79a6a1349b548f4b1eb"
+    "cb46ae1399044a4417bfd77ead0a128818f8e19f89613901cfcfedff44e6508b"
 )
 IMPLEMENTATION_BASE = {
     "merged_revision": "2bf4ce85947c39cc05a6f32a19576ea7d6e6790a",
@@ -602,6 +606,69 @@ def _analysis_manifest() -> dict[str, Any]:
                 "terminal_error_reductions",
                 "exact_success_and_development_handoff",
             ],
+            "anchor_equivalence": {
+                "backup_fields_removed": [
+                    "terminal_absolute_error",
+                    "terminal_value_denominator",
+                    "terminal_value_floor",
+                    "terminal_value_floor_applied",
+                    "terminal_value_numerator",
+                    "terminal_value_rule_id",
+                    "terminal_value_scale",
+                ],
+                "comparison": "canonical_projection_exact_equality",
+                "failure_timing": "before_terminal_error_or_success_read",
+                "pairs": [
+                    {
+                        "anchor_label": "binary_terminal_anchor",
+                        "authority_schema": "qmc-bmgs-track-a-method-spec/v2",
+                        "scaled_terminal_value_scale": 0,
+                    },
+                    {
+                        "anchor_label": "reciprocal_error_anchor",
+                        "authority_schema": "qmc-bmgs-track-a-method-spec/v3",
+                        "scaled_terminal_value_scale": 1,
+                    },
+                ],
+                "precondition": (
+                    "both traces pass canonical validation and two-stage byte "
+                    "replay under their own sealed method"
+                ),
+                "preserved": [
+                    "all_other_run_identity_fields",
+                    "event_count",
+                    "event_index_kind_charge_and_all_other_payload_fields",
+                    "proposal_node_and_point_material",
+                    "terminal_value_and_posterior_updates",
+                    "stop_events",
+                    "all_other_ledger_fields_and_components",
+                    "trace_schema_version",
+                ],
+                "projection_schema_version": (
+                    ANCHOR_EQUIVALENCE_PROJECTION_SCHEMA_VERSION
+                ),
+                "replay_closed_storage_bytes_replaced_as_schema_overhead": [
+                    "ledger_snapshot.live_storage.bytes",
+                    "ledger_snapshot.peak_live_storage.bytes",
+                ],
+                "run_identity_replaced_fields": [
+                    "configuration_id",
+                    "method_id",
+                ],
+                "selection_method_field_replaced_after_exact_spec_check": True,
+                "top_level_removed_fields": [
+                    "deterministic_digest",
+                    "final_event_digest",
+                ],
+                "event_removed_fields": [
+                    "event_digest",
+                    "previous_event_digest",
+                ],
+                "finished_summary_fields_replaced_after_exact_identity_check": [
+                    "method",
+                    "run_identity_digest",
+                ],
+            },
             "claim_boundary": {
                 "confidence_intervals": False,
                 "development_not_confirmation": True,
@@ -633,6 +700,14 @@ def _analysis_manifest() -> dict[str, Any]:
                 "no_non_primary_guard_binding_or_exhaustion": True,
                 "provider_calls": 0,
                 "two_stage_byte_replay": True,
+            },
+            "integer_reductions": {
+                "arithmetic": "exact_reduced_rational",
+                "empty_required_vector": "INVALID_ANALYSIS",
+                "even_median": (
+                    "reduce((sorted[n//2-1]+sorted[n//2])/2)"
+                ),
+                "odd_median": "sorted[n//2]",
             },
             "mechanism_pairing": {
                 "baseline_scale": 0,
@@ -803,7 +878,14 @@ def _directory_state(observed: os.stat_result) -> tuple[int, ...]:
     )
 
 
-def _read_bundle_bytes(bundle_dir: Path) -> bytes:
+@dataclass(frozen=True)
+class _BundleSnapshot:
+    raw: bytes
+    directory_state: tuple[int, ...]
+    member_state: tuple[int, ...]
+
+
+def _read_bundle_snapshot(bundle_dir: Path) -> _BundleSnapshot:
     directory = Path(bundle_dir)
     try:
         path_state = directory.lstat()
@@ -815,7 +897,10 @@ def _read_bundle_bytes(bundle_dir: Path) -> bytes:
     file_fd = -1
     try:
         flags = (
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
         )
         directory_fd = os.open(directory, flags)
         opened_directory = os.fstat(directory_fd)
@@ -824,7 +909,9 @@ def _read_bundle_bytes(bundle_dir: Path) -> bytes:
             raise DenseScaleManifestError("bundle directory closure drifted")
         file_fd = os.open(
             BUNDLE_FILENAME,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
             dir_fd=directory_fd,
         )
         opened = os.fstat(file_fd)
@@ -860,7 +947,11 @@ def _read_bundle_bytes(bundle_dir: Path) -> bytes:
         final_path_state = directory.lstat()
         if _directory_state(final_path_state) != _directory_state(opened_directory):
             raise DenseScaleManifestError("bundle directory path rotated during read")
-        return b"".join(chunks)
+        return _BundleSnapshot(
+            raw=b"".join(chunks),
+            directory_state=_directory_state(opened_directory),
+            member_state=_directory_state(opened),
+        )
     except OSError as error:
         raise DenseScaleManifestError("bundle descriptor read failed") from error
     finally:
@@ -868,6 +959,10 @@ def _read_bundle_bytes(bundle_dir: Path) -> bytes:
             os.close(file_fd)
         if directory_fd >= 0:
             os.close(directory_fd)
+
+
+def _read_bundle_bytes(bundle_dir: Path) -> bytes:
+    return _read_bundle_snapshot(bundle_dir).raw
 
 
 @dataclass(frozen=True)
@@ -898,7 +993,8 @@ def verify_countdown_thompson_dense_scale_bundle(
 ) -> VerifiedDenseScaleBundle:
     """Verify canonical bytes, authorities, regeneration, and schedule closure."""
 
-    raw = _read_bundle_bytes(bundle_dir)
+    initial_snapshot = _read_bundle_snapshot(bundle_dir)
+    raw = initial_snapshot.raw
     payload = _parse_canonical_payload(raw)
     expected = build_countdown_thompson_dense_scale_payload(
         repository_root=repository_root
@@ -919,6 +1015,9 @@ def verify_countdown_thompson_dense_scale_bundle(
         schedule
     ):
         raise DenseScaleManifestError("dense-scale schedule rows drifted")
+    final_snapshot = _read_bundle_snapshot(bundle_dir)
+    if final_snapshot != initial_snapshot:
+        raise DenseScaleManifestError("bundle changed during verification")
     return VerifiedDenseScaleBundle(Path(bundle_dir), deepcopy(payload), cells)
 
 
@@ -928,6 +1027,73 @@ def iter_countdown_thompson_dense_scale_cells(
     if type(bundle) is not VerifiedDenseScaleBundle:
         raise TypeError("bundle must be exactly VerifiedDenseScaleBundle")
     return bundle.cells
+
+
+def _rename_directory_noreplace(source: Path, destination: Path) -> None:
+    """Atomically publish a directory while refusing an existing target."""
+
+    at_fdcwd = -2 if sys.platform == "darwin" else -100
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin":
+        rename = libc.renameatx_np
+        rename.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        rename.restype = ctypes.c_int
+        result = rename(
+            at_fdcwd,
+            os.fsencode(source),
+            at_fdcwd,
+            os.fsencode(destination),
+            0x00000004,
+        )
+    elif sys.platform.startswith("linux"):
+        try:
+            rename = libc.renameat2
+        except AttributeError as error:
+            raise OSError(
+                errno.ENOSYS,
+                "atomic no-replace publication is unsupported",
+                destination,
+            ) from error
+        rename.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        rename.restype = ctypes.c_int
+        result = rename(
+            at_fdcwd,
+            os.fsencode(source),
+            at_fdcwd,
+            os.fsencode(destination),
+            0x00000001,
+        )
+    elif sys.platform == "win32":
+        os.rename(source, destination)
+        return
+    else:
+        raise OSError(
+            errno.ENOSYS,
+            "atomic no-replace publication is unsupported",
+            destination,
+        )
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise FileExistsError(
+            error_number,
+            "dense-scale bundle destination exists",
+            destination,
+        )
+    raise OSError(error_number, os.strerror(error_number), destination)
 
 
 def write_countdown_thompson_dense_scale_bundle(
@@ -943,24 +1109,47 @@ def write_countdown_thompson_dense_scale_bundle(
         raise FileExistsError(target)
     if not parent.is_dir() or parent.is_symlink():
         raise DenseScaleManifestError("bundle parent must be a real directory")
-    payload = build_countdown_thompson_dense_scale_payload(
-        repository_root=repository_root
-    )
-    temporary = Path(tempfile.mkdtemp(prefix=f".{target.name}.tmp-", dir=parent))
+    lock = parent / f".{target.name}.publish-lock"
     try:
+        lock.mkdir()
+    except FileExistsError as error:
+        raise FileExistsError(f"dense-scale bundle publication is locked: {lock}") from error
+    temporary: Path | None = None
+    try:
+        if target.exists() or target.is_symlink():
+            raise FileExistsError(target)
+        payload = build_countdown_thompson_dense_scale_payload(
+            repository_root=repository_root
+        )
+        temporary = Path(
+            tempfile.mkdtemp(prefix=f".{target.name}.tmp-", dir=parent)
+        )
         output = temporary / BUNDLE_FILENAME
         with output.open("xb") as handle:
             handle.write(_canonical_bytes(payload))
             handle.flush()
+            os.fchmod(handle.fileno(), 0o644)
             os.fsync(handle.fileno())
-        os.chmod(output, 0o644)
-        if target.exists() or target.is_symlink():
-            raise FileExistsError(target)
-        temporary.rename(target)
+        directory_fd = os.open(temporary, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        _rename_directory_noreplace(temporary, target)
+        temporary = None
+        parent_fd = os.open(parent, os.O_RDONLY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
         return target
-    except Exception:
-        shutil.rmtree(temporary, ignore_errors=True)
-        raise
+    finally:
+        if temporary is not None:
+            shutil.rmtree(temporary, ignore_errors=True)
+        try:
+            lock.rmdir()
+        except FileNotFoundError:
+            pass
 
 
 def _self_test(repository_root: Path | None) -> dict[str, Any]:

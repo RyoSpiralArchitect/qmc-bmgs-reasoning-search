@@ -146,6 +146,22 @@ class DenseScaleManifestTests(unittest.TestCase):
 
     def test_analysis_cannot_jump_directly_to_locked_128(self) -> None:
         analysis = self.payload["analysis"]
+        anchors = analysis["anchor_equivalence"]
+        self.assertEqual(
+            anchors["projection_schema_version"],
+            countdown_search.ANCHOR_EQUIVALENCE_PROJECTION_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            anchors["comparison"], "canonical_projection_exact_equality"
+        )
+        self.assertIn(
+            "all_other_ledger_fields_and_components", anchors["preserved"]
+        )
+        self.assertIn("stop_events", anchors["preserved"])
+        self.assertEqual(
+            analysis["integer_reductions"]["even_median"],
+            "reduce((sorted[n//2-1]+sorted[n//2])/2)",
+        )
         handoff = analysis["development_handoff"]
         self.assertEqual(handoff["minimum_net_exact_success_gain"], 2)
         self.assertEqual(handoff["minimum_new_exact_successes"], 2)
@@ -220,6 +236,57 @@ class DenseScaleManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(module.DenseScaleManifestError, "owned file"):
             module._read_bundle_bytes(hardlink_bundle)
 
+    def test_bundle_reader_uses_nonblocking_open_for_a_raced_fifo(self) -> None:
+        destination = self._write_bundle()
+        member = destination / module.BUNDLE_FILENAME
+        real_listdir = os.listdir
+        real_open = os.open
+
+        def rotate_member(directory_fd: int) -> list[str]:
+            names = real_listdir(directory_fd)
+            member.unlink()
+            os.mkfifo(member)
+            return names
+
+        def guarded_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
+            if path == module.BUNDLE_FILENAME:
+                self.assertTrue(flags & os.O_NONBLOCK)
+            return real_open(path, flags, *args, **kwargs)  # type: ignore[arg-type]
+
+        with (
+            patch.object(module.os, "listdir", side_effect=rotate_member),
+            patch.object(module.os, "open", side_effect=guarded_open),
+            self.assertRaises(module.DenseScaleManifestError),
+        ):
+            module._read_bundle_bytes(destination)
+
+    def test_verifier_rejects_byte_identical_bundle_path_rotation(self) -> None:
+        destination = self._write_bundle()
+        parked = self.root / "parked"
+
+        def rotate_during_regeneration(**_: object) -> dict[str, object]:
+            destination.rename(parked)
+            destination.mkdir()
+            (destination / module.BUNDLE_FILENAME).write_bytes(
+                module._canonical_bytes(self.payload)
+            )
+            return copy.deepcopy(self.payload)
+
+        with (
+            patch.object(
+                module,
+                "build_countdown_thompson_dense_scale_payload",
+                side_effect=rotate_during_regeneration,
+            ),
+            self.assertRaisesRegex(
+                module.DenseScaleManifestError, "changed during verification"
+            ),
+        ):
+            module.verify_countdown_thompson_dense_scale_bundle(
+                destination,
+                repository_root=self.repository_root,
+            )
+
     def test_writer_is_exclusive_without_search_execution(self) -> None:
         destination = self.root / "written"
         with patch.object(
@@ -240,6 +307,34 @@ class DenseScaleManifestTests(unittest.TestCase):
             set(path.name for path in destination.iterdir()),
             {module.BUNDLE_FILENAME},
         )
+
+    def test_writer_does_not_replace_a_raced_destination(self) -> None:
+        destination = self.root / "raced"
+        real_rename = module._rename_directory_noreplace
+
+        def race(source: Path, target: Path) -> None:
+            target.mkdir()
+            (target / "racer-owned.txt").write_text("keep", encoding="utf-8")
+            real_rename(source, target)
+
+        with (
+            patch.object(
+                module,
+                "build_countdown_thompson_dense_scale_payload",
+                return_value=copy.deepcopy(self.payload),
+            ),
+            patch.object(module, "_rename_directory_noreplace", side_effect=race),
+            self.assertRaises(FileExistsError),
+        ):
+            module.write_countdown_thompson_dense_scale_bundle(
+                destination,
+                repository_root=self.repository_root,
+            )
+        self.assertEqual(
+            (destination / "racer-owned.txt").read_text(encoding="utf-8"),
+            "keep",
+        )
+        self.assertEqual(set(self.root.iterdir()), {destination})
 
 
 if __name__ == "__main__":

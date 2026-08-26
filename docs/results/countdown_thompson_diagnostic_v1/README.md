@@ -6,17 +6,24 @@
 
 - schema: `qmc-bmgs-countdown-thompson-selection-margin/v1`
 - deterministic digest:
-  `c86a685cb1fe45a1d2bbaace7270f36bf9c815590006640bd098090d7ae4adf8`
+  `5457effcf523d9a36d8824e86e17c067c3a3af1d5f1056255c1ff9ba726a406c`
 - raw SHA-256:
-  `24546bc6745beb997e211ad4576d1291e2afdec12a1c811dbab3b7aa66c0a942`
+  `70504c87e43d42bf786727ddca6822f6f45366c664eff153e99f2a65895d2d97`
 - byte count: 2,000,231
-- source revision: `7c4b865c4ad40d35f0eff52e6c58634656b8f3f6`
+- source revision: `64fda29cac2499bf42e749d721d3c08742bac038`
 - handoff decision: `STOP_REPAIR_NO_LOCKED_128_RUN`
 
 It reconstructs the recorded posterior before each feedback-informed
 selection, reports exact-rational local scale boundaries, and pairs v2/v3 only
 while their pre-decision surface remains identical. It evaluates no terminal
 performance counterfactual.
+
+A fresh review of the initial PR found that caller-supplied hashes could stand
+in for the frozen anchors, the tracked receipt itself was absent from the test
+surface, and imported publication failures escaped the canonical CLI error
+boundary. The source revision above pins every frozen identity in code,
+cross-checks stable post-hoc authority metadata, validates this tracked receipt
+in the repository suite, and returns canonical `INVALID` for those failures.
 
 ## Mechanism and outcome reductions
 

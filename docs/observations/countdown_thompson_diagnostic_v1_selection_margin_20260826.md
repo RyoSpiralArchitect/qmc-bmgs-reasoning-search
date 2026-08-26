@@ -179,27 +179,47 @@ task transfer、retry、locked-128 authorityではない。
 
 Decisionは`STOP_REPAIR_NO_LOCKED_128_RUN`のまま維持する。
 
+## Fresh-review hardening
+
+初回PR headのdisk-blinded fresh reviewは三つの実装上の穴を見つけた。
+
+1. frozen digestとrevisionがcode内でpinされず、callerがcoherentに改変した
+   post-hoc receiptと新hashを同時に渡せた。
+2. repository validationがtracked `selection_margin_v1.json`そのものを読まず、
+   canonical receiptの破損を検出できなかった。
+3. imported post-hoc publication errorがCLIのcanonical `INVALID` boundaryから漏れた。
+
+これらをsource revision `64fda29cac2499bf42e749d721d3c08742bac038`で修正した。
+全frozen anchorsをsource-attested moduleへpinし、post-hoc authority metadataもfresh
+recomputationと照合した。Tracked receiptのstrict JSON、digest、raw hash、byte count、
+source/design hash、主要集計をrepository testへ追加し、missing/occupied inputも
+tracebackなしのcanonical `INVALID`へ閉じた。
+
+修正後のfresh replayは旧receiptと`reductions`、`posthoc_revalidation`、
+`input_provenance`がexactly equalだった。したがってfindingはauthorityとvalidation
+surfaceを修正したが、selection-margin結果は変更していない。
+
 ## Provenance and validation
 
 - frozen design revision:
   `997345a6b466d9bc824672921cd2e6bd2dc43668`
 - audit source revision:
-  `7c4b865c4ad40d35f0eff52e6c58634656b8f3f6`
+  `64fda29cac2499bf42e749d721d3c08742bac038`
 - audit module SHA-256:
-  `1ad7209654d6d797ebbe2508bac2765ae92d0c859a8d0e67235239f8cf4e67ba`
+  `c5e4a6f96605258d2969410fb19245674d3a5062d1d1b72a34fb5eabedd3a441`
 - frozen design SHA-256:
   `9c92292769b0395c7c818fe4032713b4018ecd319ba4b9d583d98e557c4a5509`
 - receipt deterministic digest:
-  `c86a685cb1fe45a1d2bbaace7270f36bf9c815590006640bd098090d7ae4adf8`
+  `5457effcf523d9a36d8824e86e17c067c3a3af1d5f1056255c1ff9ba726a406c`
 - receipt raw SHA-256:
-  `24546bc6745beb997e211ad4576d1291e2afdec12a1c811dbab3b7aa66c0a942`
+  `70504c87e43d42bf786727ddca6822f6f45366c664eff153e99f2a65895d2d97`
 - receipt byte count: 2,000,231
 - existing post-hoc frozen reductions and supplemental validation freshly
   recomputed exactly: `PASS`
 - normal `/Users/...` inputs and lowercase `/users/...` aliases produced
   byte-identical receipts: `PASS`
-- focused old/new audit tests: 30/30 `PASS`
-- full repository validation: 591 tests, artifact verification, and every CLI
+- focused old/new audit tests: 35/35 `PASS`
+- full repository validation: 596 tests, artifact verification, and every CLI
   self-test `PASS`
 
 Canonical receipt:

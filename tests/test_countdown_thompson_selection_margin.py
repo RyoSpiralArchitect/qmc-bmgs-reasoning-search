@@ -627,5 +627,113 @@ class SelectionMarginReceiptTests(unittest.TestCase):
         self.assertNotIn("Traceback", stderr.getvalue())
 
 
+class SelectionMarginPublishedReceiptTests(unittest.TestCase):
+    def test_tracked_receipt_is_canonical_and_source_bound(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        path = (
+            repository
+            / "docs/results/countdown_thompson_diagnostic_v1/selection_margin_v1.json"
+        )
+        expected_digest = (
+            "5457effcf523d9a36d8824e86e17c067c3a3af1d5f1056255c1ff9ba726a406c"
+        )
+        expected_raw_sha256 = (
+            "70504c87e43d42bf786727ddca6822f6f45366c664eff153e99f2a65895d2d97"
+        )
+        expected_source_revision = "64fda29cac2499bf42e749d721d3c08742bac038"
+        expected_module_sha256 = (
+            "c5e4a6f96605258d2969410fb19245674d3a5062d1d1b72a34fb5eabedd3a441"
+        )
+        expected_design_sha256 = (
+            "9c92292769b0395c7c818fe4032713b4018ecd319ba4b9d583d98e557c4a5509"
+        )
+
+        payload, raw = posthoc._read_strict_json_object(
+            path, "tracked selection-margin receipt"
+        )
+        core = {
+            key: value
+            for key, value in payload.items()
+            if key != "deterministic_digest"
+        }
+        self.assertEqual(raw, (canonical_json(payload) + "\n").encode())
+        self.assertEqual(len(raw), 2_000_231)
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), expected_raw_sha256)
+        self.assertEqual(payload["deterministic_digest"], expected_digest)
+        self.assertEqual(sha256_json(core), expected_digest)
+        self.assertEqual(payload["schema_version"], margin.SCHEMA_VERSION)
+        self.assertEqual(payload["integrity_status"], "PASS")
+        self.assertEqual(payload["handoff_decision"], margin.HANDOFF_DECISION)
+
+        provenance = payload["input_provenance"]
+        self.assertEqual(
+            provenance["artifact_commit_digest"],
+            margin.FROZEN_ARTIFACT_COMMIT_DIGEST,
+        )
+        self.assertEqual(
+            provenance["authorization_digest"],
+            margin.FROZEN_AUTHORIZATION_DIGEST,
+        )
+        self.assertEqual(
+            provenance["authorization_revision"],
+            margin.FROZEN_AUTHORIZATION_REVISION,
+        )
+        self.assertEqual(
+            provenance["run_manifest_digest"], margin.FROZEN_RUN_MANIFEST_DIGEST
+        )
+        self.assertEqual(
+            provenance["summary_deterministic_digest"],
+            margin.FROZEN_SUMMARY_DIGEST,
+        )
+        self.assertEqual(
+            provenance["posthoc_receipt_deterministic_digest"],
+            margin.FROZEN_POSTHOC_DIGEST,
+        )
+        self.assertEqual(
+            provenance["posthoc_receipt_raw_sha256"],
+            margin.FROZEN_POSTHOC_RAW_SHA256,
+        )
+
+        source = payload["source_attestation"]
+        self.assertEqual(source["source_revision"], expected_source_revision)
+        self.assertEqual(source["audit_module_sha256"], expected_module_sha256)
+        self.assertEqual(source["frozen_design_sha256"], expected_design_sha256)
+        module_raw = (repository / margin.MODULE_RELATIVE_PATH).read_bytes()
+        design_raw = (repository / margin.DESIGN_RELATIVE_PATH).read_bytes()
+        self.assertEqual(hashlib.sha256(module_raw).hexdigest(), expected_module_sha256)
+        self.assertEqual(hashlib.sha256(design_raw).hexdigest(), expected_design_sha256)
+        self.assertEqual(
+            margin._git(
+                repository,
+                "show",
+                f"{expected_source_revision}:{margin.MODULE_RELATIVE_PATH.as_posix()}",
+            ),
+            module_raw,
+        )
+        self.assertEqual(
+            margin._git(
+                repository,
+                "show",
+                f"{expected_source_revision}:{margin.DESIGN_RELATIVE_PATH.as_posix()}",
+            ),
+            design_raw,
+        )
+
+        reductions = payload["reductions"]
+        paired = reductions["paired_v2_v3_common_prefix_sensitivity"]
+        individual = reductions["individual_method_selection_sensitivity"]
+        self.assertEqual(paired["pairable_surface_count"], 370)
+        self.assertEqual(paired["nonzero_score_displacement_surface_count"], 94)
+        self.assertEqual(paired["action_flip_count_at_observed_dense_scale"], 4)
+        self.assertEqual(
+            individual[margin.V4_METHOD][
+                "observed_action_changed_from_zero_mean_count"
+            ],
+            128,
+        )
+        self.assertFalse(reductions["performance_counterfactual_evaluated"])
+        self.assertFalse(reductions["terminal_outcomes_used_in_margin_reduction"])
+
+
 if __name__ == "__main__":
     unittest.main()

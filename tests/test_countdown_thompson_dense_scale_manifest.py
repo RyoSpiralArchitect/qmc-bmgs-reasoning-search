@@ -438,6 +438,36 @@ class DenseScaleManifestTests(unittest.TestCase):
             {module.BUNDLE_FILENAME},
         )
 
+    def test_writer_postcommit_close_error_does_not_reverse_success(self) -> None:
+        destination = self.root / "written"
+        real_close = os.close
+        close_calls: list[int] = []
+
+        def fail_first_close_only(descriptor: int) -> None:
+            close_calls.append(descriptor)
+            real_close(descriptor)
+            if len(close_calls) == 1:
+                raise OSError(5, "injected close failure")
+
+        with (
+            patch.object(
+                module,
+                "build_countdown_thompson_dense_scale_payload",
+                return_value=copy.deepcopy(self.payload),
+            ),
+            patch.object(module.os, "close", side_effect=fail_first_close_only),
+        ):
+            returned = module.write_countdown_thompson_dense_scale_bundle(
+                destination,
+                repository_root=self.repository_root,
+            )
+        self.assertEqual(returned, destination)
+        self.assertEqual(len(close_calls), 3)
+        self.assertEqual(
+            set(path.name for path in destination.iterdir()),
+            {module.BUNDLE_FILENAME},
+        )
+
     def test_writer_does_not_replace_a_raced_destination(self) -> None:
         destination = self.root / "raced"
         real_rename = module._rename_directory_noreplace_at
@@ -565,6 +595,56 @@ class DenseScaleManifestTests(unittest.TestCase):
             )
         self.assertFalse(destination.exists())
         self.assertEqual(set(self.root.iterdir()), set())
+
+    def test_writer_rejects_same_inode_overwrite_during_final_lexical_check(
+        self,
+    ) -> None:
+        destination = self.root / "written"
+        real_lstat = Path.lstat
+        parent_observations = 0
+
+        def overwrite_on_second_parent_lstat(path: Path) -> os.stat_result:
+            nonlocal parent_observations
+            if path == destination.parent:
+                parent_observations += 1
+                if parent_observations == 2:
+                    attacker_fd = os.open(
+                        destination / module.BUNDLE_FILENAME,
+                        os.O_RDWR,
+                    )
+                    try:
+                        os.pwrite(attacker_fd, b"X", 0)
+                        os.fsync(attacker_fd)
+                    finally:
+                        os.close(attacker_fd)
+            return real_lstat(path)
+
+        with (
+            patch.object(
+                module,
+                "build_countdown_thompson_dense_scale_payload",
+                return_value=copy.deepcopy(self.payload),
+            ),
+            patch.object(
+                Path,
+                "lstat",
+                autospec=True,
+                side_effect=overwrite_on_second_parent_lstat,
+            ),
+            self.assertRaisesRegex(
+                module.DenseScaleManifestError,
+                "published bundle final member check drifted",
+            ),
+        ):
+            module.write_countdown_thompson_dense_scale_bundle(
+                destination,
+                repository_root=self.repository_root,
+            )
+        self.assertEqual(parent_observations, 2)
+        self.assertEqual(
+            (destination / module.BUNDLE_FILENAME).read_bytes()[:1],
+            b"X",
+        )
 
     def test_writer_never_returns_success_for_rotated_staging_bytes(self) -> None:
         destination = self.root / "written"

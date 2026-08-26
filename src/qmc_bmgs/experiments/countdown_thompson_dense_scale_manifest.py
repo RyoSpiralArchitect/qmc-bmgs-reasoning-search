@@ -1279,6 +1279,32 @@ def _read_exact_at(file_fd: int, byte_count: int) -> bytes:
     return b"".join(chunks)
 
 
+def _require_pinned_member_bytes(
+    *,
+    directory_fd: int,
+    member_fd: int,
+    expected_raw: bytes,
+    error_message: str,
+) -> os.stat_result:
+    before = os.fstat(member_fd)
+    readback = _read_exact_at(member_fd, len(expected_raw))
+    after = os.fstat(member_fd)
+    path_state = _entry_state(directory_fd, BUNDLE_FILENAME)
+    if (
+        path_state is None
+        or readback != expected_raw
+        or _directory_state(before) != _directory_state(after)
+        or _directory_state(path_state) != _directory_state(after)
+        or not stat.S_ISREG(after.st_mode)
+        or after.st_nlink != 1
+        or after.st_uid != os.geteuid()
+        or stat.S_IMODE(after.st_mode) != 0o644
+        or after.st_size != len(expected_raw)
+    ):
+        raise DenseScaleManifestError(error_message)
+    return after
+
+
 def _cleanup_pinned_staging_directory(
     *,
     parent_fd: int,
@@ -1310,6 +1336,16 @@ def _cleanup_pinned_staging_directory(
             os.fsync(parent_fd)
     except OSError:
         return
+
+
+def _close_descriptors_best_effort(*descriptors: int) -> None:
+    for descriptor in descriptors:
+        if descriptor < 0:
+            continue
+        try:
+            os.close(descriptor)
+        except OSError:
+            continue
 
 
 def write_countdown_thompson_dense_scale_bundle(
@@ -1393,22 +1429,14 @@ def write_countdown_thompson_dense_scale_bundle(
         _write_all(member_fd, raw)
         os.fchmod(member_fd, 0o644)
         os.fsync(member_fd)
-        member_state_before_readback = os.fstat(member_fd)
-        readback = _read_exact_at(member_fd, len(raw))
-        member_state = os.fstat(member_fd)
-        path_member_state = _entry_state(staging_fd, BUNDLE_FILENAME)
+        member_state = _require_pinned_member_bytes(
+            directory_fd=staging_fd,
+            member_fd=member_fd,
+            expected_raw=raw,
+            error_message="staging bundle closure is invalid",
+        )
         if (
-            path_member_state is None
-            or readback != raw
-            or _directory_state(member_state_before_readback)
-            != _directory_state(member_state)
-            or _directory_state(path_member_state) != _directory_state(member_state)
-            or not stat.S_ISREG(member_state.st_mode)
-            or member_state.st_nlink != 1
-            or member_state.st_uid != os.geteuid()
-            or stat.S_IMODE(member_state.st_mode) != 0o644
-            or member_state.st_size != len(raw)
-            or set(os.listdir(staging_fd)) != {BUNDLE_FILENAME}
+            set(os.listdir(staging_fd)) != {BUNDLE_FILENAME}
         ):
             raise DenseScaleManifestError("staging bundle closure is invalid")
         os.fsync(staging_fd)
@@ -1433,12 +1461,14 @@ def write_countdown_thompson_dense_scale_bundle(
             raise DenseScaleManifestError("staging name survived publication")
         if set(os.listdir(staging_fd)) != {BUNDLE_FILENAME}:
             raise DenseScaleManifestError("published bundle closure drifted")
-        published_member = _entry_state(staging_fd, BUNDLE_FILENAME)
-        if (
-            published_member is None
-            or member_state is None
-            or _directory_state(published_member) != _directory_state(member_state)
-            or _directory_state(os.fstat(member_fd)) != _directory_state(member_state)
+        published_member = _require_pinned_member_bytes(
+            directory_fd=staging_fd,
+            member_fd=member_fd,
+            expected_raw=raw,
+            error_message="published bundle member identity drifted",
+        )
+        if member_state is None or (
+            _directory_state(published_member) != _directory_state(member_state)
             or _inode_identity(os.fstat(staging_fd)) != staging_identity
         ):
             raise DenseScaleManifestError("published bundle member identity drifted")
@@ -1452,6 +1482,16 @@ def write_countdown_thompson_dense_scale_bundle(
             or _inode_identity(final_target_path_state) != staging_identity
         ):
             raise DenseScaleManifestError("published bundle lexical path drifted")
+        final_member = _require_pinned_member_bytes(
+            directory_fd=staging_fd,
+            member_fd=member_fd,
+            expected_raw=raw,
+            error_message="published bundle final member check drifted",
+        )
+        if member_state is None or _directory_state(final_member) != _directory_state(
+            member_state
+        ):
+            raise DenseScaleManifestError("published bundle final member check drifted")
         return target
     except FileExistsError:
         raise
@@ -1460,26 +1500,23 @@ def write_countdown_thompson_dense_scale_bundle(
     except OSError as error:
         raise DenseScaleManifestError("bundle descriptor publication failed") from error
     finally:
-        if (
-            not published
-            and parent_fd >= 0
-            and staging_fd >= 0
-            and staging_name is not None
-            and staging_identity is not None
-        ):
-            _cleanup_pinned_staging_directory(
-                parent_fd=parent_fd,
-                staging_fd=staging_fd,
-                staging_name=staging_name,
-                staging_identity=staging_identity,
-                member_state=member_state,
-            )
-        if member_fd >= 0:
-            os.close(member_fd)
-        if staging_fd >= 0:
-            os.close(staging_fd)
-        if parent_fd >= 0:
-            os.close(parent_fd)
+        try:
+            if (
+                not published
+                and parent_fd >= 0
+                and staging_fd >= 0
+                and staging_name is not None
+                and staging_identity is not None
+            ):
+                _cleanup_pinned_staging_directory(
+                    parent_fd=parent_fd,
+                    staging_fd=staging_fd,
+                    staging_name=staging_name,
+                    staging_identity=staging_identity,
+                    member_state=member_state,
+                )
+        finally:
+            _close_descriptors_best_effort(member_fd, staging_fd, parent_fd)
 
 
 def _self_test(repository_root: Path | None) -> dict[str, Any]:

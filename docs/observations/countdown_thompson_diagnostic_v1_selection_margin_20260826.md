@@ -199,27 +199,39 @@ tracebackなしのcanonical `INVALID`へ閉じた。
 `input_provenance`がexactly equalだった。したがってfindingはauthorityとvalidation
 surfaceを修正したが、selection-margin結果は変更していない。
 
+更新headのfresh rereviewはさらに、on-disk module/HEAD blobの照合だけでは実行中の
+loaded module originをbindしないP1を見つけた。Schema v2はselection audit自身、
+post-hoc audit、diagnostic analyzer、regular-file publication、trace、およびpackage
+modulesのloaded `__file__`をrepository内のregular clean-HEAD blobへ結び、8-file
+runtime source receiptをmaterializeする。Historical module originとdisplaced post-hoc
+originはinput open前にfail closedするtestを追加した。
+
+このbindingはordinary Python importとclean-HEAD file bytesの範囲である。Hostile
+interpreter、実行中code objectのin-memory mutation、kernel compromiseをattestしない。
+Schema v2 fresh replayもv1と`reductions`、`posthoc_revalidation`、`input_provenance`が
+exactly equalであり、数値結果は変わっていない。
+
 ## Provenance and validation
 
 - frozen design revision:
   `997345a6b466d9bc824672921cd2e6bd2dc43668`
 - audit source revision:
-  `64fda29cac2499bf42e749d721d3c08742bac038`
+  `09c7ce34d8576deffbd2bc91b22771db4b7950db`
 - audit module SHA-256:
-  `c5e4a6f96605258d2969410fb19245674d3a5062d1d1b72a34fb5eabedd3a441`
+  `6eb2598e0ca98cdcc0f77219169a0b642b1760be871a4266c24e0b44c0e8f294`
 - frozen design SHA-256:
   `9c92292769b0395c7c818fe4032713b4018ecd319ba4b9d583d98e557c4a5509`
 - receipt deterministic digest:
-  `5457effcf523d9a36d8824e86e17c067c3a3af1d5f1056255c1ff9ba726a406c`
+  `4b21ce04fe9c41b2553eea13925b1ffa17a9321c4f13c48c653a43c0d7a25f38`
 - receipt raw SHA-256:
-  `70504c87e43d42bf786727ddca6822f6f45366c664eff153e99f2a65895d2d97`
-- receipt byte count: 2,000,231
+  `14e87c3fac746918546ecb9e63e75822bab464899d4977452ce16eae60e93828`
+- receipt byte count: 2,002,183
 - existing post-hoc frozen reductions and supplemental validation freshly
   recomputed exactly: `PASS`
 - normal `/Users/...` inputs and lowercase `/users/...` aliases produced
   byte-identical receipts: `PASS`
-- focused old/new audit tests: 35/35 `PASS`
-- full repository validation: 596 tests, artifact verification, and every CLI
+- focused old/new audit tests: 37/37 `PASS`
+- full repository validation: 598 tests, artifact verification, and every CLI
   self-test `PASS`
 
 Canonical receipt:

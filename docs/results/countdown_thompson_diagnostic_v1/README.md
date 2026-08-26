@@ -4,13 +4,13 @@
 
 `selection_margin_v1.json` is the canonical read-only selection-margin receipt.
 
-- schema: `qmc-bmgs-countdown-thompson-selection-margin/v1`
+- schema: `qmc-bmgs-countdown-thompson-selection-margin/v2`
 - deterministic digest:
-  `5457effcf523d9a36d8824e86e17c067c3a3af1d5f1056255c1ff9ba726a406c`
+  `4b21ce04fe9c41b2553eea13925b1ffa17a9321c4f13c48c653a43c0d7a25f38`
 - raw SHA-256:
-  `70504c87e43d42bf786727ddca6822f6f45366c664eff153e99f2a65895d2d97`
-- byte count: 2,000,231
-- source revision: `64fda29cac2499bf42e749d721d3c08742bac038`
+  `14e87c3fac746918546ecb9e63e75822bab464899d4977452ce16eae60e93828`
+- byte count: 2,002,183
+- source revision: `09c7ce34d8576deffbd2bc91b22771db4b7950db`
 - handoff decision: `STOP_REPAIR_NO_LOCKED_128_RUN`
 
 It reconstructs the recorded posterior before each feedback-informed
@@ -24,6 +24,10 @@ surface, and imported publication failures escaped the canonical CLI error
 boundary. The source revision above pins every frozen identity in code,
 cross-checks stable post-hoc authority metadata, validates this tracked receipt
 in the repository suite, and returns canonical `INVALID` for those failures.
+Schema v2 additionally binds the loaded audit, post-hoc, analyzer, publication,
+trace, and package import origins to regular clean-HEAD blobs. This is an
+ordinary-Python import/file-byte claim; it does not attest a hostile interpreter
+or in-memory code mutation.
 
 ## Mechanism and outcome reductions
 

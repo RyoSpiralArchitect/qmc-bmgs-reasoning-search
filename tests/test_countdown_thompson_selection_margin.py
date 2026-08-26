@@ -673,14 +673,14 @@ class SelectionMarginPublishedReceiptTests(unittest.TestCase):
             / "docs/results/countdown_thompson_diagnostic_v1/selection_margin_v1.json"
         )
         expected_digest = (
-            "5457effcf523d9a36d8824e86e17c067c3a3af1d5f1056255c1ff9ba726a406c"
+            "4b21ce04fe9c41b2553eea13925b1ffa17a9321c4f13c48c653a43c0d7a25f38"
         )
         expected_raw_sha256 = (
-            "70504c87e43d42bf786727ddca6822f6f45366c664eff153e99f2a65895d2d97"
+            "14e87c3fac746918546ecb9e63e75822bab464899d4977452ce16eae60e93828"
         )
-        expected_source_revision = "64fda29cac2499bf42e749d721d3c08742bac038"
+        expected_source_revision = "09c7ce34d8576deffbd2bc91b22771db4b7950db"
         expected_module_sha256 = (
-            "c5e4a6f96605258d2969410fb19245674d3a5062d1d1b72a34fb5eabedd3a441"
+            "6eb2598e0ca98cdcc0f77219169a0b642b1760be871a4266c24e0b44c0e8f294"
         )
         expected_design_sha256 = (
             "9c92292769b0395c7c818fe4032713b4018ecd319ba4b9d583d98e557c4a5509"
@@ -695,7 +695,7 @@ class SelectionMarginPublishedReceiptTests(unittest.TestCase):
             if key != "deterministic_digest"
         }
         self.assertEqual(raw, (canonical_json(payload) + "\n").encode())
-        self.assertEqual(len(raw), 2_000_231)
+        self.assertEqual(len(raw), 2_002_183)
         self.assertEqual(hashlib.sha256(raw).hexdigest(), expected_raw_sha256)
         self.assertEqual(payload["deterministic_digest"], expected_digest)
         self.assertEqual(sha256_json(core), expected_digest)
@@ -736,6 +736,21 @@ class SelectionMarginPublishedReceiptTests(unittest.TestCase):
         self.assertEqual(source["source_revision"], expected_source_revision)
         self.assertEqual(source["audit_module_sha256"], expected_module_sha256)
         self.assertEqual(source["frozen_design_sha256"], expected_design_sha256)
+        self.assertEqual(
+            source["runtime_binding_scope"],
+            "ordinary_python_import_origins_and_clean_head_file_bytes/v1; "
+            "hostile_interpreter_and_in_memory_code_mutation_excluded",
+        )
+        self.assertEqual(
+            set(source["runtime_source_files"]),
+            {name for name, _ in margin.RUNTIME_SOURCE_SURFACE},
+        )
+        self.assertEqual(
+            source["runtime_source_files"][
+                "qmc_bmgs.experiments.countdown_thompson_selection_margin"
+            ]["sha256"],
+            expected_module_sha256,
+        )
         module_raw = (repository / margin.MODULE_RELATIVE_PATH).read_bytes()
         design_raw = (repository / margin.DESIGN_RELATIVE_PATH).read_bytes()
         self.assertEqual(hashlib.sha256(module_raw).hexdigest(), expected_module_sha256)

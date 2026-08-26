@@ -1356,9 +1356,12 @@ def write_countdown_thompson_dense_scale_bundle(
     """Create one closed preregistration directory without overwriting.
 
     Publication is relative to one pinned parent descriptor.  The staging
-    directory and its only member remain open and identity-checked through the
-    atomic no-replace rename, so rotating a lexical path can never produce a
-    successful return for attacker-controlled bytes.
+    directory and its only member remain open through the atomic no-replace
+    rename.  Before descriptor cleanup, a final collective observation checks
+    the canonical bytes, pinned identities, and descriptor-relative plus
+    lexical target binding.  As with any path-returning API, this observation
+    does not freeze same-credential mutations made after an object's final
+    check.
     """
 
     target = Path(destination)
@@ -1436,9 +1439,7 @@ def write_countdown_thompson_dense_scale_bundle(
             expected_raw=raw,
             error_message="staging bundle closure is invalid",
         )
-        if (
-            set(os.listdir(staging_fd)) != {BUNDLE_FILENAME}
-        ):
+        if set(os.listdir(staging_fd)) != {BUNDLE_FILENAME}:
             raise DenseScaleManifestError("staging bundle closure is invalid")
         os.fsync(staging_fd)
 
@@ -1476,13 +1477,6 @@ def write_countdown_thompson_dense_scale_bundle(
         os.fsync(staging_fd)
         os.fsync(parent_fd)
 
-        final_parent_path_state = parent.lstat()
-        final_target_path_state = target.lstat()
-        if (
-            _inode_identity(final_parent_path_state) != _inode_identity(opened_parent)
-            or _inode_identity(final_target_path_state) != staging_identity
-        ):
-            raise DenseScaleManifestError("published bundle lexical path drifted")
         final_member = _require_pinned_member_bytes(
             directory_fd=staging_fd,
             member_fd=member_fd,
@@ -1491,6 +1485,28 @@ def write_countdown_thompson_dense_scale_bundle(
         )
         if member_state is None or _directory_state(final_member) != _directory_state(
             member_state
+        ):
+            raise DenseScaleManifestError("published bundle final member check drifted")
+        final_target_state = _entry_state(parent_fd, target.name)
+        final_parent_path_state = parent.lstat()
+        final_target_path_state = target.lstat()
+        if (
+            final_target_state is None
+            or _inode_identity(final_target_state) != staging_identity
+            or _inode_identity(final_parent_path_state) != _inode_identity(opened_parent)
+            or _inode_identity(final_target_path_state) != staging_identity
+            or _entry_state(parent_fd, staging_name) is not None
+            or set(os.listdir(staging_fd)) != {BUNDLE_FILENAME}
+        ):
+            raise DenseScaleManifestError(
+                "published bundle final target binding drifted"
+            )
+        final_path_member = _entry_state(staging_fd, BUNDLE_FILENAME)
+        if (
+            final_path_member is None
+            or _directory_state(final_path_member) != _directory_state(final_member)
+            or _directory_state(os.fstat(member_fd)) != _directory_state(final_member)
+            or _inode_identity(os.fstat(staging_fd)) != staging_identity
         ):
             raise DenseScaleManifestError("published bundle final member check drifted")
         return target

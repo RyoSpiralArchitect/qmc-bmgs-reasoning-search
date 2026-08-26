@@ -646,6 +646,54 @@ class DenseScaleManifestTests(unittest.TestCase):
             b"X",
         )
 
+    def test_writer_rejects_target_rotation_at_final_member_check(self) -> None:
+        destination = self.root / "written"
+        parked = self.root / "parked-legitimate-bundle"
+        real_require = module._require_pinned_member_bytes
+        require_calls = 0
+
+        def rotate_on_final_check(**kwargs: object) -> os.stat_result:
+            nonlocal require_calls
+            require_calls += 1
+            if require_calls == 3:
+                destination.rename(parked)
+                destination.mkdir(mode=0o700)
+                (destination / "attacker-owned.txt").write_text(
+                    "attacker",
+                    encoding="utf-8",
+                )
+            return real_require(**kwargs)  # type: ignore[arg-type]
+
+        with (
+            patch.object(
+                module,
+                "build_countdown_thompson_dense_scale_payload",
+                return_value=copy.deepcopy(self.payload),
+            ),
+            patch.object(
+                module,
+                "_require_pinned_member_bytes",
+                side_effect=rotate_on_final_check,
+            ),
+            self.assertRaisesRegex(
+                module.DenseScaleManifestError,
+                "published bundle final target binding drifted",
+            ),
+        ):
+            module.write_countdown_thompson_dense_scale_bundle(
+                destination,
+                repository_root=self.repository_root,
+            )
+        self.assertEqual(require_calls, 3)
+        self.assertEqual(
+            set(destination.iterdir()),
+            {destination / "attacker-owned.txt"},
+        )
+        self.assertEqual(
+            set(parked.iterdir()),
+            {parked / module.BUNDLE_FILENAME},
+        )
+
     def test_writer_never_returns_success_for_rotated_staging_bytes(self) -> None:
         destination = self.root / "written"
         parked_name = "parked-legitimate-staging"

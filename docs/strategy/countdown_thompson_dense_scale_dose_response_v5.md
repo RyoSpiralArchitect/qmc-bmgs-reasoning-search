@@ -98,11 +98,16 @@ and every failure stays strictly below one.  The scale therefore changes the
 strength of failure feedback without allowing a failed terminal to outrank an
 exact success by terminal value alone.
 
-Anchor equivalence uses the frozen projection
-`countdown_track_a_anchor_equivalence/v1`.  For each matched task, source,
-exploration seed, proposal, and budget, both traces must first pass canonical
-validation and two-stage byte replay under their own sealed method.  The
-projection then:
+Anchor equivalence is a pre-execution, nondiagnostic implementation
+qualification, not a development-matrix comparison.  It uses exactly one
+public fixture: inputs `(1,2,3,4,5,6)`, target `720`, heuristic proposal,
+exploration seed `7168`, and both `iid` and `sobol`.  Its budget profile id is
+`dense_scale_anchor_fixture_verifier3`, its primary axis is `verifier_calls`,
+its verifier-call limit is `3`, and each of the other six work-axis limits is
+`20000`.  For each source, run only v2 versus v5 scale zero and v3 versus v5
+scale one.  All eight fixture traces must pass canonical validation and
+two-stage byte replay under their own method before applying the frozen
+projection `countdown_track_a_anchor_equivalence/v1`.  The projection then:
 
 1. removes only the top-level deterministic/final event digests and each
    event's hash-link fields;
@@ -127,11 +132,39 @@ projection then:
    kind, charge receipt, payload field, terminal value, posterior update,
    proposal/node/point material, stop event, and ledger field/component.
 
-The two resulting canonical projections must be exactly equal.  A projection
-or replay mismatch invalidates the experiment before terminal errors or
-successes are read.  This definition deliberately normalizes only the schema
-and evidence fields that differ by construction; it does not permit an
-analysis-time choice of fields.
+The two resulting canonical projections must be exactly equal.  The frozen
+qualification receipt records, for each source and anchor pair, the authority
+trace SHA-256, scaled trace SHA-256, and common projection digest.  Raw fixture
+traces are not persisted.  Every execution environment must reproduce all four
+receipt rows before opening development results.  A digest, projection, or
+replay mismatch invalidates the experiment before terminal errors or successes
+are read.
+
+```text
+iid binary
+  authority=1a712c7b766dc5e6aa138edb718432636fac838f75e7ca1e4274fd17a4bca9e4
+  scaled=0d0dc2eb4c52697e78bcb744a48c3a407cac4dc3025b0b9f393e08144efc320b
+  projection=18534a6eb89bb0a23cf0c6de104f7d1ed810eb4c5a662377fb4957d3690ba8ff
+iid reciprocal
+  authority=036ab50644b600cacf8488f74210c9e9725db441b8e8a3b78e90561eb2445763
+  scaled=0657acaf773f995a5c624bb18ad7f45cc0b8349edfd037222b04d50a657fcf22
+  projection=f0628fdeda9f93f41ed6ad60f4718738b6cfad3f0ea967c6f4b3391a2d757310
+sobol binary
+  authority=651d1c5a6dd5395dbb54768eeea3c9a8f2e6d6a1f60e399301120dc59f93531f
+  scaled=2058e56a97de725c61b78efc338c75c868386fe6fd1e6879a0d5cf32c2f81b0f
+  projection=75c80b1a60ec85328ee9a88259c81da13ac81ea3ea8719a5e5049754350a482c
+sobol reciprocal
+  authority=6be047dad38bfbee09e42ca2c07e88df75e1f493efdecc171b1a26a4f7852d31
+  scaled=e1136f466718b762cbd50549bbecb8fd9c14553361d54461ee8883739ba6596c
+  projection=5cbccc2eb19780909b3942ec509ad61424f12d401fff03df071909600a742b4b
+```
+
+No v2 or v3 trace may be executed on any of the 12 development tasks.  Such a
+trace would be an unregistered, outcome-bearing extra cell.  The development
+schedule contains exactly the 384 v5 cells below; the fixture qualification is
+outside that schedule and does not authorize retries or auxiliary controls.
+This definition deliberately normalizes only schema/evidence overhead fixed
+before the experiment and leaves no analysis-time choice of fields.
 
 V5 must use a new method-spec schema and terminal-rule id.  Backup events must
 record the plain-integer scale, absolute error, exact numerator and denominator,
@@ -162,8 +195,9 @@ seed addition, or early stopping is permitted.
 
 Analysis proceeds in this order:
 
-1. provenance, exact-cell closure, budget closure, and two-stage byte replay;
-2. scale-0/scale-1 anchor equivalence checks;
+1. reproduce the sealed nondiagnostic anchor-qualification receipt without
+   opening development material;
+2. provenance, exact-cell closure, budget closure, and two-stage byte replay;
 3. mechanism reductions that do not read terminal success or error;
 4. terminal-error reductions;
 5. exact-success reductions and the development handoff rule.

@@ -815,14 +815,14 @@ class SelectionMarginPublishedReceiptTests(unittest.TestCase):
             / "docs/results/countdown_thompson_diagnostic_v1/selection_margin_v1.json"
         )
         expected_digest = (
-            "8efff0561f1ba65bc45580573ba422371bfaefe285269434ca785bebc83fc252"
+            "fff949f9552b1898013b4b61fe515e9d34ecc5d5a1edc192c21eff264f5e9e09"
         )
         expected_raw_sha256 = (
-            "8414267365ef8b172bb6ebef6a9886a60560058079ae93d16f3d0c6c3e67afc0"
+            "5e6f72bf1cbc2c8a5fc0376311a216b034d8462cb0ae3125cb3fd9dc9550a0f1"
         )
-        expected_source_revision = "a14f0ffeacf87a37bebc51633f9483b2b06c474b"
+        expected_source_revision = "b1594f61f1a7be99427a41df3d0309d5b3eb3a21"
         expected_module_sha256 = (
-            "1406ad7e0eb94331ac3142038d9e509fde9aae0a3f5644b30ad9b25a9604f8dd"
+            "1b4bdfcfcf8dd85b124c60f5d150b6b4151ebd154b59db993ecf796eddbc3d28"
         )
         expected_design_sha256 = (
             "9c92292769b0395c7c818fe4032713b4018ecd319ba4b9d583d98e557c4a5509"
@@ -837,7 +837,7 @@ class SelectionMarginPublishedReceiptTests(unittest.TestCase):
             if key != "deterministic_digest"
         }
         self.assertEqual(raw, (canonical_json(payload) + "\n").encode())
-        self.assertEqual(len(raw), 2_003_163)
+        self.assertEqual(len(raw), 2_003_319)
         self.assertEqual(hashlib.sha256(raw).hexdigest(), expected_raw_sha256)
         self.assertEqual(payload["deterministic_digest"], expected_digest)
         self.assertEqual(sha256_json(core), expected_digest)
@@ -880,9 +880,11 @@ class SelectionMarginPublishedReceiptTests(unittest.TestCase):
         self.assertEqual(source["frozen_design_sha256"], expected_design_sha256)
         self.assertEqual(
             source["runtime_binding_scope"],
-            "safe_path_source_file_loader_clean_head_empty_bytecode_prefix/v2; "
-            "hostile_interpreter_import_hooks_concurrent_pre_attestation_cache_"
-            "deletion_in_memory_code_mutation_and_kernel_compromise_excluded",
+            "safe_path_source_file_loader_clean_head_empty_bytecode_prefix/v3; "
+            "hostile_interpreter_import_hooks_transient_or_concurrent_pre_"
+            "attestation_filesystem_mutation_including_source_replacement_"
+            "restoration_or_cache_deletion_in_memory_code_mutation_and_kernel_"
+            "compromise_excluded",
         )
         self.assertEqual(
             source["runtime_import_policy"],

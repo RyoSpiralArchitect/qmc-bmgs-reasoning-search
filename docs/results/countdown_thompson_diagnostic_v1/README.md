@@ -4,13 +4,13 @@
 
 `selection_margin_v1.json` is the canonical read-only selection-margin receipt.
 
-- schema: `qmc-bmgs-countdown-thompson-selection-margin/v3`
+- schema: `qmc-bmgs-countdown-thompson-selection-margin/v4`
 - deterministic digest:
-  `8efff0561f1ba65bc45580573ba422371bfaefe285269434ca785bebc83fc252`
+  `fff949f9552b1898013b4b61fe515e9d34ecc5d5a1edc192c21eff264f5e9e09`
 - raw SHA-256:
-  `8414267365ef8b172bb6ebef6a9886a60560058079ae93d16f3d0c6c3e67afc0`
-- byte count: 2,003,163
-- source revision: `a14f0ffeacf87a37bebc51633f9483b2b06c474b`
+  `5e6f72bf1cbc2c8a5fc0376311a216b034d8462cb0ae3125cb3fd9dc9550a0f1`
+- byte count: 2,003,319
+- source revision: `b1594f61f1a7be99427a41df3d0309d5b3eb3a21`
 - handoff decision: `STOP_REPAIR_NO_LOCKED_128_RUN`
 
 It reconstructs the recorded posterior before each feedback-informed
@@ -44,9 +44,15 @@ rmdir "$cache_prefix"
 ```
 
 This binds ordinary source-file imports, a statically present bytecode-cache
-substitution, and clean-HEAD file bytes. It does not attest a hostile interpreter
-or import hook, concurrent cache deletion before the first attestation,
-in-memory code mutation, or kernel compromise.
+substitution, and clean-HEAD file bytes observed at attestation. A final fresh
+review demonstrated that source modified for import and restored before the
+first attestation cannot be distinguished by this in-process scheme. Schema v4
+therefore explicitly excludes transient or concurrent pre-attestation
+filesystem mutation, including source replacement/restoration and cache
+deletion. It also excludes a hostile interpreter or import hook, in-memory code
+mutation, and kernel compromise. Closing those exclusions requires a separately
+trusted bootstrap or stronger platform root of trust; this receipt makes no such
+claim.
 
 ## Mechanism and outcome reductions
 

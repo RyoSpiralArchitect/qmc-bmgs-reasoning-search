@@ -229,27 +229,37 @@ concurrent cache deletion、in-memory code mutation、kernel compromiseをattest
 Schema v3のnormal/lowercase fresh replayもv2と`reductions`、
 `posthoc_revalidation`、`input_provenance`、handoff decisionがexactly equalだった。
 
+Schema v3修正後のfresh rereviewはさらに、sourceをimport時だけ一時改変し、実行後に
+clean HEADへrestoreしてからattestationするとmodified sentinelを保持したまま`PASS`
+できるP1を再現した。これはin-process self-attestationがpre-import filesystem history
+を証明できない境界である。Schema v4はこれを閉じたと数えず、transient/concurrent
+pre-attestation filesystem mutation（source replacement/restorationとcache deletionを
+含む）をmachine-readable scopeとclaim boundaryの両方で明示的に除外する。これを
+閉じるにはseparately trusted bootstrapまたはplatform root of trustが必要であり、
+このreceiptはそのclaimをしない。V4 normal/lowercase replayもv3と上記4 payloadが
+exactly equalだった。
+
 ## Provenance and validation
 
 - frozen design revision:
   `997345a6b466d9bc824672921cd2e6bd2dc43668`
 - audit source revision:
-  `a14f0ffeacf87a37bebc51633f9483b2b06c474b`
+  `b1594f61f1a7be99427a41df3d0309d5b3eb3a21`
 - audit module SHA-256:
-  `1406ad7e0eb94331ac3142038d9e509fde9aae0a3f5644b30ad9b25a9604f8dd`
+  `1b4bdfcfcf8dd85b124c60f5d150b6b4151ebd154b59db993ecf796eddbc3d28`
 - frozen design SHA-256:
   `9c92292769b0395c7c818fe4032713b4018ecd319ba4b9d583d98e557c4a5509`
 - receipt deterministic digest:
-  `8efff0561f1ba65bc45580573ba422371bfaefe285269434ca785bebc83fc252`
+  `fff949f9552b1898013b4b61fe515e9d34ecc5d5a1edc192c21eff264f5e9e09`
 - receipt raw SHA-256:
-  `8414267365ef8b172bb6ebef6a9886a60560058079ae93d16f3d0c6c3e67afc0`
-- receipt byte count: 2,003,163
+  `5e6f72bf1cbc2c8a5fc0376311a216b034d8462cb0ae3125cb3fd9dc9550a0f1`
+- receipt byte count: 2,003,319
 - existing post-hoc frozen reductions and supplemental validation freshly
   recomputed exactly: `PASS`
 - normal `/Users/...` inputs and lowercase `/users/...` aliases produced
   byte-identical receipts: `PASS`
-- focused old/new audit tests: 40/40 `PASS`
-- full repository validation: 601 tests, artifact verification, and every CLI
+- focused old/new audit tests: 41/41 `PASS`
+- full repository validation: 602 tests, artifact verification, and every CLI
   self-test `PASS`
 
 Canonical receipt:

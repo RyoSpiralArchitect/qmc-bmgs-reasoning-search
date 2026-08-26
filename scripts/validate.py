@@ -68,6 +68,8 @@ def main() -> None:
         "qmc_bmgs.experiments.countdown_thompson_diagnostic_runner",
         "qmc_bmgs.experiments.countdown_thompson_diagnostic_analysis",
         "qmc_bmgs.experiments.countdown_thompson_regular_file_publication_v2",
+        "qmc_bmgs.experiments.countdown_thompson_posthoc_mechanism",
+        "qmc_bmgs.experiments.countdown_thompson_selection_margin",
     ):
         _run([sys.executable, "-m", module, "--self-test"], cwd=outside)
     print("repository validation: PASS")

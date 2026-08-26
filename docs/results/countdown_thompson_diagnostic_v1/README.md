@@ -1,5 +1,61 @@
 # Countdown Thompson diagnostic v1 post-hoc receipts
 
+## Selection-margin sensitivity
+
+`selection_margin_v1.json` is the canonical read-only selection-margin receipt.
+
+- schema: `qmc-bmgs-countdown-thompson-selection-margin/v4`
+- deterministic digest:
+  `fff949f9552b1898013b4b61fe515e9d34ecc5d5a1edc192c21eff264f5e9e09`
+- raw SHA-256:
+  `5e6f72bf1cbc2c8a5fc0376311a216b034d8462cb0ae3125cb3fd9dc9550a0f1`
+- byte count: 2,003,319
+- source revision: `b1594f61f1a7be99427a41df3d0309d5b3eb3a21`
+- handoff decision: `STOP_REPAIR_NO_LOCKED_128_RUN`
+
+It reconstructs the recorded posterior before each feedback-informed
+selection, reports exact-rational local scale boundaries, and pairs v2/v3 only
+while their pre-decision surface remains identical. It evaluates no terminal
+performance counterfactual.
+
+A fresh review of the initial PR found that caller-supplied hashes could stand
+in for the frozen anchors, the tracked receipt itself was absent from the test
+surface, and imported publication failures escaped the canonical CLI error
+boundary. The source revision above pins every frozen identity in code,
+cross-checks stable post-hoc authority metadata, validates this tracked receipt
+in the repository suite, and returns canonical `INVALID` for those failures.
+Schema v2 additionally bound the loaded audit, post-hoc, analyzer, publication,
+trace, and package import origins to regular clean-HEAD blobs. A second fresh
+rereview reproduced a timestamp-based `.pyc` substitution that retained the
+clean `.py` origin. Schema v3 therefore requires audit mode to run with `-P -B`
+and a dedicated empty mode-`0700` `-X pycache_prefix=...`; all eight project
+modules must use the exact `SourceFileLoader`, have cache paths inside that
+prefix, and have no cache file. The check runs before any frozen input path is
+resolved.
+
+The required interpreter envelope is:
+
+```sh
+cache_prefix="$(mktemp -d /tmp/qmc-bmgs-selection-margin-pycache.XXXXXX)"
+PYTHONPATH="$PWD/src" python3 -P -B -X "pycache_prefix=$cache_prefix" \
+  -m qmc_bmgs.experiments.countdown_thompson_selection_margin \
+  <all frozen path and digest arguments>
+rmdir "$cache_prefix"
+```
+
+This binds ordinary source-file imports, a statically present bytecode-cache
+substitution, and clean-HEAD file bytes observed at attestation. A final fresh
+review demonstrated that source modified for import and restored before the
+first attestation cannot be distinguished by this in-process scheme. Schema v4
+therefore explicitly excludes transient or concurrent pre-attestation
+filesystem mutation, including source replacement/restoration and cache
+deletion. It also excludes a hostile interpreter or import hook, in-memory code
+mutation, and kernel compromise. Closing those exclusions requires a separately
+trusted bootstrap or stronger platform root of trust; this receipt makes no such
+claim.
+
+## Mechanism and outcome reductions
+
 `posthoc_mechanism_v3.json` is the canonical receipt.
 
 - schema: `qmc-bmgs-countdown-thompson-posthoc-mechanism/v3`
@@ -24,6 +80,6 @@ normal `/Users/...` input paths and produced byte-identical v3 receipts. V1,
 v2, and v3 frozen reductions are identical; v2 and v3 supplemental values are
 identical.
 
-Neither receipt authorizes a retry, a provider call, a new outcome-bearing
-cohort, or locked-128 execution. Integrity `PASS` is provenance, replay,
-coverage, and deterministic reduction closure only.
+No receipt in this directory authorizes a retry, a provider call, a new
+outcome-bearing cohort, or locked-128 execution. Integrity `PASS` is
+provenance, replay, coverage, and deterministic reduction closure only.

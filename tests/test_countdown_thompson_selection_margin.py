@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import importlib._bootstrap_external as _bootstrap_external
 import io
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr
@@ -488,6 +492,31 @@ def _cli_arguments(root: Path) -> list[str]:
     ]
 
 
+def _run_source_only_python(
+    repository: Path,
+    bytecode_prefix: Path,
+    code: str,
+) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(repository / "src")
+    return subprocess.run(
+        [
+            sys.executable,
+            "-P",
+            "-B",
+            "-X",
+            f"pycache_prefix={bytecode_prefix}",
+            "-c",
+            code,
+        ],
+        cwd=repository,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 class SelectionMarginReceiptTests(unittest.TestCase):
     def test_build_receipt_composes_revalidation_and_reduction(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -578,6 +607,47 @@ class SelectionMarginReceiptTests(unittest.TestCase):
                     source_side_effect=[fixture["source"], changed],
                 )
 
+    def test_runtime_policy_precedes_frozen_input_resolution(self) -> None:
+        repository = Path("/synthetic/repository")
+        resolved_labels: list[str] = []
+
+        def resolve(path: Path, label: str, *, directory: bool) -> Path:
+            del directory
+            resolved_labels.append(label)
+            if label != "repository root":
+                raise AssertionError("frozen input resolved before runtime policy")
+            return path
+
+        with (
+            patch.object(posthoc, "_resolved_existing_path", side_effect=resolve),
+            patch.object(
+                margin,
+                "_source_attestation",
+                side_effect=margin.SelectionMarginAuditError(
+                    "runtime bytecode-cache prefix drifted"
+                ),
+            ),
+            self.assertRaisesRegex(
+                margin.SelectionMarginAuditError,
+                "runtime bytecode-cache prefix drifted",
+            ),
+        ):
+            margin.build_receipt(
+                Path("/never/open/artifact.json"),
+                Path("/never/open/bundle"),
+                Path("/never/open/authorization.json"),
+                margin.FROZEN_AUTHORIZATION_DIGEST,
+                margin.FROZEN_AUTHORIZATION_REVISION,
+                Path("/never/open/summary.json"),
+                margin.FROZEN_SUMMARY_DIGEST,
+                margin.FROZEN_ARTIFACT_COMMIT_DIGEST,
+                Path("/never/open/posthoc.json"),
+                margin.FROZEN_POSTHOC_DIGEST,
+                margin.FROZEN_POSTHOC_RAW_SHA256,
+                repository_root=repository,
+            )
+        self.assertEqual(resolved_labels, ["repository root"])
+
     def test_published_posthoc_raw_hash_drift_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = _receipt_fixture(Path(raw))
@@ -624,6 +694,73 @@ class SelectionMarginReceiptTests(unittest.TestCase):
                 ),
             ):
                 margin._runtime_source_receipts(repository, "HEAD")
+
+    def test_runtime_import_policy_accepts_empty_no_write_namespace(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as raw:
+            prefix = Path(raw) / "cache"
+            prefix.mkdir(mode=0o700)
+            result = _run_source_only_python(
+                repository,
+                prefix,
+                "import json; "
+                "from qmc_bmgs.experiments import "
+                "countdown_thompson_selection_margin as margin; "
+                "receipt, _ = margin._runtime_import_policy(); "
+                "print(json.dumps(receipt, sort_keys=True))",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(tuple(prefix.iterdir()), ())
+        self.assertEqual(
+            json.loads(result.stdout),
+            {
+                "bytecode_cache_prefix_empty": True,
+                "bytecode_cache_prefix_mode": "0700",
+                "bytecode_cache_prefix_owner": "effective_user",
+                "bytecode_writes_disabled": True,
+                "import_safe_path": True,
+                "loader_policy": "exact_source_file_loader_no_cache/v1",
+            },
+        )
+
+    def test_runtime_binding_rejects_loaded_timestamp_bytecode_cache(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        source = repository / posthoc.MODULE_RELATIVE_PATH
+        with tempfile.TemporaryDirectory() as raw:
+            prefix = Path(raw) / "cache"
+            prefix.mkdir(mode=0o700)
+            modified = source.read_text() + "\nPYC_REVIEW_SENTINEL = True\n"
+            code = compile(modified, str(source), "exec")
+            metadata = source.stat()
+            pyc = _bootstrap_external._code_to_timestamp_pyc(
+                code,
+                int(metadata.st_mtime),
+                metadata.st_size,
+            )
+            relative = source.resolve().relative_to(source.resolve().anchor)
+            cached = (prefix / relative).with_name(
+                f"{source.stem}.{sys.implementation.cache_tag}.pyc"
+            )
+            cached.parent.mkdir(parents=True)
+            cached.write_bytes(pyc)
+            result = _run_source_only_python(
+                repository,
+                prefix,
+                "from qmc_bmgs.experiments import "
+                "countdown_thompson_selection_margin as margin; "
+                "assert margin.posthoc.PYC_REVIEW_SENTINEL; "
+                "\ntry:\n"
+                " margin._runtime_import_policy()\n"
+                "except margin.SelectionMarginAuditError as error:\n"
+                " print(error)\n"
+                "else:\n"
+                " raise AssertionError('forged timestamp bytecode was accepted')",
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.strip(),
+            "runtime bytecode-cache prefix must be empty, owned, and mode 0700",
+        )
 
     def test_self_test_opens_no_diagnostic(self) -> None:
         with patch.object(margin, "build_receipt") as build:

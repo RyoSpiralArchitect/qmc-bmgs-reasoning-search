@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.machinery
 import math
 import os
 import stat
@@ -25,7 +26,7 @@ from qmc_bmgs.experiments import countdown_thompson_posthoc_mechanism as posthoc
 from qmc_bmgs.substrate.trace import canonical_json, sha256_json
 
 
-SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-selection-margin/v2"
+SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-selection-margin/v3"
 MODULE_RELATIVE_PATH = Path(
     "src/qmc_bmgs/experiments/countdown_thompson_selection_margin.py"
 )
@@ -37,8 +38,11 @@ CLAIM_BOUNDARY = (
     "Integrity PASS is provenance, replay, reconstruction, pairing, and "
     "reduction closure only; scale boundaries do not predict action quality, "
     "terminal performance, retry success, or locked-128 behavior. Runtime "
-    "source binding covers ordinary Python imports and clean-HEAD file bytes, "
-    "not a hostile interpreter or in-memory code mutation."
+    "source binding requires safe-path SourceFileLoader imports, disabled "
+    "bytecode writes, an empty dedicated bytecode-cache prefix, and clean-HEAD "
+    "file bytes. It does not attest a hostile interpreter or import hook, "
+    "concurrent pre-attestation cache deletion, in-memory code mutation, or "
+    "kernel compromise."
 )
 HANDOFF_DECISION = posthoc.HANDOFF_DECISION
 METHODS = posthoc.METHODS
@@ -1187,18 +1191,72 @@ def _git(repository: Path, *arguments: str) -> bytes:
         raise SelectionMarginAuditError("git source attestation failed") from error
 
 
+def _runtime_import_policy() -> tuple[dict[str, object], Path]:
+    """Require an empty, no-write bytecode namespace for project imports."""
+
+    prefix_raw = sys.pycache_prefix
+    if (
+        getattr(sys.flags, "safe_path", 0) != 1
+        or not sys.dont_write_bytecode
+        or type(prefix_raw) is not str
+    ):
+        raise SelectionMarginAuditError(
+            "runtime requires -P -B and a dedicated -X pycache_prefix"
+        )
+    prefix = Path(prefix_raw)
+    if not prefix.is_absolute():
+        raise SelectionMarginAuditError(
+            "runtime bytecode-cache prefix must be absolute"
+        )
+    try:
+        metadata = prefix.lstat()
+        resolved = prefix.resolve(strict=True)
+        entries = tuple(prefix.iterdir())
+    except OSError as error:
+        raise SelectionMarginAuditError(
+            "runtime bytecode-cache prefix could not be attested"
+        ) from error
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+        or metadata.st_uid != os.geteuid()
+        or entries
+    ):
+        raise SelectionMarginAuditError(
+            "runtime bytecode-cache prefix must be empty, owned, and mode 0700"
+        )
+    return (
+        {
+            "bytecode_cache_prefix_empty": True,
+            "bytecode_cache_prefix_mode": "0700",
+            "bytecode_cache_prefix_owner": "effective_user",
+            "bytecode_writes_disabled": True,
+            "import_safe_path": True,
+            "loader_policy": "exact_source_file_loader_no_cache/v1",
+        },
+        resolved,
+    )
+
+
 def _runtime_source_receipts(
     repository: Path,
     revision: str,
-) -> dict[str, dict[str, int | str]]:
-    receipts: dict[str, dict[str, int | str]] = {}
+    *,
+    bytecode_prefix: Path | None = None,
+) -> dict[str, dict[str, bool | int | str]]:
+    receipts: dict[str, dict[str, bool | int | str]] = {}
     self_module_name = RUNTIME_SOURCE_SURFACE[-1][0]
     for module_name, relative in RUNTIME_SOURCE_SURFACE:
         if module_name == self_module_name:
             loaded_path = globals().get("__file__")
+            loaded_cached = globals().get("__cached__")
+            loaded_spec = globals().get("__spec__")
         else:
             loaded = sys.modules.get(module_name)
             loaded_path = getattr(loaded, "__file__", None)
+            loaded_cached = getattr(loaded, "__cached__", None)
+            loaded_spec = getattr(loaded, "__spec__", None)
         expected_path = repository / relative
         try:
             loaded_resolved = (
@@ -1221,6 +1279,42 @@ def _runtime_source_receipts(
             raise SelectionMarginAuditError(
                 f"runtime import origin drifted: {module_name}"
             )
+        if bytecode_prefix is not None:
+            loader = getattr(loaded_spec, "loader", None)
+            origin = getattr(loaded_spec, "origin", None)
+            try:
+                origin_resolved = (
+                    Path(origin).resolve(strict=True)
+                    if type(origin) is str
+                    else None
+                )
+                cached_path = (
+                    Path(loaded_cached) if type(loaded_cached) is str else None
+                )
+                cached_resolved = (
+                    cached_path.resolve(strict=False)
+                    if cached_path is not None and cached_path.is_absolute()
+                    else None
+                )
+                cached_present = (
+                    os.path.lexists(cached_path)
+                    if cached_path is not None
+                    else True
+                )
+            except OSError as error:
+                raise SelectionMarginAuditError(
+                    f"runtime import metadata could not be read: {module_name}"
+                ) from error
+            if (
+                type(loader) is not importlib.machinery.SourceFileLoader
+                or origin_resolved != expected_resolved
+                or cached_resolved is None
+                or not cached_resolved.is_relative_to(bytecode_prefix)
+                or cached_present
+            ):
+                raise SelectionMarginAuditError(
+                    f"runtime source-only import contract drifted: {module_name}"
+                )
         head_blob = _git(repository, "show", f"{revision}:{relative.as_posix()}")
         tracked = _git(
             repository,
@@ -1238,15 +1332,24 @@ def _runtime_source_receipts(
             raise SelectionMarginAuditError(
                 f"runtime source differs from exact tracked HEAD: {module_name}"
             )
-        receipts[module_name] = {
+        receipt: dict[str, bool | int | str] = {
             "byte_count": len(raw),
             "relative_path": relative.as_posix(),
             "sha256": hashlib.sha256(raw).hexdigest(),
         }
+        if bytecode_prefix is not None:
+            receipt.update(
+                {
+                    "bytecode_cache_present": False,
+                    "loader": "SourceFileLoader",
+                }
+            )
+        receipts[module_name] = receipt
     return receipts
 
 
 def _source_attestation(repository: Path) -> dict[str, Any]:
+    runtime_policy, bytecode_prefix = _runtime_import_policy()
     status = _git(repository, "status", "--porcelain", "--untracked-files=all")
     if status:
         raise SelectionMarginAuditError("selection-margin audit requires a clean checkout")
@@ -1265,16 +1368,22 @@ def _source_attestation(repository: Path) -> dict[str, Any]:
         != design_raw
     ):
         raise SelectionMarginAuditError("selection-margin source differs from exact HEAD")
-    runtime_sources = _runtime_source_receipts(repository, revision)
+    runtime_sources = _runtime_source_receipts(
+        repository,
+        revision,
+        bytecode_prefix=bytecode_prefix,
+    )
     return {
         "audit_module_path": MODULE_RELATIVE_PATH.as_posix(),
         "audit_module_sha256": hashlib.sha256(module_raw).hexdigest(),
         "frozen_design_path": DESIGN_RELATIVE_PATH.as_posix(),
         "frozen_design_sha256": hashlib.sha256(design_raw).hexdigest(),
         "runtime_binding_scope": (
-            "ordinary_python_import_origins_and_clean_head_file_bytes/v1; "
-            "hostile_interpreter_and_in_memory_code_mutation_excluded"
+            "safe_path_source_file_loader_clean_head_empty_bytecode_prefix/v2; "
+            "hostile_interpreter_import_hooks_concurrent_pre_attestation_cache_"
+            "deletion_in_memory_code_mutation_and_kernel_compromise_excluded"
         ),
+        "runtime_import_policy": runtime_policy,
         "runtime_source_files": runtime_sources,
         "source_revision": revision,
         "worktree_clean": True,
@@ -1329,6 +1438,7 @@ def build_receipt(
     repository = posthoc._resolved_existing_path(
         repository_root, "repository root", directory=True
     )
+    source = _source_attestation(repository)
     artifact = posthoc._resolved_existing_path(
         artifact_path, "artifact", directory=False
     )
@@ -1342,7 +1452,6 @@ def build_receipt(
     posthoc_file = posthoc._resolved_existing_path(
         posthoc_receipt_path, "published post-hoc receipt", directory=False
     )
-    source = _source_attestation(repository)
     published_posthoc, published_posthoc_raw = _read_frozen_posthoc(
         posthoc_file, posthoc_digest, posthoc_raw_sha256
     )

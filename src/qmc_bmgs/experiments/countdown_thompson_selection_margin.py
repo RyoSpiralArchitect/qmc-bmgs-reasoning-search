@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import math
 import os
+import stat
 import subprocess
 import sys
 from collections import Counter
@@ -24,7 +25,7 @@ from qmc_bmgs.experiments import countdown_thompson_posthoc_mechanism as posthoc
 from qmc_bmgs.substrate.trace import canonical_json, sha256_json
 
 
-SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-selection-margin/v1"
+SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-selection-margin/v2"
 MODULE_RELATIVE_PATH = Path(
     "src/qmc_bmgs/experiments/countdown_thompson_selection_margin.py"
 )
@@ -35,7 +36,9 @@ CLAIM_BOUNDARY = (
     "Exploratory local score-sensitivity audit of one fixed diagnostic. "
     "Integrity PASS is provenance, replay, reconstruction, pairing, and "
     "reduction closure only; scale boundaries do not predict action quality, "
-    "terminal performance, retry success, or locked-128 behavior."
+    "terminal performance, retry success, or locked-128 behavior. Runtime "
+    "source binding covers ordinary Python imports and clean-HEAD file bytes, "
+    "not a hostile interpreter or in-memory code mutation."
 )
 HANDOFF_DECISION = posthoc.HANDOFF_DECISION
 METHODS = posthoc.METHODS
@@ -72,6 +75,37 @@ POSTHOC_FRESH_CROSSCHECK_KEYS = (
     "reductions",
     "schema_version",
     "supplemental_validation",
+)
+RUNTIME_SOURCE_SURFACE = (
+    ("qmc_bmgs", Path("src/qmc_bmgs/__init__.py")),
+    (
+        "qmc_bmgs.experiments",
+        Path("src/qmc_bmgs/experiments/__init__.py"),
+    ),
+    (
+        "qmc_bmgs.substrate",
+        Path("src/qmc_bmgs/substrate/__init__.py"),
+    ),
+    (
+        posthoc.analysis.__name__,
+        Path(
+            "src/qmc_bmgs/experiments/"
+            "countdown_thompson_diagnostic_analysis.py"
+        ),
+    ),
+    (
+        posthoc.regular_file_publication.__name__,
+        Path(
+            "src/qmc_bmgs/experiments/"
+            "countdown_thompson_regular_file_publication_v2.py"
+        ),
+    ),
+    (posthoc.__name__, posthoc.MODULE_RELATIVE_PATH),
+    ("qmc_bmgs.substrate.trace", Path("src/qmc_bmgs/substrate/trace.py")),
+    (
+        "qmc_bmgs.experiments.countdown_thompson_selection_margin",
+        MODULE_RELATIVE_PATH,
+    ),
 )
 
 
@@ -1153,6 +1187,65 @@ def _git(repository: Path, *arguments: str) -> bytes:
         raise SelectionMarginAuditError("git source attestation failed") from error
 
 
+def _runtime_source_receipts(
+    repository: Path,
+    revision: str,
+) -> dict[str, dict[str, int | str]]:
+    receipts: dict[str, dict[str, int | str]] = {}
+    self_module_name = RUNTIME_SOURCE_SURFACE[-1][0]
+    for module_name, relative in RUNTIME_SOURCE_SURFACE:
+        if module_name == self_module_name:
+            loaded_path = globals().get("__file__")
+        else:
+            loaded = sys.modules.get(module_name)
+            loaded_path = getattr(loaded, "__file__", None)
+        expected_path = repository / relative
+        try:
+            loaded_resolved = (
+                Path(loaded_path).resolve(strict=True)
+                if type(loaded_path) is str
+                else None
+            )
+            expected_resolved = expected_path.resolve(strict=True)
+            metadata = expected_path.lstat()
+            raw = expected_path.read_bytes()
+        except OSError as error:
+            raise SelectionMarginAuditError(
+                f"runtime source could not be read: {module_name}"
+            ) from error
+        if (
+            loaded_resolved != expected_resolved
+            or not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+        ):
+            raise SelectionMarginAuditError(
+                f"runtime import origin drifted: {module_name}"
+            )
+        head_blob = _git(repository, "show", f"{revision}:{relative.as_posix()}")
+        tracked = _git(
+            repository,
+            "ls-files",
+            "--stage",
+            "--",
+            relative.as_posix(),
+        ).decode("utf-8")
+        if (
+            raw != head_blob
+            or not tracked.startswith("100644 ")
+            or tracked.count("\n") != 1
+            or not tracked.rstrip("\n").endswith(f"\t{relative.as_posix()}")
+        ):
+            raise SelectionMarginAuditError(
+                f"runtime source differs from exact tracked HEAD: {module_name}"
+            )
+        receipts[module_name] = {
+            "byte_count": len(raw),
+            "relative_path": relative.as_posix(),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        }
+    return receipts
+
+
 def _source_attestation(repository: Path) -> dict[str, Any]:
     status = _git(repository, "status", "--porcelain", "--untracked-files=all")
     if status:
@@ -1172,11 +1265,17 @@ def _source_attestation(repository: Path) -> dict[str, Any]:
         != design_raw
     ):
         raise SelectionMarginAuditError("selection-margin source differs from exact HEAD")
+    runtime_sources = _runtime_source_receipts(repository, revision)
     return {
         "audit_module_path": MODULE_RELATIVE_PATH.as_posix(),
         "audit_module_sha256": hashlib.sha256(module_raw).hexdigest(),
         "frozen_design_path": DESIGN_RELATIVE_PATH.as_posix(),
         "frozen_design_sha256": hashlib.sha256(design_raw).hexdigest(),
+        "runtime_binding_scope": (
+            "ordinary_python_import_origins_and_clean_head_file_bytes/v1; "
+            "hostile_interpreter_and_in_memory_code_mutation_excluded"
+        ),
+        "runtime_source_files": runtime_sources,
         "source_revision": revision,
         "worktree_clean": True,
     }

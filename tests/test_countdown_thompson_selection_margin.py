@@ -587,6 +587,44 @@ class SelectionMarginReceiptTests(unittest.TestCase):
             ):
                 _build_fixture_receipt(fixture)
 
+    def test_runtime_binding_rejects_historical_self_module_origin(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        historical_revision = "7c4b865c4ad40d35f0eff52e6c58634656b8f3f6"
+        with tempfile.TemporaryDirectory() as raw:
+            historical_path = Path(raw) / margin.MODULE_RELATIVE_PATH.name
+            historical_path.write_bytes(
+                margin._git(
+                    repository,
+                    "show",
+                    f"{historical_revision}:{margin.MODULE_RELATIVE_PATH.as_posix()}",
+                )
+            )
+            with (
+                patch.object(margin, "__file__", str(historical_path)),
+                self.assertRaisesRegex(
+                    margin.SelectionMarginAuditError,
+                    "runtime import origin drifted: "
+                    "qmc_bmgs.experiments.countdown_thompson_selection_margin",
+                ),
+            ):
+                margin._runtime_source_receipts(repository, "HEAD")
+
+    def test_runtime_binding_rejects_posthoc_import_origin_drift(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as raw:
+            displaced = Path(raw) / posthoc.MODULE_RELATIVE_PATH.name
+            displaced.write_bytes(
+                (repository / posthoc.MODULE_RELATIVE_PATH).read_bytes()
+            )
+            with (
+                patch.object(posthoc, "__file__", str(displaced)),
+                self.assertRaisesRegex(
+                    margin.SelectionMarginAuditError,
+                    f"runtime import origin drifted: {posthoc.__name__}",
+                ),
+            ):
+                margin._runtime_source_receipts(repository, "HEAD")
+
     def test_self_test_opens_no_diagnostic(self) -> None:
         with patch.object(margin, "build_receipt") as build:
             self.assertEqual(margin.main(["--self-test"]), 0)

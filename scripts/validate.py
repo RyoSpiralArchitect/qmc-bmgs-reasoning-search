@@ -70,8 +70,12 @@ def main() -> None:
         "qmc_bmgs.experiments.countdown_thompson_regular_file_publication_v2",
         "qmc_bmgs.experiments.countdown_thompson_posthoc_mechanism",
         "qmc_bmgs.experiments.countdown_thompson_selection_margin",
+        "qmc_bmgs.experiments.countdown_thompson_dense_scale_manifest",
     ):
-        _run([sys.executable, "-m", module, "--self-test"], cwd=outside)
+        command = [sys.executable, "-m", module, "--self-test"]
+        if module == "qmc_bmgs.experiments.countdown_thompson_dense_scale_manifest":
+            command.extend(["--repository-root", str(ROOT)])
+        _run(command, cwd=outside)
     print("repository validation: PASS")
 
 

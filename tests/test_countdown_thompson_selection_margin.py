@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
+import json
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
@@ -179,6 +182,8 @@ def _records() -> list[dict[str, object]]:
 def _published_posthoc(records: list[dict[str, object]]) -> dict[str, object]:
     reductions = posthoc.reduce_verified_records(records)
     core = {
+        "claim_boundary": posthoc.CLAIM_BOUNDARY,
+        "input_provenance": {"run_manifest_digest": "c" * 64},
         "integrity_status": "PASS",
         "reductions": reductions,
         "schema_version": posthoc.SCHEMA_VERSION,
@@ -386,11 +391,7 @@ def _receipt_fixture(root: Path) -> dict[str, object]:
         run_manifest_digest="c" * 64,
     )
     fresh_posthoc = {
-        "input_provenance": {"run_manifest_digest": "c" * 64},
-        "integrity_status": "PASS",
-        "reductions": published["reductions"],
-        "schema_version": posthoc.SCHEMA_VERSION,
-        "supplemental_validation": published["supplemental_validation"],
+        key: published[key] for key in margin.POSTHOC_FRESH_CROSSCHECK_KEYS
     }
     return {
         "artifact": artifact,
@@ -417,6 +418,8 @@ def _build_fixture_receipt(
     source_side_effect: object | None = None,
 ) -> dict[str, object]:
     with (
+        patch.object(margin, "_require_frozen_input_anchors"),
+        patch.object(margin, "FROZEN_RUN_MANIFEST_DIGEST", "c" * 64),
         patch.object(
             margin,
             "_source_attestation",
@@ -454,6 +457,37 @@ def _build_fixture_receipt(
         )
 
 
+def _cli_arguments(root: Path) -> list[str]:
+    return [
+        "--artifact",
+        str(root / "missing-artifact.json"),
+        "--artifact-commit-digest",
+        margin.FROZEN_ARTIFACT_COMMIT_DIGEST,
+        "--authorization-digest",
+        margin.FROZEN_AUTHORIZATION_DIGEST,
+        "--authorization-file",
+        str(root / "missing-authorization.json"),
+        "--authorization-revision",
+        margin.FROZEN_AUTHORIZATION_REVISION,
+        "--bundle",
+        str(root / "missing-bundle"),
+        "--output",
+        str(root / "output.json"),
+        "--posthoc-digest",
+        margin.FROZEN_POSTHOC_DIGEST,
+        "--posthoc-raw-sha256",
+        margin.FROZEN_POSTHOC_RAW_SHA256,
+        "--posthoc-receipt",
+        str(root / "missing-posthoc.json"),
+        "--repository-root",
+        str(root),
+        "--summary",
+        str(root / "missing-summary.json"),
+        "--summary-digest",
+        margin.FROZEN_SUMMARY_DIGEST,
+    ]
+
+
 class SelectionMarginReceiptTests(unittest.TestCase):
     def test_build_receipt_composes_revalidation_and_reduction(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -482,6 +516,55 @@ class SelectionMarginReceiptTests(unittest.TestCase):
             ):
                 _build_fixture_receipt(fixture, fresh_posthoc=changed)
 
+    def test_build_receipt_rejects_fresh_posthoc_authority_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            fixture = _receipt_fixture(Path(raw))
+            changed = {
+                **fixture["fresh_posthoc"],  # type: ignore[dict-item]
+                "claim_boundary": "forged authority boundary",
+            }
+            with self.assertRaisesRegex(
+                margin.SelectionMarginAuditError,
+                "published post-hoc claim_boundary does not freshly recompute",
+            ):
+                _build_fixture_receipt(fixture, fresh_posthoc=changed)
+
+    def test_coherently_rehashed_posthoc_cannot_replace_frozen_anchor(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            fixture = _receipt_fixture(Path(raw))
+            path = fixture["posthoc"]
+            self.assertIsInstance(path, Path)
+            payload = json.loads(path.read_text())
+            payload["claim_boundary"] = "forged authority boundary"
+            core = {
+                key: value
+                for key, value in payload.items()
+                if key != "deterministic_digest"
+            }
+            tampered_digest = sha256_json(core)
+            payload["deterministic_digest"] = tampered_digest
+            tampered_raw = (canonical_json(payload) + "\n").encode()
+            path.write_bytes(tampered_raw)
+
+            with self.assertRaisesRegex(
+                margin.SelectionMarginAuditError,
+                "posthoc_digest, posthoc_raw_sha256",
+            ):
+                margin.build_receipt(
+                    fixture["artifact"],  # type: ignore[arg-type]
+                    fixture["bundle"],  # type: ignore[arg-type]
+                    fixture["authorization"],  # type: ignore[arg-type]
+                    margin.FROZEN_AUTHORIZATION_DIGEST,
+                    margin.FROZEN_AUTHORIZATION_REVISION,
+                    fixture["summary"],  # type: ignore[arg-type]
+                    margin.FROZEN_SUMMARY_DIGEST,
+                    margin.FROZEN_ARTIFACT_COMMIT_DIGEST,
+                    path,
+                    tampered_digest,
+                    hashlib.sha256(tampered_raw).hexdigest(),
+                    repository_root=fixture["repository"],  # type: ignore[arg-type]
+                )
+
     def test_build_receipt_rejects_source_drift(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = _receipt_fixture(Path(raw))
@@ -508,6 +591,40 @@ class SelectionMarginReceiptTests(unittest.TestCase):
         with patch.object(margin, "build_receipt") as build:
             self.assertEqual(margin.main(["--self-test"]), 0)
         build.assert_not_called()
+
+    def test_missing_input_is_canonical_invalid_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                status = margin.main(_cli_arguments(Path(raw)))
+        payload = json.loads(stderr.getvalue())
+        self.assertEqual(status, 2)
+        self.assertEqual(payload["status"], "INVALID")
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_occupied_output_is_canonical_invalid_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            stderr = io.StringIO()
+            with (
+                patch.object(
+                    margin,
+                    "build_receipt",
+                    return_value={"deterministic_digest": "d" * 64},
+                ),
+                patch.object(
+                    posthoc,
+                    "_write_no_overwrite",
+                    side_effect=posthoc.PosthocMechanismAuditError(
+                        "output already exists"
+                    ),
+                ),
+                redirect_stderr(stderr),
+            ):
+                status = margin.main(_cli_arguments(Path(raw)))
+        payload = json.loads(stderr.getvalue())
+        self.assertEqual(status, 2)
+        self.assertEqual(payload["status"], "INVALID")
+        self.assertNotIn("Traceback", stderr.getvalue())
 
 
 if __name__ == "__main__":

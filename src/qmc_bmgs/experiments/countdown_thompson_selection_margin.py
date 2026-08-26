@@ -46,10 +46,71 @@ EXPECTED_RECORD_COUNT = posthoc.EXPECTED_RECORD_COUNT
 EXPECTED_METHOD_CELL_COUNT = posthoc.EXPECTED_METHOD_CELL_COUNT
 EXPECTED_TASK_COUNT = posthoc.EXPECTED_TASK_COUNT
 EXPECTED_SEEDS = posthoc.EXPECTED_SEEDS
+FROZEN_ARTIFACT_COMMIT_DIGEST = (
+    "ffd5f875f3d560382dd21fddec95b47ad0d4442913d8a5fb7faf104d12f209b9"
+)
+FROZEN_RUN_MANIFEST_DIGEST = (
+    "465f2ec53551eefb2892171aa7ac0815bf3b139d2b0f2f549ba9685c34d9def6"
+)
+FROZEN_SUMMARY_DIGEST = (
+    "46ebdb1eabcaa91220ed8bb10370f70aad0c61d37a2ef6150d09ca29beac0db5"
+)
+FROZEN_AUTHORIZATION_DIGEST = (
+    "88f6639ccc9e949a7633a5cd243099ae28e85c2cceb3bcd7eab7303387474c28"
+)
+FROZEN_AUTHORIZATION_REVISION = "28cb810dd730cb27a28b8f1d89365dafa12ab980"
+FROZEN_POSTHOC_DIGEST = (
+    "02a0ecd90f6e695d22f06d77ee74a41210045811913c9e5b2bd793110089c262"
+)
+FROZEN_POSTHOC_RAW_SHA256 = (
+    "07c747aaaef5709c3b215b7c7645d34e8968712c5b273fe29b016510d9ac596c"
+)
+POSTHOC_FRESH_CROSSCHECK_KEYS = (
+    "claim_boundary",
+    "input_provenance",
+    "integrity_status",
+    "reductions",
+    "schema_version",
+    "supplemental_validation",
+)
 
 
 class SelectionMarginAuditError(ValueError):
     """Raised before receipt publication when the audit cannot close."""
+
+
+def _require_frozen_input_anchors(
+    *,
+    artifact_commit_digest: str,
+    authorization_digest: str,
+    authorization_revision: str,
+    summary_digest: str,
+    posthoc_digest: str,
+    posthoc_raw_sha256: str,
+) -> None:
+    provided = {
+        "artifact_commit_digest": artifact_commit_digest,
+        "authorization_digest": authorization_digest,
+        "authorization_revision": authorization_revision,
+        "posthoc_digest": posthoc_digest,
+        "posthoc_raw_sha256": posthoc_raw_sha256,
+        "summary_digest": summary_digest,
+    }
+    expected = {
+        "artifact_commit_digest": FROZEN_ARTIFACT_COMMIT_DIGEST,
+        "authorization_digest": FROZEN_AUTHORIZATION_DIGEST,
+        "authorization_revision": FROZEN_AUTHORIZATION_REVISION,
+        "posthoc_digest": FROZEN_POSTHOC_DIGEST,
+        "posthoc_raw_sha256": FROZEN_POSTHOC_RAW_SHA256,
+        "summary_digest": FROZEN_SUMMARY_DIGEST,
+    }
+    drifted = sorted(
+        name for name, value in provided.items() if value != expected[name]
+    )
+    if drifted:
+        raise SelectionMarginAuditError(
+            "caller-supplied frozen input anchors drifted: " + ", ".join(drifted)
+        )
 
 
 @dataclass(frozen=True)
@@ -1158,6 +1219,14 @@ def build_receipt(
 ) -> dict[str, Any]:
     """Revalidate the fixed diagnostic and build one margin-audit receipt."""
 
+    _require_frozen_input_anchors(
+        artifact_commit_digest=artifact_commit_digest,
+        authorization_digest=authorization_digest,
+        authorization_revision=authorization_revision,
+        summary_digest=summary_digest,
+        posthoc_digest=posthoc_digest,
+        posthoc_raw_sha256=posthoc_raw_sha256,
+    )
     repository = posthoc._resolved_existing_path(
         repository_root, "repository root", directory=True
     )
@@ -1198,7 +1267,7 @@ def build_receipt(
         raise SelectionMarginAuditError(
             "post-hoc replay and reduction did not freshly close"
         ) from error
-    for key in ("reductions", "supplemental_validation"):
+    for key in POSTHOC_FRESH_CROSSCHECK_KEYS:
         if fresh_posthoc.get(key) != published_posthoc.get(key):
             raise SelectionMarginAuditError(
                 f"published post-hoc {key} does not freshly recompute"
@@ -1231,6 +1300,7 @@ def build_receipt(
         ) from error
     if (
         verified.artifact_commit_digest != artifact_commit_digest
+        or verified.run_manifest_digest != FROZEN_RUN_MANIFEST_DIGEST
         or verified.run_manifest_digest
         != fresh_posthoc["input_provenance"]["run_manifest_digest"]
         or len(verified.records) != EXPECTED_RECORD_COUNT
@@ -1400,7 +1470,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         print(canonical_json(result))
         return 0
-    except (OSError, SelectionMarginAuditError) as error:
+    except (
+        OSError,
+        SelectionMarginAuditError,
+        posthoc.PosthocMechanismAuditError,
+    ) as error:
         print(
             canonical_json(
                 {

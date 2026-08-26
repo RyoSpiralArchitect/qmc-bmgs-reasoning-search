@@ -98,6 +98,41 @@ and every failure stays strictly below one.  The scale therefore changes the
 strength of failure feedback without allowing a failed terminal to outrank an
 exact success by terminal value alone.
 
+Anchor equivalence uses the frozen projection
+`countdown_track_a_anchor_equivalence/v1`.  For each matched task, source,
+exploration seed, proposal, and budget, both traces must first pass canonical
+validation and two-stage byte replay under their own sealed method.  The
+projection then:
+
+1. removes only the top-level deterministic/final event digests and each
+   event's hash-link fields;
+2. replaces `run_identity.method_id` and `run_identity.configuration_id` with
+   `binary_terminal_anchor` for v2 versus scale zero, or
+   `reciprocal_error_anchor` for v3 versus scale one;
+3. requires every `selection_committed.payload.method` to equal its sealed
+   method spec, then replaces that one field with the same anchor label;
+4. requires `search_finished.payload.summary.method` and
+   `search_finished.payload.summary.run_identity_digest` to match the sealed
+   method and original run identity, then replaces both with the same anchor
+   label;
+5. removes exactly `terminal_absolute_error`, `terminal_value_denominator`,
+   `terminal_value_floor`, `terminal_value_floor_applied`,
+   `terminal_value_numerator`, `terminal_value_rule_id`, and
+   `terminal_value_scale` from each `trajectory_backed_up` payload; and
+6. after replay has independently closed each storage receipt, replaces only
+   `ledger_snapshot.live_storage.bytes` and
+   `ledger_snapshot.peak_live_storage.bytes` with the anchor label because the
+   extra v5 evidence bytes are schema overhead; and
+7. preserves every other run-identity field, top-level field, event index,
+   kind, charge receipt, payload field, terminal value, posterior update,
+   proposal/node/point material, stop event, and ledger field/component.
+
+The two resulting canonical projections must be exactly equal.  A projection
+or replay mismatch invalidates the experiment before terminal errors or
+successes are read.  This definition deliberately normalizes only the schema
+and evidence fields that differ by construction; it does not permit an
+analysis-time choice of fields.
+
 V5 must use a new method-spec schema and terminal-rule id.  Backup events must
 record the plain-integer scale, absolute error, exact numerator and denominator,
 binary64 floor, floor-use flag, rule id, and applied float.  Stage-one
@@ -155,8 +190,11 @@ For each scale, report in fixed task/seed order:
 - feedback-informed first-divergence count and coordinate distribution.
 
 Aggregate integer counts exactly.  Means and medians of integer errors use
-exact reduced rational arithmetic.  Binary64 summaries are descriptive and
-must preserve their fixed iteration order.  No p-values, confidence intervals,
+exact reduced rational arithmetic.  For a sorted nonempty integer vector of
+length `n`, the median is element `n//2` when `n` is odd and the reduced
+rational `(x[n//2 - 1] + x[n//2]) / 2` when `n` is even; an empty required
+vector invalidates the analysis.  Binary64 summaries are descriptive and must
+preserve their fixed iteration order.  No p-values, confidence intervals,
 bootstrap intervals, or outcome-based row filtering are authorized.
 
 ## Frozen development handoff rule

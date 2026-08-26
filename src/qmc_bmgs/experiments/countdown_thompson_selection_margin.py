@@ -26,7 +26,7 @@ from qmc_bmgs.experiments import countdown_thompson_posthoc_mechanism as posthoc
 from qmc_bmgs.substrate.trace import canonical_json, sha256_json
 
 
-SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-selection-margin/v3"
+SCHEMA_VERSION = "qmc-bmgs-countdown-thompson-selection-margin/v4"
 MODULE_RELATIVE_PATH = Path(
     "src/qmc_bmgs/experiments/countdown_thompson_selection_margin.py"
 )
@@ -41,8 +41,9 @@ CLAIM_BOUNDARY = (
     "source binding requires safe-path SourceFileLoader imports, disabled "
     "bytecode writes, an empty dedicated bytecode-cache prefix, and clean-HEAD "
     "file bytes. It does not attest a hostile interpreter or import hook, "
-    "concurrent pre-attestation cache deletion, in-memory code mutation, or "
-    "kernel compromise."
+    "transient or concurrent pre-attestation filesystem mutation (including "
+    "source replacement/restoration or cache deletion), in-memory code "
+    "mutation, or kernel compromise."
 )
 HANDOFF_DECISION = posthoc.HANDOFF_DECISION
 METHODS = posthoc.METHODS
@@ -1379,9 +1380,11 @@ def _source_attestation(repository: Path) -> dict[str, Any]:
         "frozen_design_path": DESIGN_RELATIVE_PATH.as_posix(),
         "frozen_design_sha256": hashlib.sha256(design_raw).hexdigest(),
         "runtime_binding_scope": (
-            "safe_path_source_file_loader_clean_head_empty_bytecode_prefix/v2; "
-            "hostile_interpreter_import_hooks_concurrent_pre_attestation_cache_"
-            "deletion_in_memory_code_mutation_and_kernel_compromise_excluded"
+            "safe_path_source_file_loader_clean_head_empty_bytecode_prefix/v3; "
+            "hostile_interpreter_import_hooks_transient_or_concurrent_pre_"
+            "attestation_filesystem_mutation_including_source_replacement_"
+            "restoration_or_cache_deletion_in_memory_code_mutation_and_kernel_"
+            "compromise_excluded"
         ),
         "runtime_import_policy": runtime_policy,
         "runtime_source_files": runtime_sources,

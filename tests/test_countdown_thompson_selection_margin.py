@@ -518,6 +518,11 @@ def _run_source_only_python(
 
 
 class SelectionMarginReceiptTests(unittest.TestCase):
+    def test_claim_scope_excludes_pre_attestation_source_restoration(self) -> None:
+        self.assertIn("pre-attestation filesystem mutation", margin.CLAIM_BOUNDARY)
+        self.assertIn("source replacement/restoration", margin.CLAIM_BOUNDARY)
+        self.assertIn("cache deletion", margin.CLAIM_BOUNDARY)
+
     def test_build_receipt_composes_revalidation_and_reduction(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             fixture = _receipt_fixture(Path(raw))

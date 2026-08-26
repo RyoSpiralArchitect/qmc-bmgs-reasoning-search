@@ -1,19 +1,28 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from qmc_bmgs.benchmarks.countdown import CountdownTask
 from qmc_bmgs.experiments import countdown_thompson_dense_scale_manifest as module
+from qmc_bmgs.substrate.budget import TrackAWorkBudget
 from qmc_bmgs.substrate import countdown_search, proposals
 from qmc_bmgs.substrate.countdown_search import (
     DENSE_TERMINAL_VALUE_SCALES,
     SCALED_DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
     SCALED_RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID,
+    TrackABudgetProfile,
+    TrackAMethodSpec,
+    project_track_a_anchor_equivalence_trace,
+    replay_countdown_track_a_search_bytes,
+    run_countdown_track_a_search,
 )
+from qmc_bmgs.substrate.proposals import TrackAProposalSpec
 from qmc_bmgs.substrate.trace import sha256_json
 
 
@@ -147,6 +156,7 @@ class DenseScaleManifestTests(unittest.TestCase):
     def test_analysis_cannot_jump_directly_to_locked_128(self) -> None:
         analysis = self.payload["analysis"]
         anchors = analysis["anchor_equivalence"]
+        qualification = anchors["qualification"]
         self.assertEqual(
             anchors["projection_schema_version"],
             countdown_search.ANCHOR_EQUIVALENCE_PROJECTION_SCHEMA_VERSION,
@@ -158,6 +168,19 @@ class DenseScaleManifestTests(unittest.TestCase):
             "all_other_ledger_fields_and_components", anchors["preserved"]
         )
         self.assertIn("stop_events", anchors["preserved"])
+        self.assertEqual(anchors["development_matrix_authority_trace_count"], 0)
+        self.assertEqual(qualification["development_cell_count"], 0)
+        self.assertIs(qualification["development_task_access"], False)
+        self.assertEqual(qualification["execution_count"], 8)
+        self.assertEqual(qualification["raw_trace_persisted_count"], 0)
+        self.assertTrue(qualification["required_before_development_result_open"])
+        self.assertIs(
+            qualification["v2_or_v3_development_execution_authority"], False
+        )
+        self.assertEqual(
+            {row["spec"]["schema_version"] for row in self.payload["methods"]["methods"]},
+            {SCALED_DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION},
+        )
         self.assertEqual(
             analysis["integer_reductions"]["even_median"],
             "reduce((sorted[n//2-1]+sorted[n//2])/2)",
@@ -171,6 +194,113 @@ class DenseScaleManifestTests(unittest.TestCase):
         )
         self.assertEqual(handoff["failure_status"], "STOP_REPAIR_NO_LOCKED_128_RUN")
         self.assertFalse(analysis["claim_boundary"]["locked_128_authority"])
+
+    def test_anchor_qualification_receipt_reproduces_without_development_tasks(
+        self,
+    ) -> None:
+        qualification = self.payload["analysis"]["anchor_equivalence"][
+            "qualification"
+        ]
+        task_row = qualification["fixture_task"]
+        task = CountdownTask(tuple(task_row["inputs"]), target=task_row["target"])
+        proposal_row = qualification["proposal_spec"]
+        proposal = TrackAProposalSpec(proposal_row["policy_id"])
+        profile_row = qualification["budget_profile"]
+        profile = TrackABudgetProfile(
+            profile_id=profile_row["profile_id"],
+            primary_axis=profile_row["primary_axis"],
+            budget=TrackAWorkBudget(**profile_row["budget"]),
+            schema_version=profile_row["schema_version"],
+        )
+        self.assertEqual(task.to_dict(), task_row)
+        self.assertEqual(proposal.to_dict(), proposal_row)
+        self.assertEqual(profile.to_dict(), profile_row)
+        self.assertNotIn(
+            task.task_fingerprint,
+            {row["task_fingerprint"] for row in self.payload["cohort"]["tasks"]},
+        )
+
+        observed_order: list[str] = []
+        execution_count = 0
+        for receipt in qualification["receipts"]:
+            source = receipt["source"]
+            anchor_label = receipt["anchor_label"]
+            if anchor_label == "binary_terminal_anchor":
+                authority_method = TrackAMethodSpec.dimension_normalized_thompson(
+                    source
+                )
+                scaled_method = (
+                    TrackAMethodSpec.dimension_normalized_scaled_dense_thompson(
+                        source, 0
+                    )
+                )
+            else:
+                self.assertEqual(anchor_label, "reciprocal_error_anchor")
+                authority_method = (
+                    TrackAMethodSpec.dimension_normalized_dense_thompson(source)
+                )
+                scaled_method = (
+                    TrackAMethodSpec.dimension_normalized_scaled_dense_thompson(
+                        source, 1
+                    )
+                )
+            self.assertEqual(
+                authority_method.to_dict(), receipt["authority_method_spec"]
+            )
+            self.assertEqual(scaled_method.to_dict(), receipt["scaled_method_spec"])
+            self.assertEqual(
+                sha256_json(authority_method.to_dict()),
+                receipt["authority_method_spec_digest"],
+            )
+            self.assertEqual(
+                sha256_json(scaled_method.to_dict()),
+                receipt["scaled_method_spec_digest"],
+            )
+
+            traces = []
+            for method, digest_key in (
+                (authority_method, "expected_authority_trace_sha256"),
+                (scaled_method, "expected_scaled_trace_sha256"),
+            ):
+                result = run_countdown_track_a_search(
+                    task,
+                    proposal=proposal,
+                    method=method,
+                    budget_profile=profile,
+                    exploration_seed=qualification["exploration_seed"],
+                )
+                self.assertEqual(
+                    replay_countdown_track_a_search_bytes(
+                        result.canonical_bytes,
+                        task=task,
+                        proposal=proposal,
+                        method=method,
+                        budget_profile=profile,
+                        exploration_seed=qualification["exploration_seed"],
+                        expected_run_identity_digest=result.run_identity_digest,
+                    ),
+                    result.canonical_bytes,
+                )
+                self.assertEqual(
+                    hashlib.sha256(result.canonical_bytes).hexdigest(),
+                    receipt[digest_key],
+                )
+                traces.append(
+                    project_track_a_anchor_equivalence_trace(
+                        result.canonical_bytes,
+                        method=method,
+                    )
+                )
+                execution_count += 1
+            self.assertEqual(traces[0], traces[1])
+            self.assertEqual(
+                sha256_json(traces[0]),
+                receipt["expected_common_projection_digest"],
+            )
+            observed_order.append(f"{source}_{anchor_label}")
+
+        self.assertEqual(observed_order, qualification["receipt_order"])
+        self.assertEqual(execution_count, qualification["execution_count"])
 
     def test_normal_bundle_verifies_and_payload_property_is_defensive(self) -> None:
         destination = self._write_bundle()
@@ -310,12 +440,28 @@ class DenseScaleManifestTests(unittest.TestCase):
 
     def test_writer_does_not_replace_a_raced_destination(self) -> None:
         destination = self.root / "raced"
-        real_rename = module._rename_directory_noreplace
+        real_rename = module._rename_directory_noreplace_at
+        raced_identity: list[tuple[int, int, int]] = []
 
-        def race(source: Path, target: Path) -> None:
-            target.mkdir()
-            (target / "racer-owned.txt").write_text("keep", encoding="utf-8")
-            real_rename(source, target)
+        def race(
+            source_directory_fd: int,
+            source_name: str,
+            destination_directory_fd: int,
+            destination_name: str,
+        ) -> None:
+            os.mkdir(destination_name, dir_fd=destination_directory_fd)
+            raced = os.stat(
+                destination_name,
+                dir_fd=destination_directory_fd,
+                follow_symlinks=False,
+            )
+            raced_identity.append(module._inode_identity(raced))
+            real_rename(
+                source_directory_fd,
+                source_name,
+                destination_directory_fd,
+                destination_name,
+            )
 
         with (
             patch.object(
@@ -323,18 +469,174 @@ class DenseScaleManifestTests(unittest.TestCase):
                 "build_countdown_thompson_dense_scale_payload",
                 return_value=copy.deepcopy(self.payload),
             ),
-            patch.object(module, "_rename_directory_noreplace", side_effect=race),
+            patch.object(module, "_rename_directory_noreplace_at", side_effect=race),
             self.assertRaises(FileExistsError),
         ):
             module.write_countdown_thompson_dense_scale_bundle(
                 destination,
                 repository_root=self.repository_root,
             )
-        self.assertEqual(
-            (destination / "racer-owned.txt").read_text(encoding="utf-8"),
-            "keep",
-        )
+        self.assertEqual(module._inode_identity(destination.lstat()), raced_identity[0])
+        self.assertEqual(set(destination.iterdir()), set())
         self.assertEqual(set(self.root.iterdir()), {destination})
+
+    def test_writer_rejects_staging_rotation_immediately_before_open(self) -> None:
+        destination = self.root / "written"
+        parked = self.root / "parked-legitimate-staging"
+        real_open = os.open
+        rotated: list[Path] = []
+
+        def rotate_before_open(
+            path: object,
+            flags: int,
+            *args: object,
+            **kwargs: object,
+        ) -> int:
+            if (
+                not rotated
+                and type(path) is str
+                and path.startswith(f".{destination.name}.tmp-")
+                and kwargs.get("dir_fd") is not None
+                and flags & getattr(os, "O_DIRECTORY", 0)
+            ):
+                staging = self.root / path
+                staging.rename(parked)
+                staging.mkdir(mode=0o700)
+                (staging / "attacker-owned.txt").write_text(
+                    "attacker",
+                    encoding="utf-8",
+                )
+                rotated.append(staging)
+            return real_open(path, flags, *args, **kwargs)  # type: ignore[arg-type]
+
+        with (
+            patch.object(
+                module,
+                "build_countdown_thompson_dense_scale_payload",
+                return_value=copy.deepcopy(self.payload),
+            ),
+            patch.object(module.os, "open", side_effect=rotate_before_open),
+            self.assertRaisesRegex(
+                module.DenseScaleManifestError,
+                "staging directory path changed during open",
+            ),
+        ):
+            module.write_countdown_thompson_dense_scale_bundle(
+                destination,
+                repository_root=self.repository_root,
+            )
+        self.assertFalse(destination.exists())
+        self.assertEqual(
+            (rotated[0] / "attacker-owned.txt").read_text(encoding="utf-8"),
+            "attacker",
+        )
+        self.assertTrue(parked.is_dir())
+
+    def test_writer_rejects_same_inode_bytes_overwritten_before_first_fstat(
+        self,
+    ) -> None:
+        destination = self.root / "written"
+        real_write_all = module._write_all
+
+        def overwrite_after_write(file_fd: int, raw: bytes) -> None:
+            real_write_all(file_fd, raw)
+            staging = next(self.root.glob(f".{destination.name}.tmp-*"))
+            malicious = b"X" + raw[1:]
+            with (staging / module.BUNDLE_FILENAME).open("r+b") as attacker:
+                attacker.write(malicious)
+                attacker.flush()
+                os.fsync(attacker.fileno())
+
+        with (
+            patch.object(
+                module,
+                "build_countdown_thompson_dense_scale_payload",
+                return_value=copy.deepcopy(self.payload),
+            ),
+            patch.object(module, "_write_all", side_effect=overwrite_after_write),
+            self.assertRaisesRegex(
+                module.DenseScaleManifestError,
+                "staging bundle closure is invalid",
+            ),
+        ):
+            module.write_countdown_thompson_dense_scale_bundle(
+                destination,
+                repository_root=self.repository_root,
+            )
+        self.assertFalse(destination.exists())
+        self.assertEqual(set(self.root.iterdir()), set())
+
+    def test_writer_never_returns_success_for_rotated_staging_bytes(self) -> None:
+        destination = self.root / "written"
+        parked_name = "parked-legitimate-staging"
+        real_rename = module._rename_directory_noreplace_at
+
+        def rotate_then_publish_attacker(
+            source_directory_fd: int,
+            source_name: str,
+            destination_directory_fd: int,
+            destination_name: str,
+        ) -> None:
+            os.rename(
+                source_name,
+                parked_name,
+                src_dir_fd=source_directory_fd,
+                dst_dir_fd=source_directory_fd,
+            )
+            os.mkdir(source_name, mode=0o700, dir_fd=source_directory_fd)
+            attacker_directory_fd = os.open(
+                source_name,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+                dir_fd=source_directory_fd,
+            )
+            try:
+                attacker_fd = os.open(
+                    "attacker-owned.txt",
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=attacker_directory_fd,
+                )
+                try:
+                    os.write(attacker_fd, b"attacker")
+                finally:
+                    os.close(attacker_fd)
+            finally:
+                os.close(attacker_directory_fd)
+            real_rename(
+                source_directory_fd,
+                source_name,
+                destination_directory_fd,
+                destination_name,
+            )
+
+        with (
+            patch.object(
+                module,
+                "build_countdown_thompson_dense_scale_payload",
+                return_value=copy.deepcopy(self.payload),
+            ),
+            patch.object(
+                module,
+                "_rename_directory_noreplace_at",
+                side_effect=rotate_then_publish_attacker,
+            ),
+            self.assertRaisesRegex(
+                module.DenseScaleManifestError,
+                "published directory identity drifted",
+            ),
+        ):
+            module.write_countdown_thompson_dense_scale_bundle(
+                destination,
+                repository_root=self.repository_root,
+            )
+        self.assertEqual(
+            (destination / "attacker-owned.txt").read_text(encoding="utf-8"),
+            "attacker",
+        )
+        self.assertEqual(
+            set((self.root / parked_name).iterdir()),
+            {self.root / parked_name / module.BUNDLE_FILENAME},
+        )
 
 
 if __name__ == "__main__":

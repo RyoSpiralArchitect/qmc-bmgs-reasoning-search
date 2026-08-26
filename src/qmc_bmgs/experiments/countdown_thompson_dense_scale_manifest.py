@@ -14,7 +14,7 @@ import ctypes
 import errno
 import hashlib
 import os
-import shutil
+import secrets
 import stat
 import sys
 import tempfile
@@ -29,7 +29,7 @@ from qmc_bmgs.benchmarks.countdown import (
     generate_solvable_task_suite,
 )
 from qmc_bmgs.experiments import countdown_thompson_diagnostic_manifest as diagnostic
-from qmc_bmgs.substrate.budget import TrackAWorkBudget
+from qmc_bmgs.substrate.budget import TRACK_A_WORK_AXES, TrackAWorkBudget
 from qmc_bmgs.substrate.countdown_search import (
     ANCHOR_EQUIVALENCE_PROJECTION_SCHEMA_VERSION,
     DENSE_TERMINAL_VALUE_SCALES,
@@ -64,9 +64,9 @@ DIAGNOSTIC_SEAL_DIGEST = (
 FROZEN_DESIGN_PATH = Path(
     "docs/strategy/countdown_thompson_dense_scale_dose_response_v5.md"
 )
-FROZEN_DESIGN_REVISION = "d5af6269e9ad2f039bf58e4a8f5dcc36355624f8"
+FROZEN_DESIGN_REVISION = "c1eef797b8bc5dcdbb311473d94974afa4ce1797"
 FROZEN_DESIGN_SHA256 = (
-    "cb46ae1399044a4417bfd77ead0a128818f8e19f89613901cfcfedff44e6508b"
+    "67f6ed541c0ef5e2409a05f9d044eb257ab0ee3b76baa3e6f2df809a06f86002"
 )
 IMPLEMENTATION_BASE = {
     "merged_revision": "2bf4ce85947c39cc05a6f32a19576ea7d6e6790a",
@@ -457,6 +457,8 @@ def _methods_manifest() -> dict[str, Any]:
     return _with_digest(
         {
             "anchor_contract": {
+                "development_v2_or_v3_cell_count": 0,
+                "qualification_scope": "nondiagnostic_public_fixture_only",
                 "scale_0": "existing_v2_binary_terminal_behavior",
                 "scale_1": "existing_v3_reciprocal_error_terminal_behavior",
             },
@@ -596,12 +598,110 @@ def _cells_from_components(
     return tuple(cells)
 
 
+def _anchor_qualification_manifest() -> dict[str, Any]:
+    task = CountdownTask((1, 2, 3, 4, 5, 6), target=720)
+    proposal = TrackAProposalSpec("greedy_rollout_target_error/v1")
+    budget_limits = {axis: 20_000 for axis in TRACK_A_WORK_AXES}
+    budget_limits["verifier_calls"] = 3
+    profile = TrackABudgetProfile(
+        profile_id="dense_scale_anchor_fixture_verifier3",
+        primary_axis="verifier_calls",
+        budget=TrackAWorkBudget(**budget_limits),
+    )
+    expected_digests = {
+        ("iid", "binary_terminal_anchor"): (
+            "1a712c7b766dc5e6aa138edb718432636fac838f75e7ca1e4274fd17a4bca9e4",
+            "0d0dc2eb4c52697e78bcb744a48c3a407cac4dc3025b0b9f393e08144efc320b",
+            "18534a6eb89bb0a23cf0c6de104f7d1ed810eb4c5a662377fb4957d3690ba8ff",
+        ),
+        ("iid", "reciprocal_error_anchor"): (
+            "036ab50644b600cacf8488f74210c9e9725db441b8e8a3b78e90561eb2445763",
+            "0657acaf773f995a5c624bb18ad7f45cc0b8349edfd037222b04d50a657fcf22",
+            "f0628fdeda9f93f41ed6ad60f4718738b6cfad3f0ea967c6f4b3391a2d757310",
+        ),
+        ("sobol", "binary_terminal_anchor"): (
+            "651d1c5a6dd5395dbb54768eeea3c9a8f2e6d6a1f60e399301120dc59f93531f",
+            "2058e56a97de725c61b78efc338c75c868386fe6fd1e6879a0d5cf32c2f81b0f",
+            "75c80b1a60ec85328ee9a88259c81da13ac81ea3ea8719a5e5049754350a482c",
+        ),
+        ("sobol", "reciprocal_error_anchor"): (
+            "6be047dad38bfbee09e42ca2c07e88df75e1f493efdecc171b1a26a4f7852d31",
+            "e1136f466718b762cbd50549bbecb8fd9c14553361d54461ee8883739ba6596c",
+            "5cbccc2eb19780909b3942ec509ad61424f12d401fff03df071909600a742b4b",
+        ),
+    }
+    receipts: list[dict[str, Any]] = []
+    for source in ("iid", "sobol"):
+        pairs = (
+            (
+                "binary_terminal_anchor",
+                TrackAMethodSpec.dimension_normalized_thompson(source),
+                TrackAMethodSpec.dimension_normalized_scaled_dense_thompson(
+                    source, 0
+                ),
+            ),
+            (
+                "reciprocal_error_anchor",
+                TrackAMethodSpec.dimension_normalized_dense_thompson(source),
+                TrackAMethodSpec.dimension_normalized_scaled_dense_thompson(
+                    source, 1
+                ),
+            ),
+        )
+        for anchor_label, authority_method, scaled_method in pairs:
+            authority_digest, scaled_digest, projection_digest = expected_digests[
+                (source, anchor_label)
+            ]
+            receipts.append(
+                {
+                    "anchor_label": anchor_label,
+                    "authority_method_spec": authority_method.to_dict(),
+                    "authority_method_spec_digest": sha256_json(
+                        authority_method.to_dict()
+                    ),
+                    "expected_authority_trace_sha256": authority_digest,
+                    "expected_common_projection_digest": projection_digest,
+                    "expected_scaled_trace_sha256": scaled_digest,
+                    "scaled_method_spec": scaled_method.to_dict(),
+                    "scaled_method_spec_digest": sha256_json(
+                        scaled_method.to_dict()
+                    ),
+                    "source": source,
+                }
+            )
+    return _with_digest(
+        {
+            "budget_profile": profile.to_dict(),
+            "development_cell_count": 0,
+            "development_task_access": False,
+            "execution_count": 8,
+            "exploration_seed": 7168,
+            "fixture_task": task.to_dict(),
+            "projection_schema_version": (
+                ANCHOR_EQUIVALENCE_PROJECTION_SCHEMA_VERSION
+            ),
+            "proposal_spec": proposal.to_dict(),
+            "raw_trace_persisted_count": 0,
+            "receipt_order": [
+                "iid_binary_terminal_anchor",
+                "iid_reciprocal_error_anchor",
+                "sobol_binary_terminal_anchor",
+                "sobol_reciprocal_error_anchor",
+            ],
+            "receipts": receipts,
+            "required_before_development_result_open": True,
+            "scope": "nondiagnostic_public_fixture_only",
+            "v2_or_v3_development_execution_authority": False,
+        }
+    )
+
+
 def _analysis_manifest() -> dict[str, Any]:
     return _with_digest(
         {
             "analysis_order": [
+                "reproduce_nondiagnostic_anchor_qualification_without_development_material",
                 "integrity_budget_and_two_stage_replay",
-                "scale_0_and_scale_1_anchor_equivalence",
                 "common_prefix_mechanism_without_terminal_fields",
                 "terminal_error_reductions",
                 "exact_success_and_development_handoff",
@@ -617,6 +717,7 @@ def _analysis_manifest() -> dict[str, Any]:
                     "terminal_value_scale",
                 ],
                 "comparison": "canonical_projection_exact_equality",
+                "development_matrix_authority_trace_count": 0,
                 "failure_timing": "before_terminal_error_or_success_read",
                 "pairs": [
                     {
@@ -634,6 +735,7 @@ def _analysis_manifest() -> dict[str, Any]:
                     "both traces pass canonical validation and two-stage byte "
                     "replay under their own sealed method"
                 ),
+                "qualification": _anchor_qualification_manifest(),
                 "preserved": [
                     "all_other_run_identity_fields",
                     "event_count",
@@ -656,6 +758,7 @@ def _analysis_manifest() -> dict[str, Any]:
                     "method_id",
                 ],
                 "selection_method_field_replaced_after_exact_spec_check": True,
+                "scope": "nondiagnostic_implementation_qualification_only",
                 "top_level_removed_fields": [
                     "deterministic_digest",
                     "final_event_digest",
@@ -878,6 +981,28 @@ def _directory_state(observed: os.stat_result) -> tuple[int, ...]:
     )
 
 
+def _inode_identity(observed: os.stat_result) -> tuple[int, int, int]:
+    return (
+        observed.st_dev,
+        observed.st_ino,
+        stat.S_IFMT(observed.st_mode),
+    )
+
+
+def _entry_state(
+    directory_fd: int,
+    name: str,
+) -> os.stat_result | None:
+    try:
+        return os.stat(
+            name,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return None
+
+
 @dataclass(frozen=True)
 class _BundleSnapshot:
     raw: bytes
@@ -1029,10 +1154,14 @@ def iter_countdown_thompson_dense_scale_cells(
     return bundle.cells
 
 
-def _rename_directory_noreplace(source: Path, destination: Path) -> None:
-    """Atomically publish a directory while refusing an existing target."""
+def _rename_directory_noreplace_at(
+    source_directory_fd: int,
+    source_name: str,
+    destination_directory_fd: int,
+    destination_name: str,
+) -> None:
+    """Atomically rename one directory entry without replacing another."""
 
-    at_fdcwd = -2 if sys.platform == "darwin" else -100
     libc = ctypes.CDLL(None, use_errno=True)
     if sys.platform == "darwin":
         rename = libc.renameatx_np
@@ -1045,10 +1174,10 @@ def _rename_directory_noreplace(source: Path, destination: Path) -> None:
         )
         rename.restype = ctypes.c_int
         result = rename(
-            at_fdcwd,
-            os.fsencode(source),
-            at_fdcwd,
-            os.fsencode(destination),
+            source_directory_fd,
+            os.fsencode(source_name),
+            destination_directory_fd,
+            os.fsencode(destination_name),
             0x00000004,
         )
     elif sys.platform.startswith("linux"):
@@ -1058,7 +1187,7 @@ def _rename_directory_noreplace(source: Path, destination: Path) -> None:
             raise OSError(
                 errno.ENOSYS,
                 "atomic no-replace publication is unsupported",
-                destination,
+                destination_name,
             ) from error
         rename.argtypes = (
             ctypes.c_int,
@@ -1069,20 +1198,17 @@ def _rename_directory_noreplace(source: Path, destination: Path) -> None:
         )
         rename.restype = ctypes.c_int
         result = rename(
-            at_fdcwd,
-            os.fsencode(source),
-            at_fdcwd,
-            os.fsencode(destination),
+            source_directory_fd,
+            os.fsencode(source_name),
+            destination_directory_fd,
+            os.fsencode(destination_name),
             0x00000001,
         )
-    elif sys.platform == "win32":
-        os.rename(source, destination)
-        return
     else:
         raise OSError(
             errno.ENOSYS,
             "atomic no-replace publication is unsupported",
-            destination,
+            destination_name,
         )
     if result == 0:
         return
@@ -1091,9 +1217,99 @@ def _rename_directory_noreplace(source: Path, destination: Path) -> None:
         raise FileExistsError(
             error_number,
             "dense-scale bundle destination exists",
-            destination,
+            destination_name,
         )
-    raise OSError(error_number, os.strerror(error_number), destination)
+    raise OSError(error_number, os.strerror(error_number), destination_name)
+
+
+def _rename_directory_noreplace(source: Path, destination: Path) -> None:
+    """Path wrapper retained for direct no-replace qualification tests."""
+
+    at_fdcwd = -2 if sys.platform == "darwin" else -100
+    _rename_directory_noreplace_at(
+        at_fdcwd,
+        os.fspath(source),
+        at_fdcwd,
+        os.fspath(destination),
+    )
+
+
+def _make_staging_directory(parent_fd: int, target_name: str) -> tuple[str, os.stat_result]:
+    for _ in range(128):
+        name = f".{target_name}.tmp-{secrets.token_hex(12)}"
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            continue
+        observed = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(observed.st_mode)
+            or observed.st_uid != os.geteuid()
+            or stat.S_IMODE(observed.st_mode) != 0o700
+        ):
+            raise DenseScaleManifestError("staging directory identity is invalid")
+        return name, observed
+    raise DenseScaleManifestError("could not allocate a unique staging directory")
+
+
+def _write_all(file_fd: int, raw: bytes) -> None:
+    remaining = memoryview(raw)
+    while remaining:
+        written = os.write(file_fd, remaining)
+        if written <= 0:
+            raise OSError(errno.EIO, "short write while sealing preregistration")
+        remaining = remaining[written:]
+
+
+def _read_exact_at(file_fd: int, byte_count: int) -> bytes:
+    chunks: list[bytes] = []
+    offset = 0
+    while offset < byte_count:
+        chunk = os.pread(
+            file_fd,
+            min(byte_count - offset, _READ_CHUNK_BYTES),
+            offset,
+        )
+        if not chunk:
+            raise DenseScaleManifestError("staging bundle truncated during readback")
+        chunks.append(chunk)
+        offset += len(chunk)
+    if os.pread(file_fd, 1, byte_count):
+        raise DenseScaleManifestError("staging bundle grew during readback")
+    return b"".join(chunks)
+
+
+def _cleanup_pinned_staging_directory(
+    *,
+    parent_fd: int,
+    staging_fd: int,
+    staging_name: str,
+    staging_identity: tuple[int, int, int],
+    member_state: os.stat_result | None,
+) -> None:
+    """Best-effort cleanup only while the original directory entry is pinned."""
+
+    current = _entry_state(parent_fd, staging_name)
+    if current is None or _inode_identity(current) != staging_identity:
+        return
+    try:
+        names = set(os.listdir(staging_fd))
+        if member_state is not None and names == {BUNDLE_FILENAME}:
+            current_member = _entry_state(staging_fd, BUNDLE_FILENAME)
+            if (
+                current_member is not None
+                and _directory_state(current_member) == _directory_state(member_state)
+            ):
+                os.unlink(BUNDLE_FILENAME, dir_fd=staging_fd)
+                os.fsync(staging_fd)
+        elif names:
+            return
+        current = _entry_state(parent_fd, staging_name)
+        if current is not None and _inode_identity(current) == staging_identity:
+            os.rmdir(staging_name, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+    except OSError:
+        return
 
 
 def write_countdown_thompson_dense_scale_bundle(
@@ -1101,55 +1317,169 @@ def write_countdown_thompson_dense_scale_bundle(
     *,
     repository_root: Path | None = None,
 ) -> Path:
-    """Create one closed preregistration directory without overwriting."""
+    """Create one closed preregistration directory without overwriting.
+
+    Publication is relative to one pinned parent descriptor.  The staging
+    directory and its only member remain open and identity-checked through the
+    atomic no-replace rename, so rotating a lexical path can never produce a
+    successful return for attacker-controlled bytes.
+    """
 
     target = Path(destination)
     parent = target.parent
-    if target.exists() or target.is_symlink():
-        raise FileExistsError(target)
-    if not parent.is_dir() or parent.is_symlink():
+    if target.name in {"", ".", ".."}:
+        raise DenseScaleManifestError("bundle destination name is invalid")
+    try:
+        parent_path_state = parent.lstat()
+    except OSError as error:
+        raise DenseScaleManifestError("bundle parent is unavailable") from error
+    if stat.S_ISLNK(parent_path_state.st_mode) or not stat.S_ISDIR(
+        parent_path_state.st_mode
+    ):
         raise DenseScaleManifestError("bundle parent must be a real directory")
-    lock = parent / f".{target.name}.publish-lock"
+
+    parent_fd = -1
+    staging_fd = -1
+    member_fd = -1
+    staging_name: str | None = None
+    staging_identity: tuple[int, int, int] | None = None
+    member_state: os.stat_result | None = None
+    published = False
     try:
-        lock.mkdir()
-    except FileExistsError as error:
-        raise FileExistsError(f"dense-scale bundle publication is locked: {lock}") from error
-    temporary: Path | None = None
-    try:
-        if target.exists() or target.is_symlink():
+        parent_fd = os.open(
+            parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+        )
+        opened_parent = os.fstat(parent_fd)
+        if _inode_identity(opened_parent) != _inode_identity(parent_path_state):
+            raise DenseScaleManifestError("bundle parent path changed during open")
+        if _entry_state(parent_fd, target.name) is not None:
             raise FileExistsError(target)
+
         payload = build_countdown_thompson_dense_scale_payload(
             repository_root=repository_root
         )
-        temporary = Path(
-            tempfile.mkdtemp(prefix=f".{target.name}.tmp-", dir=parent)
+        raw = _canonical_bytes(payload)
+        staging_name, staging_path_state = _make_staging_directory(
+            parent_fd,
+            target.name,
         )
-        output = temporary / BUNDLE_FILENAME
-        with output.open("xb") as handle:
-            handle.write(_canonical_bytes(payload))
-            handle.flush()
-            os.fchmod(handle.fileno(), 0o644)
-            os.fsync(handle.fileno())
-        directory_fd = os.open(temporary, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-        _rename_directory_noreplace(temporary, target)
-        temporary = None
-        parent_fd = os.open(parent, os.O_RDONLY)
-        try:
-            os.fsync(parent_fd)
-        finally:
-            os.close(parent_fd)
+        staging_identity = _inode_identity(staging_path_state)
+        staging_fd = os.open(
+            staging_name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=parent_fd,
+        )
+        opened_staging = os.fstat(staging_fd)
+        if _inode_identity(opened_staging) != staging_identity:
+            raise DenseScaleManifestError("staging directory path changed during open")
+
+        member_fd = os.open(
+            BUNDLE_FILENAME,
+            os.O_RDWR
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+            0o600,
+            dir_fd=staging_fd,
+        )
+        _write_all(member_fd, raw)
+        os.fchmod(member_fd, 0o644)
+        os.fsync(member_fd)
+        member_state_before_readback = os.fstat(member_fd)
+        readback = _read_exact_at(member_fd, len(raw))
+        member_state = os.fstat(member_fd)
+        path_member_state = _entry_state(staging_fd, BUNDLE_FILENAME)
+        if (
+            path_member_state is None
+            or readback != raw
+            or _directory_state(member_state_before_readback)
+            != _directory_state(member_state)
+            or _directory_state(path_member_state) != _directory_state(member_state)
+            or not stat.S_ISREG(member_state.st_mode)
+            or member_state.st_nlink != 1
+            or member_state.st_uid != os.geteuid()
+            or stat.S_IMODE(member_state.st_mode) != 0o644
+            or member_state.st_size != len(raw)
+            or set(os.listdir(staging_fd)) != {BUNDLE_FILENAME}
+        ):
+            raise DenseScaleManifestError("staging bundle closure is invalid")
+        os.fsync(staging_fd)
+
+        source_state = _entry_state(parent_fd, staging_name)
+        if source_state is None or _inode_identity(source_state) != staging_identity:
+            raise DenseScaleManifestError("staging directory path changed before publish")
+        if _entry_state(parent_fd, target.name) is not None:
+            raise FileExistsError(target)
+        _rename_directory_noreplace_at(
+            parent_fd,
+            staging_name,
+            parent_fd,
+            target.name,
+        )
+        published = True
+
+        target_state = _entry_state(parent_fd, target.name)
+        if target_state is None or _inode_identity(target_state) != staging_identity:
+            raise DenseScaleManifestError("published directory identity drifted")
+        if _entry_state(parent_fd, staging_name) is not None:
+            raise DenseScaleManifestError("staging name survived publication")
+        if set(os.listdir(staging_fd)) != {BUNDLE_FILENAME}:
+            raise DenseScaleManifestError("published bundle closure drifted")
+        published_member = _entry_state(staging_fd, BUNDLE_FILENAME)
+        if (
+            published_member is None
+            or member_state is None
+            or _directory_state(published_member) != _directory_state(member_state)
+            or _directory_state(os.fstat(member_fd)) != _directory_state(member_state)
+            or _inode_identity(os.fstat(staging_fd)) != staging_identity
+        ):
+            raise DenseScaleManifestError("published bundle member identity drifted")
+        os.fsync(staging_fd)
+        os.fsync(parent_fd)
+
+        final_parent_path_state = parent.lstat()
+        final_target_path_state = target.lstat()
+        if (
+            _inode_identity(final_parent_path_state) != _inode_identity(opened_parent)
+            or _inode_identity(final_target_path_state) != staging_identity
+        ):
+            raise DenseScaleManifestError("published bundle lexical path drifted")
         return target
+    except FileExistsError:
+        raise
+    except DenseScaleManifestError:
+        raise
+    except OSError as error:
+        raise DenseScaleManifestError("bundle descriptor publication failed") from error
     finally:
-        if temporary is not None:
-            shutil.rmtree(temporary, ignore_errors=True)
-        try:
-            lock.rmdir()
-        except FileNotFoundError:
-            pass
+        if (
+            not published
+            and parent_fd >= 0
+            and staging_fd >= 0
+            and staging_name is not None
+            and staging_identity is not None
+        ):
+            _cleanup_pinned_staging_directory(
+                parent_fd=parent_fd,
+                staging_fd=staging_fd,
+                staging_name=staging_name,
+                staging_identity=staging_identity,
+                member_state=member_state,
+            )
+        if member_fd >= 0:
+            os.close(member_fd)
+        if staging_fd >= 0:
+            os.close(staging_fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
 
 
 def _self_test(repository_root: Path | None) -> dict[str, Any]:

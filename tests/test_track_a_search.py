@@ -60,6 +60,14 @@ def _verifier_profile(calls: int = 2) -> TrackABudgetProfile:
     )
 
 
+def _anchor_qualification_profile() -> TrackABudgetProfile:
+    return TrackABudgetProfile(
+        profile_id="dense_scale_anchor_fixture_verifier3",
+        primary_axis="verifier_calls",
+        budget=_budget(verifier_calls=3),
+    )
+
+
 def _score_profile(scores: int) -> TrackABudgetProfile:
     return TrackABudgetProfile(
         profile_id=f"test_score{scores}",
@@ -804,7 +812,7 @@ class TrackASearchTests(unittest.TestCase):
             )
 
     def test_scaled_dense_terminal_anchors_match_v2_and_v3_behavior(self) -> None:
-        profile = _verifier_profile(3)
+        profile = _anchor_qualification_profile()
         for source in ("iid", "sobol"):
             pairs = (
                 (

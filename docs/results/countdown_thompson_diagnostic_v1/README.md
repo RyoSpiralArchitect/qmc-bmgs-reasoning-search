@@ -1,5 +1,25 @@
 # Countdown Thompson diagnostic v1 post-hoc receipts
 
+## Selection-margin sensitivity
+
+`selection_margin_v1.json` is the canonical read-only selection-margin receipt.
+
+- schema: `qmc-bmgs-countdown-thompson-selection-margin/v1`
+- deterministic digest:
+  `c86a685cb1fe45a1d2bbaace7270f36bf9c815590006640bd098090d7ae4adf8`
+- raw SHA-256:
+  `24546bc6745beb997e211ad4576d1291e2afdec12a1c811dbab3b7aa66c0a942`
+- byte count: 2,000,231
+- source revision: `7c4b865c4ad40d35f0eff52e6c58634656b8f3f6`
+- handoff decision: `STOP_REPAIR_NO_LOCKED_128_RUN`
+
+It reconstructs the recorded posterior before each feedback-informed
+selection, reports exact-rational local scale boundaries, and pairs v2/v3 only
+while their pre-decision surface remains identical. It evaluates no terminal
+performance counterfactual.
+
+## Mechanism and outcome reductions
+
 `posthoc_mechanism_v3.json` is the canonical receipt.
 
 - schema: `qmc-bmgs-countdown-thompson-posthoc-mechanism/v3`
@@ -24,6 +44,6 @@ normal `/Users/...` input paths and produced byte-identical v3 receipts. V1,
 v2, and v3 frozen reductions are identical; v2 and v3 supplemental values are
 identical.
 
-Neither receipt authorizes a retry, a provider call, a new outcome-bearing
-cohort, or locked-128 execution. Integrity `PASS` is provenance, replay,
-coverage, and deterministic reduction closure only.
+No receipt in this directory authorizes a retry, a provider call, a new
+outcome-bearing cohort, or locked-128 execution. Integrity `PASS` is
+provenance, replay, coverage, and deterministic reduction closure only.

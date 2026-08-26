@@ -211,27 +211,45 @@ interpreter、実行中code objectのin-memory mutation、kernel compromiseをat
 Schema v2 fresh replayもv1と`reductions`、`posthoc_revalidation`、`input_provenance`が
 exactly equalであり、数値結果は変わっていない。
 
+最終exact-head fresh reviewは、通常のtimestamp-based `.pyc`へ改変codeを置くと、
+loaded moduleの`__file__`がclean tracked `.py`を指したまま改変codeを実行できる
+追加の穴を再現した。Reviewerの最終summary自体はhost safety filterで中断したが、
+その前の独立messageはexact head、targeted 20/20、clean external clone、empty
+`git status`、改変code sentinel実行、runtime receipt `PASS`を具体的に報告した。
+
+Schema v3はaudit modeをsafe-path `-P`、bytecode write disabled `-B`、専用の空
+mode-`0700` bytecode-cache prefixに限定する。8 project modulesすべてについてexact
+`SourceFileLoader`、expected clean-HEAD origin、prefix内のcache path、cache file不在を
+frozen input path解決前に確認する。Regression testは実際に改変timestamp `.pyc`を
+loadしてsentinelを確認した後、そのruntimeをfail closedする。
+
+このbindingはordinary source-file imports、静的に存在するbytecode-cache substitution、
+clean-HEAD file bytesまでである。Hostile interpreter/import hook、first attestation前の
+concurrent cache deletion、in-memory code mutation、kernel compromiseをattestしない。
+Schema v3のnormal/lowercase fresh replayもv2と`reductions`、
+`posthoc_revalidation`、`input_provenance`、handoff decisionがexactly equalだった。
+
 ## Provenance and validation
 
 - frozen design revision:
   `997345a6b466d9bc824672921cd2e6bd2dc43668`
 - audit source revision:
-  `09c7ce34d8576deffbd2bc91b22771db4b7950db`
+  `a14f0ffeacf87a37bebc51633f9483b2b06c474b`
 - audit module SHA-256:
-  `6eb2598e0ca98cdcc0f77219169a0b642b1760be871a4266c24e0b44c0e8f294`
+  `1406ad7e0eb94331ac3142038d9e509fde9aae0a3f5644b30ad9b25a9604f8dd`
 - frozen design SHA-256:
   `9c92292769b0395c7c818fe4032713b4018ecd319ba4b9d583d98e557c4a5509`
 - receipt deterministic digest:
-  `4b21ce04fe9c41b2553eea13925b1ffa17a9321c4f13c48c653a43c0d7a25f38`
+  `8efff0561f1ba65bc45580573ba422371bfaefe285269434ca785bebc83fc252`
 - receipt raw SHA-256:
-  `14e87c3fac746918546ecb9e63e75822bab464899d4977452ce16eae60e93828`
-- receipt byte count: 2,002,183
+  `8414267365ef8b172bb6ebef6a9886a60560058079ae93d16f3d0c6c3e67afc0`
+- receipt byte count: 2,003,163
 - existing post-hoc frozen reductions and supplemental validation freshly
   recomputed exactly: `PASS`
 - normal `/Users/...` inputs and lowercase `/users/...` aliases produced
   byte-identical receipts: `PASS`
-- focused old/new audit tests: 37/37 `PASS`
-- full repository validation: 598 tests, artifact verification, and every CLI
+- focused old/new audit tests: 40/40 `PASS`
+- full repository validation: 601 tests, artifact verification, and every CLI
   self-test `PASS`
 
 Canonical receipt:

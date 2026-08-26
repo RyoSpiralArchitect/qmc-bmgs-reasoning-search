@@ -4,13 +4,13 @@
 
 `selection_margin_v1.json` is the canonical read-only selection-margin receipt.
 
-- schema: `qmc-bmgs-countdown-thompson-selection-margin/v2`
+- schema: `qmc-bmgs-countdown-thompson-selection-margin/v3`
 - deterministic digest:
-  `4b21ce04fe9c41b2553eea13925b1ffa17a9321c4f13c48c653a43c0d7a25f38`
+  `8efff0561f1ba65bc45580573ba422371bfaefe285269434ca785bebc83fc252`
 - raw SHA-256:
-  `14e87c3fac746918546ecb9e63e75822bab464899d4977452ce16eae60e93828`
-- byte count: 2,002,183
-- source revision: `09c7ce34d8576deffbd2bc91b22771db4b7950db`
+  `8414267365ef8b172bb6ebef6a9886a60560058079ae93d16f3d0c6c3e67afc0`
+- byte count: 2,003,163
+- source revision: `a14f0ffeacf87a37bebc51633f9483b2b06c474b`
 - handoff decision: `STOP_REPAIR_NO_LOCKED_128_RUN`
 
 It reconstructs the recorded posterior before each feedback-informed
@@ -24,10 +24,29 @@ surface, and imported publication failures escaped the canonical CLI error
 boundary. The source revision above pins every frozen identity in code,
 cross-checks stable post-hoc authority metadata, validates this tracked receipt
 in the repository suite, and returns canonical `INVALID` for those failures.
-Schema v2 additionally binds the loaded audit, post-hoc, analyzer, publication,
-trace, and package import origins to regular clean-HEAD blobs. This is an
-ordinary-Python import/file-byte claim; it does not attest a hostile interpreter
-or in-memory code mutation.
+Schema v2 additionally bound the loaded audit, post-hoc, analyzer, publication,
+trace, and package import origins to regular clean-HEAD blobs. A second fresh
+rereview reproduced a timestamp-based `.pyc` substitution that retained the
+clean `.py` origin. Schema v3 therefore requires audit mode to run with `-P -B`
+and a dedicated empty mode-`0700` `-X pycache_prefix=...`; all eight project
+modules must use the exact `SourceFileLoader`, have cache paths inside that
+prefix, and have no cache file. The check runs before any frozen input path is
+resolved.
+
+The required interpreter envelope is:
+
+```sh
+cache_prefix="$(mktemp -d /tmp/qmc-bmgs-selection-margin-pycache.XXXXXX)"
+PYTHONPATH="$PWD/src" python3 -P -B -X "pycache_prefix=$cache_prefix" \
+  -m qmc_bmgs.experiments.countdown_thompson_selection_margin \
+  <all frozen path and digest arguments>
+rmdir "$cache_prefix"
+```
+
+This binds ordinary source-file imports, a statically present bytecode-cache
+substitution, and clean-HEAD file bytes. It does not attest a hostile interpreter
+or import hook, concurrent cache deletion before the first attestation,
+in-memory code mutation, or kernel compromise.
 
 ## Mechanism and outcome reductions
 

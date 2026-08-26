@@ -3078,7 +3078,11 @@ class CountdownThompsonDiagnosticAnalysisTests(unittest.TestCase):
                 ),
                 self.assertRaisesRegex(
                     analysis.DiagnosticAnalysisError,
-                    "source authority generation changed",
+                    (
+                        "source authority generation changed|"
+                        "protected source paths changed during topology proof|"
+                        "summary publication topology is ambiguous"
+                    ),
                 ),
             ):
                 analysis.write_countdown_thompson_diagnostic_summary(

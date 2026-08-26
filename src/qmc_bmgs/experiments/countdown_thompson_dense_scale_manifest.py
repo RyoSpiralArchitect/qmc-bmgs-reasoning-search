@@ -85,7 +85,16 @@ SCALE_ORDER = DENSE_TERMINAL_VALUE_SCALES
 EXPECTED_CELL_COUNT = TASK_COUNT * len(SCALE_ORDER) * len(EXPLORATION_SEEDS)
 BUNDLE_FILENAME = "preregistration.json"
 _BUNDLE_BYTE_CAP = 8 * 1024 * 1024
+_STABLE_INPUT_BYTE_CAP = 8 * 1024 * 1024
 _READ_CHUNK_BYTES = 1024 * 1024
+
+_QUALIFICATION_EXCLUSION_ORDER = (
+    "historical_2",
+    "canary_12",
+    "locked_128",
+    "diagnostic_12",
+    "dense_scale_development_12",
+)
 
 _SOURCE_BINDING_PATHS = (
     Path("src/qmc_bmgs/benchmarks/countdown.py"),
@@ -156,6 +165,7 @@ def _with_digest(core: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _read_stable_regular_file(path: Path, *, label: str) -> bytes:
+    file_fd = -1
     try:
         before = path.lstat()
     except OSError as error:
@@ -163,16 +173,43 @@ def _read_stable_regular_file(path: Path, *, label: str) -> bytes:
     if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
         raise DenseScaleManifestError(f"{label} must be a regular file")
     try:
-        raw = path.read_bytes()
-        after = path.lstat()
+        file_fd = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+        )
+        opened = os.fstat(file_fd)
+        if _directory_state(opened) != _directory_state(before):
+            raise DenseScaleManifestError(f"{label} changed during open")
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_size < 0
+            or opened.st_size > _STABLE_INPUT_BYTE_CAP
+        ):
+            raise DenseScaleManifestError(f"{label} must be a bounded regular file")
+        remaining = opened.st_size
+        chunks: list[bytes] = []
+        while remaining:
+            chunk = os.read(file_fd, min(remaining, _READ_CHUNK_BYTES))
+            if not chunk:
+                raise DenseScaleManifestError(f"{label} truncated during read")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(file_fd, 1):
+            raise DenseScaleManifestError(f"{label} grew during read")
+        after = os.fstat(file_fd)
+        final_path_state = path.lstat()
     except OSError as error:
-        raise DenseScaleManifestError(f"{label} could not be read") from error
+        raise DenseScaleManifestError(f"{label} descriptor read failed") from error
+    finally:
+        _close_descriptors_best_effort(file_fd)
     if (
-        _directory_state(before) != _directory_state(after)
-        or len(raw) != before.st_size
+        _directory_state(opened) != _directory_state(after)
+        or _directory_state(opened) != _directory_state(final_path_state)
     ):
         raise DenseScaleManifestError(f"{label} changed during read")
-    return raw
+    return b"".join(chunks)
 
 
 def _repository_root(repository_root: Path | None) -> Path:
@@ -598,8 +635,80 @@ def _cells_from_components(
     return tuple(cells)
 
 
-def _anchor_qualification_manifest() -> dict[str, Any]:
+def _qualification_identity_boundaries(
+    cohorts: Sequence[tuple[str, Sequence[CountdownTask]]],
+) -> tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]:
+    labels = tuple(label for label, _ in cohorts)
+    if labels != _QUALIFICATION_EXCLUSION_ORDER:
+        raise DenseScaleManifestError(
+            "anchor qualification identity boundary order drifted"
+        )
+    return tuple(
+        (
+            label,
+            tuple(task.task_fingerprint for task in tasks),
+            tuple(task.source_multiset_fingerprint for task in tasks),
+        )
+        for label, tasks in cohorts
+    )
+
+
+def _anchor_qualification_manifest(
+    identity_boundaries: Sequence[
+        tuple[str, Sequence[str], Sequence[str]]
+    ],
+) -> dict[str, Any]:
     task = CountdownTask((1, 2, 3, 4, 5, 6), target=720)
+    labels = tuple(label for label, _, _ in identity_boundaries)
+    if labels != _QUALIFICATION_EXCLUSION_ORDER:
+        raise DenseScaleManifestError(
+            "anchor qualification identity boundary order drifted"
+        )
+    excluded_tasks: list[str] = []
+    excluded_sources: list[str] = []
+    for label, task_fingerprints, source_fingerprints in identity_boundaries:
+        tasks = tuple(task_fingerprints)
+        sources = tuple(source_fingerprints)
+        if len(tasks) != len(sources) or not tasks:
+            raise DenseScaleManifestError(
+                f"anchor qualification identity boundary {label} is invalid"
+            )
+        if task.task_fingerprint in tasks:
+            raise DenseScaleManifestError(
+                f"public fixture full task overlaps {label}"
+            )
+        if task.source_multiset_fingerprint in sources:
+            raise DenseScaleManifestError(
+                f"public fixture source multiset overlaps {label}"
+            )
+        excluded_tasks.extend(tasks)
+        excluded_sources.extend(sources)
+    if len(excluded_tasks) != len(set(excluded_tasks)):
+        raise DenseScaleManifestError(
+            "anchor qualification full-task boundaries overlap"
+        )
+    if len(excluded_sources) != len(set(excluded_sources)):
+        raise DenseScaleManifestError(
+            "anchor qualification source-multiset boundaries overlap"
+        )
+    identity_separation = _with_digest(
+        {
+            "checked_boundary_order": list(labels),
+            "development_identity_only": True,
+            "excluded_full_task_count": len(excluded_tasks),
+            "excluded_full_task_digest": sha256_json(sorted(excluded_tasks)),
+            "excluded_source_multiset_count": len(excluded_sources),
+            "excluded_source_multiset_digest": sha256_json(
+                sorted(excluded_sources)
+            ),
+            "fixture_full_task_disjoint": True,
+            "fixture_source_multiset_disjoint": True,
+            "fixture_source_multiset_fingerprint": (
+                task.source_multiset_fingerprint
+            ),
+            "fixture_task_fingerprint": task.task_fingerprint,
+        }
+    )
     proposal = TrackAProposalSpec("greedy_rollout_target_error/v1")
     budget_limits = {axis: 20_000 for axis in TRACK_A_WORK_AXES}
     budget_limits["verifier_calls"] = 3
@@ -677,6 +786,7 @@ def _anchor_qualification_manifest() -> dict[str, Any]:
             "execution_count": 8,
             "exploration_seed": 7168,
             "fixture_task": task.to_dict(),
+            "identity_separation": identity_separation,
             "projection_schema_version": (
                 ANCHOR_EQUIVALENCE_PROJECTION_SCHEMA_VERSION
             ),
@@ -696,7 +806,11 @@ def _anchor_qualification_manifest() -> dict[str, Any]:
     )
 
 
-def _analysis_manifest() -> dict[str, Any]:
+def _analysis_manifest(
+    qualification_identity_boundaries: Sequence[
+        tuple[str, Sequence[str], Sequence[str]]
+    ],
+) -> dict[str, Any]:
     return _with_digest(
         {
             "analysis_order": [
@@ -735,7 +849,9 @@ def _analysis_manifest() -> dict[str, Any]:
                     "both traces pass canonical validation and two-stage byte "
                     "replay under their own sealed method"
                 ),
-                "qualification": _anchor_qualification_manifest(),
+                "qualification": _anchor_qualification_manifest(
+                    qualification_identity_boundaries
+                ),
                 "preserved": [
                     "all_other_run_identity_fields",
                     "event_count",
@@ -901,13 +1017,19 @@ def build_countdown_thompson_dense_scale_payload(
     if _sha256_bytes(design_raw) != FROZEN_DESIGN_SHA256:
         raise DenseScaleManifestError("frozen design bytes drifted")
     authority, prior_cohorts, authority_payloads = _verified_authority(root)
-    cohort, _ = _cohort_manifest(authority, prior_cohorts)
+    cohort, development_tasks = _cohort_manifest(authority, prior_cohorts)
     proposal = _proposal_manifest(authority_payloads)
     budget = _budget_manifest(authority_payloads)
     methods = _methods_manifest()
     runtime_binding = _source_binding(root, authority_payloads)
     cells = _cells_from_components(cohort, proposal, methods, budget)
-    analysis = _analysis_manifest()
+    qualification_identity_boundaries = _qualification_identity_boundaries(
+        (
+            *prior_cohorts,
+            ("dense_scale_development_12", development_tasks),
+        )
+    )
+    analysis = _analysis_manifest(qualification_identity_boundaries)
     execution = _execution_manifest(cells)
     payload = _with_digest(
         {
@@ -1080,10 +1202,7 @@ def _read_bundle_snapshot(bundle_dir: Path) -> _BundleSnapshot:
     except OSError as error:
         raise DenseScaleManifestError("bundle descriptor read failed") from error
     finally:
-        if file_fd >= 0:
-            os.close(file_fd)
-        if directory_fd >= 0:
-            os.close(directory_fd)
+        _close_descriptors_best_effort(file_fd, directory_fd)
 
 
 def _read_bundle_bytes(bundle_dir: Path) -> bytes:
@@ -1305,39 +1424,6 @@ def _require_pinned_member_bytes(
     return after
 
 
-def _cleanup_pinned_staging_directory(
-    *,
-    parent_fd: int,
-    staging_fd: int,
-    staging_name: str,
-    staging_identity: tuple[int, int, int],
-    member_state: os.stat_result | None,
-) -> None:
-    """Best-effort cleanup only while the original directory entry is pinned."""
-
-    current = _entry_state(parent_fd, staging_name)
-    if current is None or _inode_identity(current) != staging_identity:
-        return
-    try:
-        names = set(os.listdir(staging_fd))
-        if member_state is not None and names == {BUNDLE_FILENAME}:
-            current_member = _entry_state(staging_fd, BUNDLE_FILENAME)
-            if (
-                current_member is not None
-                and _directory_state(current_member) == _directory_state(member_state)
-            ):
-                os.unlink(BUNDLE_FILENAME, dir_fd=staging_fd)
-                os.fsync(staging_fd)
-        elif names:
-            return
-        current = _entry_state(parent_fd, staging_name)
-        if current is not None and _inode_identity(current) == staging_identity:
-            os.rmdir(staging_name, dir_fd=parent_fd)
-            os.fsync(parent_fd)
-    except OSError:
-        return
-
-
 def _close_descriptors_best_effort(*descriptors: int) -> None:
     for descriptor in descriptors:
         if descriptor < 0:
@@ -1359,9 +1445,11 @@ def write_countdown_thompson_dense_scale_bundle(
     directory and its only member remain open through the atomic no-replace
     rename.  Before descriptor cleanup, a final collective observation checks
     the canonical bytes, pinned identities, and descriptor-relative plus
-    lexical target binding.  As with any path-returning API, this observation
-    does not freeze same-credential mutations made after an object's final
-    check.
+    lexical target binding.  An unpublished hidden staging directory is
+    intentionally retained after failure: POSIX has no descriptor-conditioned
+    unlink, so automatic name-based cleanup could remove a same-credential
+    replacement.  As with any path-returning API, the final observation does
+    not freeze same-credential mutations made after an object's final check.
     """
 
     target = Path(destination)
@@ -1383,7 +1471,6 @@ def write_countdown_thompson_dense_scale_bundle(
     staging_name: str | None = None
     staging_identity: tuple[int, int, int] | None = None
     member_state: os.stat_result | None = None
-    published = False
     try:
         parent_fd = os.open(
             parent,
@@ -1429,6 +1516,13 @@ def write_countdown_thompson_dense_scale_bundle(
             0o600,
             dir_fd=staging_fd,
         )
+        opened_member = os.fstat(member_fd)
+        if (
+            not stat.S_ISREG(opened_member.st_mode)
+            or opened_member.st_nlink != 1
+            or opened_member.st_uid != os.geteuid()
+        ):
+            raise DenseScaleManifestError("staging bundle member identity is invalid")
         _write_all(member_fd, raw)
         os.fchmod(member_fd, 0o644)
         os.fsync(member_fd)
@@ -1454,7 +1548,6 @@ def write_countdown_thompson_dense_scale_bundle(
             parent_fd,
             target.name,
         )
-        published = True
 
         target_state = _entry_state(parent_fd, target.name)
         if target_state is None or _inode_identity(target_state) != staging_identity:
@@ -1517,23 +1610,7 @@ def write_countdown_thompson_dense_scale_bundle(
     except OSError as error:
         raise DenseScaleManifestError("bundle descriptor publication failed") from error
     finally:
-        try:
-            if (
-                not published
-                and parent_fd >= 0
-                and staging_fd >= 0
-                and staging_name is not None
-                and staging_identity is not None
-            ):
-                _cleanup_pinned_staging_directory(
-                    parent_fd=parent_fd,
-                    staging_fd=staging_fd,
-                    staging_name=staging_name,
-                    staging_identity=staging_identity,
-                    member_state=member_state,
-                )
-        finally:
-            _close_descriptors_best_effort(member_fd, staging_fd, parent_fd)
+        _close_descriptors_best_effort(member_fd, staging_fd, parent_fd)
 
 
 def _self_test(repository_root: Path | None) -> dict[str, Any]:

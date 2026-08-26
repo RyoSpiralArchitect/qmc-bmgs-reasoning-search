@@ -177,6 +177,16 @@ class DenseScaleManifestTests(unittest.TestCase):
         self.assertIs(
             qualification["v2_or_v3_development_execution_authority"], False
         )
+        separation = qualification["identity_separation"]
+        self.assertEqual(
+            tuple(separation["checked_boundary_order"]),
+            module._QUALIFICATION_EXCLUSION_ORDER,
+        )
+        self.assertEqual(separation["excluded_full_task_count"], 166)
+        self.assertEqual(separation["excluded_source_multiset_count"], 166)
+        self.assertTrue(separation["development_identity_only"])
+        self.assertTrue(separation["fixture_full_task_disjoint"])
+        self.assertTrue(separation["fixture_source_multiset_disjoint"])
         self.assertEqual(
             {row["spec"]["schema_version"] for row in self.payload["methods"]["methods"]},
             {SCALED_DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION},
@@ -218,6 +228,21 @@ class DenseScaleManifestTests(unittest.TestCase):
         self.assertNotIn(
             task.task_fingerprint,
             {row["task_fingerprint"] for row in self.payload["cohort"]["tasks"]},
+        )
+        self.assertNotIn(
+            task.source_multiset_fingerprint,
+            {
+                row["source_multiset_fingerprint"]
+                for row in self.payload["cohort"]["tasks"]
+            },
+        )
+        separation = qualification["identity_separation"]
+        self.assertEqual(
+            separation["fixture_task_fingerprint"], task.task_fingerprint
+        )
+        self.assertEqual(
+            separation["fixture_source_multiset_fingerprint"],
+            task.source_multiset_fingerprint,
         )
 
         observed_order: list[str] = []
@@ -301,6 +326,41 @@ class DenseScaleManifestTests(unittest.TestCase):
 
         self.assertEqual(observed_order, qualification["receipt_order"])
         self.assertEqual(execution_count, qualification["execution_count"])
+
+    def test_anchor_qualification_rejects_both_identity_overlaps_at_all_boundaries(
+        self,
+    ) -> None:
+        fixture = CountdownTask((1, 2, 3, 4, 5, 6), target=720)
+        for overlap_kind in ("full task", "source multiset"):
+            for overlap_index, overlap_label in enumerate(
+                module._QUALIFICATION_EXCLUSION_ORDER
+            ):
+                with self.subTest(kind=overlap_kind, boundary=overlap_label):
+                    boundaries = []
+                    for index, label in enumerate(
+                        module._QUALIFICATION_EXCLUSION_ORDER
+                    ):
+                        task_fingerprint = f"task-{index}"
+                        source_fingerprint = f"source-{index}"
+                        if index == overlap_index:
+                            if overlap_kind == "full task":
+                                task_fingerprint = fixture.task_fingerprint
+                            else:
+                                source_fingerprint = (
+                                    fixture.source_multiset_fingerprint
+                                )
+                        boundaries.append(
+                            (
+                                label,
+                                (task_fingerprint,),
+                                (source_fingerprint,),
+                            )
+                        )
+                    with self.assertRaisesRegex(
+                        module.DenseScaleManifestError,
+                        f"public fixture {overlap_kind} overlaps {overlap_label}",
+                    ):
+                        module._anchor_qualification_manifest(tuple(boundaries))
 
     def test_normal_bundle_verifies_and_payload_property_is_defensive(self) -> None:
         destination = self._write_bundle()
@@ -390,6 +450,70 @@ class DenseScaleManifestTests(unittest.TestCase):
         ):
             module._read_bundle_bytes(destination)
 
+    def test_stable_input_reader_rejects_regular_to_fifo_race_without_blocking(
+        self,
+    ) -> None:
+        source = self.root / "source.py"
+        source.write_bytes(b"stable")
+        real_open = os.open
+        rotated = False
+
+        def rotate_before_open(
+            path: object,
+            flags: int,
+            *args: object,
+            **kwargs: object,
+        ) -> int:
+            nonlocal rotated
+            if path == source and not rotated:
+                rotated = True
+                source.unlink()
+                os.mkfifo(source)
+                self.assertTrue(flags & os.O_NONBLOCK)
+                self.assertTrue(flags & getattr(os, "O_NOFOLLOW", 0))
+            return real_open(path, flags, *args, **kwargs)  # type: ignore[arg-type]
+
+        with (
+            patch.object(module.os, "open", side_effect=rotate_before_open),
+            self.assertRaises(module.DenseScaleManifestError),
+        ):
+            module._read_stable_regular_file(source, label="test source")
+        self.assertTrue(rotated)
+
+    def test_stable_input_reader_rejects_oversize_before_read(self) -> None:
+        source = self.root / "source.py"
+        source.write_bytes(b"12345")
+        with (
+            patch.object(module, "_STABLE_INPUT_BYTE_CAP", 4),
+            patch.object(
+                module.os,
+                "read",
+                side_effect=AssertionError("oversize input must not be read"),
+            ),
+            self.assertRaisesRegex(
+                module.DenseScaleManifestError,
+                "bounded regular file",
+            ),
+        ):
+            module._read_stable_regular_file(source, label="test source")
+
+    def test_bundle_reader_close_failure_is_independent_and_nonmasking(self) -> None:
+        destination = self._write_bundle()
+        expected = module._canonical_bytes(self.payload)
+        real_close = os.close
+        close_calls: list[int] = []
+
+        def fail_first_close_only(descriptor: int) -> None:
+            close_calls.append(descriptor)
+            real_close(descriptor)
+            if len(close_calls) == 1:
+                raise OSError(5, "injected close failure")
+
+        with patch.object(module.os, "close", side_effect=fail_first_close_only):
+            observed = module._read_bundle_bytes(destination)
+        self.assertEqual(observed, expected)
+        self.assertEqual(len(close_calls), 2)
+
     def test_verifier_rejects_byte_identical_bundle_path_rotation(self) -> None:
         destination = self._write_bundle()
         parked = self.root / "parked"
@@ -468,6 +592,115 @@ class DenseScaleManifestTests(unittest.TestCase):
             {module.BUNDLE_FILENAME},
         )
 
+    def test_writer_retains_preseal_failures_without_name_based_cleanup(self) -> None:
+        def retained_member(parent: Path, destination: Path) -> Path:
+            self.assertFalse(destination.exists())
+            staging = list(parent.glob(f".{destination.name}.tmp-*"))
+            self.assertEqual(len(staging), 1)
+            member = staging[0] / module.BUNDLE_FILENAME
+            self.assertEqual(set(staging[0].iterdir()), {member})
+            return member
+
+        def partial_write_then_fail(file_fd: int, raw: bytes) -> None:
+            os.write(file_fd, raw[:17])
+            raise OSError(5, "injected partial write failure")
+
+        write_parent = self.root / "write-failure"
+        write_parent.mkdir()
+        write_destination = write_parent / "bundle"
+        with (
+            patch.object(
+                module,
+                "build_countdown_thompson_dense_scale_payload",
+                return_value=copy.deepcopy(self.payload),
+            ),
+            patch.object(
+                module,
+                "_write_all",
+                side_effect=partial_write_then_fail,
+            ),
+            patch.object(
+                module.os,
+                "unlink",
+                side_effect=AssertionError("failed staging must not be unlinked"),
+            ),
+            self.assertRaisesRegex(
+                module.DenseScaleManifestError,
+                "descriptor publication failed",
+            ),
+        ):
+            module.write_countdown_thompson_dense_scale_bundle(
+                write_destination,
+                repository_root=self.repository_root,
+            )
+        self.assertEqual(retained_member(write_parent, write_destination).stat().st_size, 17)
+
+        chmod_parent = self.root / "chmod-failure"
+        chmod_parent.mkdir()
+        chmod_destination = chmod_parent / "bundle"
+        with (
+            patch.object(
+                module,
+                "build_countdown_thompson_dense_scale_payload",
+                return_value=copy.deepcopy(self.payload),
+            ),
+            patch.object(
+                module.os,
+                "fchmod",
+                side_effect=OSError(5, "injected chmod failure"),
+            ),
+            patch.object(
+                module.os,
+                "unlink",
+                side_effect=AssertionError("failed staging must not be unlinked"),
+            ),
+            self.assertRaisesRegex(
+                module.DenseScaleManifestError,
+                "descriptor publication failed",
+            ),
+        ):
+            module.write_countdown_thompson_dense_scale_bundle(
+                chmod_destination,
+                repository_root=self.repository_root,
+            )
+        self.assertEqual(
+            retained_member(chmod_parent, chmod_destination).read_bytes(),
+            module._canonical_bytes(self.payload),
+        )
+
+        fsync_parent = self.root / "fsync-failure"
+        fsync_parent.mkdir()
+        fsync_destination = fsync_parent / "bundle"
+        with (
+            patch.object(
+                module,
+                "build_countdown_thompson_dense_scale_payload",
+                return_value=copy.deepcopy(self.payload),
+            ),
+            patch.object(
+                module.os,
+                "fsync",
+                side_effect=OSError(5, "injected fsync failure"),
+            ),
+            patch.object(
+                module.os,
+                "unlink",
+                side_effect=AssertionError("failed staging must not be unlinked"),
+            ),
+            self.assertRaisesRegex(
+                module.DenseScaleManifestError,
+                "descriptor publication failed",
+            ),
+        ):
+            module.write_countdown_thompson_dense_scale_bundle(
+                fsync_destination,
+                repository_root=self.repository_root,
+            )
+        self.assertEqual(
+            retained_member(fsync_parent, fsync_destination).read_bytes(),
+            module._canonical_bytes(self.payload),
+        )
+
     def test_writer_does_not_replace_a_raced_destination(self) -> None:
         destination = self.root / "raced"
         real_rename = module._rename_directory_noreplace_at
@@ -508,7 +741,13 @@ class DenseScaleManifestTests(unittest.TestCase):
             )
         self.assertEqual(module._inode_identity(destination.lstat()), raced_identity[0])
         self.assertEqual(set(destination.iterdir()), set())
-        self.assertEqual(set(self.root.iterdir()), {destination})
+        retained = list(self.root.glob(f".{destination.name}.tmp-*"))
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(set(self.root.iterdir()), {destination, retained[0]})
+        self.assertEqual(
+            (retained[0] / module.BUNDLE_FILENAME).read_bytes(),
+            module._canonical_bytes(self.payload),
+        )
 
     def test_writer_rejects_staging_rotation_immediately_before_open(self) -> None:
         destination = self.root / "written"
@@ -594,7 +833,13 @@ class DenseScaleManifestTests(unittest.TestCase):
                 repository_root=self.repository_root,
             )
         self.assertFalse(destination.exists())
-        self.assertEqual(set(self.root.iterdir()), set())
+        retained = list(self.root.glob(f".{destination.name}.tmp-*"))
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(set(self.root.iterdir()), {retained[0]})
+        self.assertEqual(
+            (retained[0] / module.BUNDLE_FILENAME).read_bytes()[:1],
+            b"X",
+        )
 
     def test_writer_rejects_same_inode_overwrite_during_final_lexical_check(
         self,

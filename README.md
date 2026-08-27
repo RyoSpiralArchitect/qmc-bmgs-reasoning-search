@@ -41,6 +41,11 @@ engineering research repoです。
 - v2の次の診断ablationは、binary64正値floor付き`1/(1+absolute error)`を加えるv3と、
   座標を消費しないgreedy 1 trajectoryを明示的に先行させるv4です。いずれも旧methodを
   置換せず、anchor成功とその後のThompson追加成功を分離して評価します。
+- 240-cell診断ではmechanism更新は閉じたものの新規exact rescueは0でした。後続の
+  selection-margin監査でdense差は370 common surfaces中94件へ届き、action flipは4件、
+  64件は局所boundaryが16倍超でした。これを結果後の成功仮説にせず、旧154 task/sourceを
+  全除外した12-task開発cohort上で`0,1,2,4,8,16,32,64`だけを動かす384-cell v5を
+  outcome-blindにsealしました。通過しても次はfresh confirmationでありlocked-128ではありません。
 
 結果の短い読み方は [D4 result capsule](docs/results/d4_result.md)、
 [fresh channel-ablation capsule](docs/results/channel_ablation_fresh_n256.md)、
@@ -75,7 +80,9 @@ engineering research repoです。
 、次の一因子修正は
 [Thompson dimension-normalization v2](docs/strategy/countdown_thompson_dimension_normalization_v2.md)
 、後続のfeedback/anchor ablationは
-[Thompson feedback and anchor v3/v4](docs/strategy/countdown_thompson_feedback_anchor_v3_v4.md)
+[Thompson feedback and anchor v3/v4](docs/strategy/countdown_thompson_feedback_anchor_v3_v4.md)、
+次のsource-disjoint scale設計は
+[dense terminal scale dose response v5](docs/strategy/countdown_thompson_dense_scale_dose_response_v5.md)
 を参照してください。
 
 ## Layout
@@ -427,5 +434,19 @@ PYTHONPATH=src python -m pytest -q \
 authorization/source/bundleの前後再検証、no-overwrite summary publicationに閉じている。
 v2/v3/v4のどれもbase searchとしてgreedy/beamを上回れなければ、locked-128は
 開かず`STOP_REPAIR_NO_LOCKED_128_RUN`とする。
+
+現在の次段はsearch runnerを持たないv5 preregistrationまでです。次のコマンドは旧4 cohortの
+identity authority、新12-task生成、8 scale、384-cell schedule、canonical bytesを再検証しますが、
+開発cohortのproposal/perturbation/search outcomeは生成しません。
+
+```bash
+PYTHONPATH=src python -m \
+  qmc_bmgs.experiments.countdown_thompson_dense_scale_manifest \
+  --verify docs/preregistrations/countdown_thompson_dense_scale_v5 \
+  --repository-root .
+```
+
+seal digestは
+`49f820692aa4f3551ca5634bdc89efe225fe05d1dc8acb8e814f231f3eea222f`です。
 
 自然言語reasoningへの一般化や一般的なQMC優位は、まだ主張しません。

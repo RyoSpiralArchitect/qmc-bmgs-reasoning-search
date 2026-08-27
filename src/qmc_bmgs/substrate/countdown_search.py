@@ -51,6 +51,10 @@ METHOD_SPEC_SCHEMA_VERSION = "qmc-bmgs-track-a-method-spec/v1"
 DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION = "qmc-bmgs-track-a-method-spec/v2"
 DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION = "qmc-bmgs-track-a-method-spec/v3"
 GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION = "qmc-bmgs-track-a-method-spec/v4"
+SCALED_DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION = "qmc-bmgs-track-a-method-spec/v5"
+ANCHOR_EQUIVALENCE_PROJECTION_SCHEMA_VERSION = (
+    "countdown_track_a_anchor_equivalence/v1"
+)
 BUDGET_PROFILE_SCHEMA_VERSION = "qmc-bmgs-track-a-budget-profile/v1"
 SEARCH_SCHEMA_VERSION = "qmc-bmgs-track-a-countdown-search/v1"
 SEARCH_EVENT_SCHEMA_VERSION = "qmc-bmgs-track-a-search-event/v1"
@@ -62,6 +66,10 @@ GREEDY_ANCHORED_SELECTION_RULE_ID = (
 RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID = (
     "reciprocal_absolute_error_binary64_floor/v1"
 )
+SCALED_RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID = (
+    "scaled_reciprocal_absolute_error_binary64_floor/v1"
+)
+DENSE_TERMINAL_VALUE_SCALES = (0, 1, 2, 4, 8, 16, 32, 64)
 MIN_POSITIVE_BINARY64 = float.fromhex("0x0.0000000000001p-1022")
 
 _METHODS = {"greedy", "beam", "puct", "thompson"}
@@ -104,6 +112,7 @@ class TrackAMethodSpec:
     terminal_value_rule_id: str | None = None
     greedy_anchor_trajectory_count: int | None = None
     schema_version: str = METHOD_SPEC_SCHEMA_VERSION
+    terminal_value_scale: int | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version not in {
@@ -111,6 +120,7 @@ class TrackAMethodSpec:
             DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION,
             DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
             GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION,
+            SCALED_DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
         }:
             raise ValueError("unsupported Track A method-spec schema")
         if type(self.method) is not str:
@@ -126,6 +136,7 @@ class TrackAMethodSpec:
             DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION,
             DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
             GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION,
+            SCALED_DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
         }:
             if self.method != "thompson":
                 raise ValueError(
@@ -149,6 +160,7 @@ class TrackAMethodSpec:
             selection_rule_id = DIMENSION_NORMALIZED_SELECTION_RULE_ID
             terminal_value_rule_id: str | None = None
             greedy_anchor_trajectory_count: int | None = None
+            terminal_value_scale: int | None = None
             if self.schema_version == DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION:
                 if type(self.terminal_value_rule_id) is not str:
                     raise ValueError("terminal_value_rule_id must be a plain string")
@@ -172,6 +184,26 @@ class TrackAMethodSpec:
                     RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID
                 )
                 greedy_anchor_trajectory_count = 1
+            elif (
+                self.schema_version == SCALED_DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION
+            ):
+                if type(self.terminal_value_rule_id) is not str:
+                    raise ValueError("terminal_value_rule_id must be a plain string")
+                if type(self.greedy_anchor_trajectory_count) is not int:
+                    raise ValueError(
+                        "greedy_anchor_trajectory_count must be a plain integer"
+                    )
+                if type(self.terminal_value_scale) is not int:
+                    raise ValueError("terminal_value_scale must be a plain integer")
+                if self.terminal_value_scale not in DENSE_TERMINAL_VALUE_SCALES:
+                    raise ValueError(
+                        "terminal_value_scale must be one of the frozen v5 scales"
+                    )
+                terminal_value_rule_id = (
+                    SCALED_RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID
+                )
+                greedy_anchor_trajectory_count = 0
+                terminal_value_scale = self.terminal_value_scale
             expected = (
                 self.selected_source,
                 None,
@@ -181,6 +213,7 @@ class TrackAMethodSpec:
                 selection_rule_id,
                 terminal_value_rule_id,
                 greedy_anchor_trajectory_count,
+                terminal_value_scale,
             )
         elif self.method == "greedy":
             expected = ("none", None, None, None, None)
@@ -229,12 +262,14 @@ class TrackAMethodSpec:
             DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION,
             DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
             GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION,
+            SCALED_DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
         }:
             observed = (
                 *observed,
                 self.selection_rule_id,
                 self.terminal_value_rule_id,
                 self.greedy_anchor_trajectory_count,
+                self.terminal_value_scale,
             )
         elif any(
             value is not None
@@ -242,6 +277,7 @@ class TrackAMethodSpec:
                 self.selection_rule_id,
                 self.terminal_value_rule_id,
                 self.greedy_anchor_trajectory_count,
+                self.terminal_value_scale,
             )
         ):
             raise ValueError("method-spec v1 does not define v2+ semantics")
@@ -337,6 +373,28 @@ class TrackAMethodSpec:
             schema_version=GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION,
         )
 
+    @classmethod
+    def dimension_normalized_scaled_dense_thompson(
+        cls,
+        source: str,
+        terminal_value_scale: int,
+    ) -> TrackAMethodSpec:
+        """Vary only reciprocal-error terminal feedback strength."""
+
+        return cls(
+            method="thompson",
+            selected_source=source,
+            prior_bonus=1.0,
+            posterior_sd_scale=1.0,
+            selection_rule_id=DIMENSION_NORMALIZED_SELECTION_RULE_ID,
+            terminal_value_rule_id=(
+                SCALED_RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID
+            ),
+            greedy_anchor_trajectory_count=0,
+            terminal_value_scale=terminal_value_scale,
+            schema_version=SCALED_DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
+        )
+
     @property
     def method_id(self) -> str:
         if self.schema_version == DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION:
@@ -345,6 +403,8 @@ class TrackAMethodSpec:
             return "thompson_reciprocal_error_terminal_dimnorm_noise/v3"
         if self.schema_version == GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION:
             return "thompson_greedy_anchor_reciprocal_error_terminal_dimnorm_noise/v4"
+        if self.schema_version == SCALED_DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION:
+            return "thompson_scaled_reciprocal_error_terminal_dimnorm_noise/v5"
         return {
             "greedy": "greedy/v1",
             "beam": "layer_synchronous_beam_width_2/v1",
@@ -362,6 +422,7 @@ class TrackAMethodSpec:
             DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION,
             DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
             GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION,
+            SCALED_DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
         }
 
     @property
@@ -369,7 +430,12 @@ class TrackAMethodSpec:
         return self.schema_version in {
             DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
             GREEDY_ANCHORED_METHOD_SPEC_SCHEMA_VERSION,
+            SCALED_DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION,
         }
+
+    @property
+    def scaled_dense_terminal_value(self) -> bool:
+        return self.schema_version == SCALED_DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -389,6 +455,8 @@ class TrackAMethodSpec:
             payload["greedy_anchor_trajectory_count"] = (
                 self.greedy_anchor_trajectory_count
             )
+        if self.scaled_dense_terminal_value:
+            payload["terminal_value_scale"] = self.terminal_value_scale
         return payload
 
 
@@ -482,6 +550,61 @@ def _dense_terminal_value_evidence(
     }
 
 
+def _scaled_dense_terminal_value_evidence(
+    verification: CountdownVerification,
+    terminal_value_scale: int,
+) -> dict[str, int | float]:
+    """Build exact evidence for the frozen reciprocal-error scale family."""
+
+    if type(verification) is not CountdownVerification:
+        raise TypeError("verification must be exactly CountdownVerification")
+    if type(terminal_value_scale) is not int:
+        raise TypeError("terminal_value_scale must be a plain integer")
+    if terminal_value_scale not in DENSE_TERMINAL_VALUE_SCALES:
+        raise ValueError("terminal_value_scale is outside the frozen v5 grid")
+    final_value = verification.final_value
+    target = verification.target
+    if type(final_value) is not int or final_value <= 0:
+        raise AssertionError("complete Countdown verification lacks a final value")
+    if type(target) is not int or target <= 0:
+        raise AssertionError("Countdown verification target drifted")
+    if verification.success is not (final_value == target):
+        raise AssertionError("Countdown exact-success semantics drifted")
+    error = abs(final_value - target)
+    if error == 0:
+        numerator = 1
+        denominator = 1
+    else:
+        numerator = terminal_value_scale
+        denominator = terminal_value_scale + error
+    unfloored_value = numerator / denominator
+    floor_applied = terminal_value_scale > 0 and unfloored_value == 0.0
+    return {
+        "terminal_absolute_error": error,
+        "terminal_value": (MIN_POSITIVE_BINARY64 if floor_applied else unfloored_value),
+        "terminal_value_denominator": denominator,
+        "terminal_value_floor": MIN_POSITIVE_BINARY64,
+        "terminal_value_floor_applied": floor_applied,
+        "terminal_value_numerator": numerator,
+        "terminal_value_scale": terminal_value_scale,
+    }
+
+
+def _terminal_value_evidence(
+    method: TrackAMethodSpec,
+    verification: CountdownVerification,
+) -> dict[str, int | float]:
+    if type(method) is not TrackAMethodSpec:
+        raise TypeError("method must be exactly TrackAMethodSpec")
+    if method.scaled_dense_terminal_value:
+        scale = method.terminal_value_scale
+        assert type(scale) is int
+        return _scaled_dense_terminal_value_evidence(verification, scale)
+    if method.dense_terminal_value:
+        return _dense_terminal_value_evidence(verification)
+    raise AssertionError("binary terminal method has no dense evidence")
+
+
 def _terminal_backup_value(
     method: TrackAMethodSpec,
     verification: CountdownVerification,
@@ -492,12 +615,14 @@ def _terminal_backup_value(
         raise TypeError("verification must be exactly CountdownVerification")
     if not method.dense_terminal_value:
         return 1.0 if verification.success else 0.0
-    if (
-        method.terminal_value_rule_id
-        != RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID
-    ):
+    expected_rule = (
+        SCALED_RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID
+        if method.scaled_dense_terminal_value
+        else RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID
+    )
+    if method.terminal_value_rule_id != expected_rule:
         raise AssertionError("dense terminal-value rule drifted")
-    return float(_dense_terminal_value_evidence(verification)["terminal_value"])
+    return float(_terminal_value_evidence(method, verification)["terminal_value"])
 
 
 @dataclass(frozen=True)
@@ -1241,7 +1366,9 @@ class _SearchSession:
                     "updates": updates,
                 }
                 if self.method.dense_terminal_value:
-                    backup_payload.update(_dense_terminal_value_evidence(verification))
+                    backup_payload.update(
+                        _terminal_value_evidence(self.method, verification)
+                    )
                     backup_payload["terminal_value_rule_id"] = (
                         self.method.terminal_value_rule_id
                     )
@@ -1674,6 +1801,112 @@ def _action_from_payload(payload: Any) -> CountdownAction:
         raise TraceValidationError("stage 1 action material is invalid") from error
 
 
+def project_track_a_anchor_equivalence_trace(
+    payload: bytes,
+    *,
+    method: TrackAMethodSpec,
+) -> dict[str, Any]:
+    """Apply the frozen cross-schema anchor projection after replay validation.
+
+    Callers must first require two-stage byte replay under ``method``.  This
+    function revalidates canonical trace integrity and then normalizes only the
+    sealed method/schema fields and dense evidence fields that differ by
+    construction between v2/v5 scale zero or v3/v5 scale one.
+    """
+
+    if type(method) is not TrackAMethodSpec:
+        raise TypeError("method must be exactly TrackAMethodSpec")
+    if method.schema_version == DIMENSION_NORMALIZED_METHOD_SPEC_SCHEMA_VERSION:
+        anchor_label = "binary_terminal_anchor"
+    elif method.schema_version == DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION:
+        anchor_label = "reciprocal_error_anchor"
+    elif method.schema_version == SCALED_DENSE_TERMINAL_METHOD_SPEC_SCHEMA_VERSION:
+        if method.terminal_value_scale == 0:
+            anchor_label = "binary_terminal_anchor"
+        elif method.terminal_value_scale == 1:
+            anchor_label = "reciprocal_error_anchor"
+        else:
+            raise ValueError("v5 anchor projection requires scale zero or one")
+    else:
+        raise ValueError("method is outside the frozen anchor pairs")
+
+    parsed = validate_trace_bytes(payload)
+    run_identity = dict(parsed["run_identity"])
+    if run_identity.get("method_id") != method.method_id:
+        raise TraceValidationError("anchor projection method identity drifted")
+    run_identity["configuration_id"] = anchor_label
+    run_identity["method_id"] = anchor_label
+
+    dense_evidence_fields = {
+        "terminal_absolute_error",
+        "terminal_value_denominator",
+        "terminal_value_floor",
+        "terminal_value_floor_applied",
+        "terminal_value_numerator",
+        "terminal_value_rule_id",
+        "terminal_value_scale",
+    }
+    projected_events: list[dict[str, Any]] = []
+    for event in parsed["events"]:
+        event_payload = dict(event["payload"])
+        if event["kind"] == "selection_committed":
+            if event_payload.get("method") != method.to_dict():
+                raise TraceValidationError(
+                    "anchor projection selection method drifted"
+                )
+            event_payload["method"] = anchor_label
+        elif event["kind"] == "search_finished":
+            summary = event_payload.get("summary")
+            if (
+                type(summary) is not dict
+                or summary.get("method") != method.to_dict()
+                or summary.get("run_identity_digest")
+                != sha256_json(parsed["run_identity"])
+            ):
+                raise TraceValidationError(
+                    "anchor projection finished summary drifted"
+                )
+            projected_summary = dict(summary)
+            projected_summary["method"] = anchor_label
+            projected_summary["run_identity_digest"] = anchor_label
+            event_payload["summary"] = projected_summary
+        elif event["kind"] == "trajectory_backed_up":
+            event_payload = {
+                key: value
+                for key, value in event_payload.items()
+                if key not in dense_evidence_fields
+            }
+        projected_events.append(
+            {
+                "charge": event["charge"],
+                "index": event["index"],
+                "kind": event["kind"],
+                "payload": event_payload,
+            }
+        )
+
+    ledger_snapshot = dict(parsed["ledger_snapshot"])
+    for storage_field in ("live_storage", "peak_live_storage"):
+        storage = ledger_snapshot.get(storage_field)
+        if type(storage) is not dict or type(storage.get("bytes")) is not int:
+            raise TraceValidationError(
+                "anchor projection storage accounting drifted"
+            )
+        projected_storage = dict(storage)
+        projected_storage["bytes"] = anchor_label
+        ledger_snapshot[storage_field] = projected_storage
+
+    return {
+        "anchor_label": anchor_label,
+        "event_count": parsed["event_count"],
+        "events": projected_events,
+        "ledger_snapshot": ledger_snapshot,
+        "projection_schema_version": ANCHOR_EQUIVALENCE_PROJECTION_SCHEMA_VERSION,
+        "run_identity": run_identity,
+        "trace_schema_version": parsed["schema_version"],
+    }
+
+
 def _validate_stage_one_material(
     parsed: Mapping[str, Any],
     *,
@@ -1688,6 +1921,13 @@ def _validate_stage_one_material(
     next_visits: dict[str, int] = {}
     point_digests: set[str] = set()
     referenced_point_digests: set[str] = set()
+    posterior_states: dict[tuple[CountdownState, int], _Posterior] = {}
+    pending_backup: tuple[
+        CountdownVerification,
+        int,
+        tuple[tuple[CountdownState, int], ...],
+    ] | None = None
+    next_observation_index = 0
     validated_material: dict[
         tuple[str, int], tuple[dict[str, Any], dict[str, Any]]
     ] = {}
@@ -1696,6 +1936,10 @@ def _validate_stage_one_material(
     for event in parsed["events"]:
         kind = event["kind"]
         payload = event["payload"]
+        if pending_backup is not None and kind != "trajectory_backed_up":
+            raise TraceValidationError(
+                "stage 1 terminal verification is not followed by its backup"
+            )
         if kind == "proposal_materialized":
             if event["charge"] is not None:
                 raise TraceValidationError(
@@ -1883,78 +2127,123 @@ def _validate_stage_one_material(
                 raise TraceValidationError(
                     "stage 1 unperturbed selection references random material"
                 )
+        elif kind == "terminal_verified":
+            charge = event["charge"]
+            expected_delta = {axis: 0 for axis in TRACK_A_WORK_AXES}
+            expected_delta["verifier_calls"] = 1
+            if charge is None or charge["delta"] != expected_delta:
+                raise TraceValidationError(
+                    "stage 1 terminal verifier receipt does not close"
+                )
+            action_payloads = payload.get("actions")
+            observation_index = payload.get("observation_index")
+            trajectory_index = payload.get("trajectory_index")
+            if type(action_payloads) is not list:
+                raise TraceValidationError("stage 1 terminal actions are malformed")
+            if (
+                type(observation_index) is not int
+                or observation_index != next_observation_index
+                or type(trajectory_index) is not int
+                or trajectory_index != next_observation_index
+            ):
+                raise TraceValidationError(
+                    "stage 1 terminal observation order drifted"
+                )
+            actions = tuple(_action_from_payload(item) for item in action_payloads)
+            state = task.initial_state
+            states = [state]
+            edge_path: list[tuple[CountdownState, int]] = []
+            cumulative_prior_logp = 0.0
+            for action in actions:
+                row = evaluate_track_a_proposal(task, state, proposal)
+                try:
+                    action_index = row.actions.index(action)
+                    child = task.transition(state, action)
+                except ValueError as error:
+                    raise TraceValidationError(
+                        "stage 1 terminal action path is invalid"
+                    ) from error
+                edge_path.append((state, action_index))
+                cumulative_prior_logp += row.prior_logp[action_index]
+                state = child
+                states.append(state)
+            if len(state) != 1:
+                raise TraceValidationError(
+                    "stage 1 terminal path did not reach a terminal state"
+                )
+            verification = task.verify(actions)
+            expected_terminal_payload = _event_payload(
+                {
+                    "actions": [action.to_dict() for action in actions],
+                    "cumulative_prior_logp": cumulative_prior_logp,
+                    "observation_index": observation_index,
+                    "states": [list(item) for item in states],
+                    "trajectory_index": trajectory_index,
+                    "verification": verification.to_dict(),
+                }
+            )
+            if payload != expected_terminal_payload:
+                raise TraceValidationError(
+                    "stage 1 terminal failed independent reconstruction"
+                )
+            if method.method in {"puct", "thompson"}:
+                pending_backup = (
+                    verification,
+                    trajectory_index,
+                    tuple(edge_path),
+                )
+            next_observation_index += 1
         elif kind == "trajectory_backed_up":
             if event["charge"] is not None:
                 raise TraceValidationError("stage 1 backup event must be uncharged")
-            terminal_value = payload.get("terminal_value")
-            if type(terminal_value) is not float or not math.isfinite(terminal_value):
+            if pending_backup is None:
                 raise TraceValidationError(
-                    "stage 1 backup terminal value is not a finite plain float"
+                    "stage 1 backup lacks a terminal verification"
                 )
+            verification, trajectory_index, edge_path = pending_backup
+            terminal_value = _terminal_backup_value(method, verification)
+            expected_updates: list[dict[str, Any]] = []
+            for state, action_index in reversed(edge_path):
+                key = (state, action_index)
+                current = posterior_states.get(key, _Posterior())
+                count = current.visits + 1
+                delta = terminal_value - current.mean
+                mean = current.mean + delta / count
+                m2 = current.m2 + delta * (terminal_value - mean)
+                expected_updates.append(
+                    {
+                        "action_index": action_index,
+                        "after": {"m2": m2, "mean": mean, "visits": count},
+                        "before": current.to_dict(),
+                        "state": list(state),
+                    }
+                )
+            expected_backup_payload: dict[str, Any] = {
+                "discount": 1.0,
+                "order": "leaf_to_root",
+                "terminal_value": terminal_value,
+                "trajectory_index": trajectory_index,
+                "updates": expected_updates,
+            }
             if method.dense_terminal_value:
-                if (
-                    payload.get("terminal_value_rule_id")
-                    != RECIPROCAL_ABSOLUTE_ERROR_TERMINAL_VALUE_RULE_ID
-                    or type(payload.get("terminal_value_rule_id")) is not str
-                ):
-                    raise TraceValidationError(
-                        "stage 1 dense terminal-value rule drifted"
-                    )
-                absolute_error = payload.get("terminal_absolute_error")
-                numerator = payload.get("terminal_value_numerator")
-                denominator = payload.get("terminal_value_denominator")
-                floor_value = payload.get("terminal_value_floor")
-                floor_applied = payload.get("terminal_value_floor_applied")
-                unfloored_value = (
-                    numerator / denominator
-                    if type(numerator) is int
-                    and type(denominator) is int
-                    and denominator > 0
-                    else None
+                expected_backup_payload.update(
+                    _terminal_value_evidence(method, verification)
                 )
-                if (
-                    type(absolute_error) is not int
-                    or absolute_error < 0
-                    or type(numerator) is not int
-                    or numerator != 1
-                    or type(denominator) is not int
-                    or denominator != 1 + absolute_error
-                    or type(floor_value) is not float
-                    or floor_value != MIN_POSITIVE_BINARY64
-                    or type(floor_applied) is not bool
-                    or floor_applied is not (unfloored_value == 0.0)
-                    or terminal_value
-                    != (floor_value if floor_applied else unfloored_value)
-                ):
-                    raise TraceValidationError(
-                        "stage 1 dense terminal-value evidence drifted"
-                    )
-                if not 0.0 < terminal_value <= 1.0:
-                    raise TraceValidationError(
-                        "stage 1 dense terminal value is outside (0, 1]"
-                    )
-                if (terminal_value == 1.0) is not (absolute_error == 0):
-                    raise TraceValidationError(
-                        "stage 1 dense exact-success value drifted"
-                    )
-                if absolute_error > 0 and terminal_value > 0.5:
-                    raise TraceValidationError(
-                        "stage 1 dense failure value exceeds one half"
-                    )
-            elif any(
-                key in payload
-                for key in (
-                    "terminal_absolute_error",
-                    "terminal_value_denominator",
-                    "terminal_value_floor",
-                    "terminal_value_floor_applied",
-                    "terminal_value_numerator",
-                    "terminal_value_rule_id",
+                expected_backup_payload["terminal_value_rule_id"] = (
+                    method.terminal_value_rule_id
                 )
-            ):
+            if payload != _event_payload(expected_backup_payload):
                 raise TraceValidationError(
-                    "stage 1 binary backup contains dense terminal semantics"
+                    "stage 1 backup failed terminal-linked reconstruction"
                 )
+            for update in expected_updates:
+                key = (tuple(update["state"]), update["action_index"])
+                after = update["after"]
+                posterior = posterior_states.setdefault(key, _Posterior())
+                posterior.visits = after["visits"]
+                posterior.mean = after["mean"]
+                posterior.m2 = after["m2"]
+            pending_backup = None
         elif kind == "beam_layer_selection_committed":
             if method.method != "beam":
                 raise TraceValidationError(
@@ -1996,6 +2285,10 @@ def _validate_stage_one_material(
                     "stage 1 beam selection receipt does not close"
                 )
 
+    if pending_backup is not None:
+        raise TraceValidationError(
+            "stage 1 terminal verification is missing its backup"
+        )
     if method.stochastic:
         if any(count < 1 for count in next_visits.values()):
             raise TraceValidationError("stage 1 materialized node has no point")

@@ -1,0 +1,81 @@
+{
+  "analysis": {
+    "ended_utc": "2026-09-03T17:26:50Z",
+    "real_seconds": "336.06",
+    "source_revision": "f13e3a5d08333f94e44eeeb921e2dfe253cc72e8",
+    "started_utc": "2026-09-03T17:21:14Z"
+  },
+  "authorization": {
+    "deterministic_digest": "0b22bc1838eec287b85a9e66a54bb0092209bde2ee0f149d1c6d37f2f411ee6a",
+    "file_byte_count": 20421,
+    "file_sha256": "c043085cccaec720a782d9297599e35b72a8cb9ca015fa98d800923c4eec92dd",
+    "merged_revision": "f13e3a5d08333f94e44eeeb921e2dfe253cc72e8",
+    "pull_request": 23,
+    "runner_revision": "b2f30edde6170eba3e08b41d0fc4e30bb6721457"
+  },
+  "claim_boundary": "One source-disjoint development run only; no confirmation, superiority, QMC, statistical, provider, retry, or locked-128 authority.",
+  "execution": {
+    "artifact_commit_digest": "73583920baf4d9d69a9041c26adf0562ea9a5821278af3858cf212e94b7735bb",
+    "authorization_consumed": true,
+    "collective_manifest_digest": "8ed54959937e867c081f36fc9c05adc9719a5945e2c1a26e598909eb54a6ea0a",
+    "ended_utc": "2026-09-03T17:20:24Z",
+    "provider_calls": 0,
+    "real_seconds": "142.24",
+    "retry_permitted": false,
+    "run_manifest_digest": "c0524645c40bf9bc478cb3234be3ff8588c8715a80efe86b859be77846abbd83",
+    "started_utc": "2026-09-03T17:18:01Z",
+    "status": "COMMITTED"
+  },
+  "full_result_location": {
+    "raw_artifact_path": "/Users/ryohiga/SpiralReality/qmc-bmgs-dense-scale-v5-20260904/raw/dense-scale-v5.commit.json",
+    "summary_path": "/Users/ryohiga/SpiralReality/qmc-bmgs-dense-scale-v5-20260904/summary/dense-scale-v5.summary.json"
+  },
+  "raw_files": [
+    {
+      "byte_count": 2174,
+      "role": "attempt",
+      "sha256": "b45c7b513b6191564cc955925a0a2ab9d001264773067da8199ec3dc605d16bc"
+    },
+    {
+      "byte_count": 999,
+      "role": "started",
+      "sha256": "b3f7225677abd76c0dd239b06e79ec39409c780ade9a47b0261229fc3847f959"
+    },
+    {
+      "byte_count": 42248633,
+      "role": "records_jsonl",
+      "sha256": "50d671822a94d0c43c75087ea3edbcb7264977e32e95efd78ddb0fdbc482478e"
+    },
+    {
+      "byte_count": 76847,
+      "role": "collective_manifest",
+      "sha256": "1653a8568fe669c5b5464e7b9bc5b8666be6da6b4428cd9fc4b221de0c48354c"
+    },
+    {
+      "byte_count": 1291,
+      "role": "ready_to_commit",
+      "sha256": "a65906f6e939b8ef42cf8504e3df4115303fd73d64e020b427b7f6f561197414"
+    },
+    {
+      "byte_count": 1984,
+      "role": "commit",
+      "sha256": "70d6ab1266d45ec666bf0b1ccb1785b019ffaebc938848ea863a7501b515a6a7"
+    }
+  ],
+  "schema_version": "qmc-bmgs-countdown-thompson-dense-scale-observation-evidence/v1",
+  "summary": {
+    "byte_count": 438777,
+    "decision": "STOP_REPAIR_NO_LOCKED_128_RUN",
+    "deterministic_digest": "b7886df480ad0047d781673119b24482711a89ff46929066152a1c9c18d7e1e7",
+    "file_sha256": "76e181de21f7efbd4eb826f5dff181d7e13a1daf5c0da2e926b76f305b2fc651",
+    "integrity": "PASS",
+    "selected_scale": 16
+  },
+  "validation_before_execution": {
+    "cli_self_tests": "PASS",
+    "github_ci_checks": "NOT_CONFIGURED",
+    "repository_validation": "PASS",
+    "test_count": 728,
+    "test_seconds": "401.686"
+  }
+}

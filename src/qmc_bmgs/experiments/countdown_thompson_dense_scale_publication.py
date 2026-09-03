@@ -1680,6 +1680,7 @@ def _publish_summary(
     from qmc_bmgs.experiments import countdown_thompson_diagnostic_analysis as atomic
 
     pinned = ()
+    post_authority_error: DensePublicationError | None = None
     try:
         if not protected_roots:
             raise DensePublicationNotRunError("summary requires pinned protected roots")
@@ -1695,8 +1696,16 @@ def _publish_summary(
         atomic._assert_pinned_protected_roots(pinned)
 
         def revalidate():
+            nonlocal post_authority_error
             atomic._assert_pinned_protected_roots(pinned)
-            post_durability_check()
+            try:
+                post_durability_check()
+            except DensePublicationError as error:
+                # The opaque writer still owns exact-summary rollback. Its
+                # generic failure after successful rollback must not erase the
+                # independent raw-authority status (especially ambiguity).
+                post_authority_error = error
+                raise
             atomic._assert_pinned_protected_roots(pinned)
 
         atomic._atomic_write_no_replace(
@@ -1713,6 +1722,8 @@ def _publish_summary(
     except DensePublicationError:
         raise
     except BaseException as error:
+        if post_authority_error is not None:
+            raise post_authority_error from error
         raise DensePublicationInvalidError(
             "summary publication or revalidation failed"
         ) from error

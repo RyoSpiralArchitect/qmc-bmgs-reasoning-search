@@ -60,6 +60,14 @@ Publication retains the reviewed local POSIX/identity-epoch limits;
 it does not claim NFS, SMB, FUSE, reboot, mount-namespace or device/inode ABA
 safety.
 
+The final summary barrier also compares directory generations along the whole
+lexical output ancestry. Even unrelated sibling creation/deletion in a shared
+OS temporary directory can conservatively invalidate publication and trigger
+exact summary rollback. Use an output namespace with quiescent ancestors; the
+full-shaped integration test therefore uses a disposable sibling of the
+checkout, not the shared OS temporary directory. It does not relax the writer's
+generation checks or retry a production attempt.
+
 ## Fixed 384-cell public fixture
 
 The fixture is separate at every public authority boundary:

@@ -628,6 +628,12 @@ class DenseScalePublicationTests(unittest.TestCase):
     def test_summary_is_closed_no_overwrite_and_allows_same_raw_parent(self):
         self.publish()
         initial = self.verify()
+        auth = self.inputs.authorization
+        hint = pub.read_dense_scale_fixture_execution_head_hint(
+            self.output,
+            authorization_digest=auth["deterministic_digest"],
+            expected_parent_binding=auth["output_parent_binding"],
+        )
         protected_temp = tempfile.TemporaryDirectory(prefix="dense-protected-source-")
         self.addCleanup(protected_temp.cleanup)
         protected = Path(protected_temp.name).resolve()
@@ -635,9 +641,11 @@ class DenseScalePublicationTests(unittest.TestCase):
         calls = []
 
         def check():
+            hint.revalidate()
             current = self.verify()
             self.assertEqual(initial.authority_generation, current.authority_generation)
             self.assertEqual(initial.records_jsonl_bytes, current.records_jsonl_bytes)
+            hint.revalidate()
             calls.append("checked")
 
         summary = self._summary()
@@ -687,6 +695,78 @@ class DenseScalePublicationTests(unittest.TestCase):
                 pre_publication_check=lambda: self.fail("callback"),
                 post_durability_check=lambda: None,
             )
+
+    def test_summary_rollback_preserves_raw_authority_ambiguity(self):
+        self.publish()
+        protected_temp = tempfile.TemporaryDirectory(prefix="dense-protected-source-")
+        self.addCleanup(protected_temp.cleanup)
+        protected = Path(protected_temp.name).resolve()
+        output = self.root / "summary.json"
+        foreign = self.root / self.layout.invalid_name
+
+        def post_check():
+            foreign.write_bytes(b"foreign raw authority")
+            self.verify()
+
+        with self.assertRaises(pub.DensePublicationAmbiguousError):
+            pub.publish_dense_scale_fixture_summary(
+                output,
+                core.canonical_bytes(self._summary()),
+                artifact_path=self.output,
+                protected_roots=(protected,),
+                pre_publication_check=self.verify,
+                post_durability_check=post_check,
+            )
+        self.assertFalse(output.exists())
+        self.assertEqual(foreign.read_bytes(), b"foreign raw authority")
+
+    def test_summary_ancestor_sibling_churn_fails_closed_and_rolls_back(self):
+        self.publish()
+        initial = self.verify()
+        summary_parent = self.root / "summary-output"
+        summary_parent.mkdir()
+        output = summary_parent / "summary.json"
+        protected_temp = tempfile.TemporaryDirectory(prefix="dense-protected-source-")
+        self.addCleanup(protected_temp.cleanup)
+        protected = Path(protected_temp.name).resolve()
+        callback_completed = []
+
+        def check_unchanged_raw():
+            current = self.verify()
+            self.assertEqual(initial.authority_generation, current.authority_generation)
+            self.assertEqual(initial.records_jsonl_bytes, current.records_jsonl_bytes)
+
+        def post_check():
+            # Neither the summary directory nor any raw authority is changed.
+            # The shared ancestor's directory generation still records this
+            # sibling's create/remove interval; the opaque writer fails closed.
+            ephemeral = self.root / "callback-ephemeral-sibling"
+            ephemeral.mkdir()
+            ephemeral.rmdir()
+            check_unchanged_raw()
+            callback_completed.append(True)
+
+        with self.assertRaises(pub.DensePublicationInvalidError) as raised:
+            pub.publish_dense_scale_fixture_summary(
+                output,
+                core.canonical_bytes(self._summary()),
+                artifact_path=self.output,
+                protected_roots=(protected,),
+                pre_publication_check=check_unchanged_raw,
+                post_durability_check=post_check,
+            )
+        self.assertEqual(callback_completed, [True])
+        self.assertIn(
+            "summary destination generation changed after mandatory "
+            "post-durability check",
+            str(raised.exception.__cause__),
+        )
+        self.assertFalse(output.exists())
+        quarantine = tuple(summary_parent.iterdir())
+        self.assertEqual(len(quarantine), 1)
+        self.assertTrue(quarantine[0].name.startswith(".summary.json.rollback-"))
+        self.assertEqual(quarantine[0].read_bytes(), core.canonical_bytes(self._summary()))
+        check_unchanged_raw()
 
 
 if __name__ == "__main__":

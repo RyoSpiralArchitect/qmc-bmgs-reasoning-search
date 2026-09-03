@@ -70,7 +70,12 @@ raise SystemExit(module.main(sys.argv[2:]))
 
 class DenseScaleFullShapeTests(unittest.TestCase):
     def test_clean_source_384_fixture_and_descendant_analysis(self):
-        with tempfile.TemporaryDirectory(prefix="qmc-dense-full-shape-") as temporary:
+        # The exact summary writer deliberately compares every lexical ancestor
+        # generation. Keep this long barrier outside the busy shared OS temp
+        # namespace; unrelated sibling churn there must still fail closed.
+        with tempfile.TemporaryDirectory(
+            prefix=".qmc-dense-full-shape-", dir=ROOT.parent
+        ) as temporary:
             root = Path(temporary).resolve()
             checkout = root / "checkout"
             subprocess.run(

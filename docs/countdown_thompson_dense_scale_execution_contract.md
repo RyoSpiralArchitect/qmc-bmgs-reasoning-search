@@ -92,7 +92,9 @@ and recorded Git ancestry, not from an installed wheel or console script.
 Every operational invocation must:
 
 1. start in a clean checkout of the reviewed revision;
-2. use `PYTHONPATH=src python -m ...`; and
+2. use `PYTHONPYCACHEPREFIX="$(mktemp -d)" PYTHONPATH=src python -P -B -m ...`
+   with a newly created, empty, owner-only cache directory for that invocation;
+   and
 3. pass `--repository-root .` explicitly.
 
 The implementation PR must publish the exact protected source-file sets for
@@ -107,7 +109,11 @@ before durable `STARTED`, and before final commit. The analyzer checks the
 historical runner receipts and independently closes its current replay source
 set. A missing initializer, dirty checkout, import-origin drift, symlink,
 receipt mismatch, Git ancestry mismatch, or already-open timestamp bytecode
-cache fails closed.
+cache fails closed. The startup policy requires safe-path mode, disabled
+bytecode writes, and the fresh cache namespace before protected modules load;
+checking source bytes after a normal cached import is not sufficient. These
+receipts attest the reviewed source-loading policy, not arbitrary in-process
+code-object tampering.
 
 The live runtime must reproduce the sealed CPython 3.13.13, arm64, CPU,
 binary64 IID and search conformance bindings. General package importability is
@@ -256,7 +262,7 @@ artifact. Its only successful status is
 The future command shape is fixed as:
 
 ```bash
-PYTHONPATH=src python -m \
+PYTHONPYCACHEPREFIX="$(mktemp -d)" PYTHONPATH=src python -P -B -m \
   qmc_bmgs.experiments.countdown_thompson_dense_scale_runner \
   --plan docs/preregistrations/countdown_thompson_dense_scale_v5 \
   --output /absolute/outside/repository/dense-scale-v5.commit.json \
@@ -314,7 +320,7 @@ documentation, sealed-bundle, or output changes. Review must establish:
 
 The merged authorization commit OID and 64-character lowercase authorization
 digest must be recorded. The authorization revision strictly descends from
-the reviewed runner revision. Execution HEAD strictly descends from the
+the reviewed runner revision. Execution HEAD equals or descends from the
 authorization revision, and the authorization bytes at both revisions are
 identical.
 
@@ -330,7 +336,7 @@ authority.
 After separate authorization review, its fixed command shape is:
 
 ```bash
-PYTHONPATH=src python -m \
+PYTHONPYCACHEPREFIX="$(mktemp -d)" PYTHONPATH=src python -P -B -m \
   qmc_bmgs.experiments.countdown_thompson_dense_scale_runner \
   --run docs/preregistrations/countdown_thompson_dense_scale_v5 \
   --output /absolute/outside/repository/dense-scale-v5.commit.json \
@@ -346,9 +352,11 @@ not authorized by the design or implementation revisions.
 
 The public status taxonomy remains distinct:
 
-- `NOT_RUN`: no durable `STARTED` and no development cell executed;
-- `INVALID`: authority was spent or a cell/outcome existed, but the exact
-  collective or a required gate failed;
+- `NOT_RUN`: no durable `STARTED` and no development cell executed; this may
+  retain a durable `ATTEMPT`, in which case authorization is spent and cannot
+  be retried;
+- `INVALID`: durable `STARTED` is owned or a cell/outcome existed, but the
+  exact collective or a required gate failed;
 - `PUBLICATION_STATE_AMBIGUOUS`: storage identity or durability cannot be
   proven; and
 - `COMMITTED`: one exact 384-cell collective closed and the commit receipt is
@@ -370,7 +378,7 @@ with zero provider calls.
 After one durable `COMMITTED` run, its fixed command shape is:
 
 ```bash
-PYTHONPATH=src python -m \
+PYTHONPYCACHEPREFIX="$(mktemp -d)" PYTHONPATH=src python -P -B -m \
   qmc_bmgs.experiments.countdown_thompson_dense_scale_analysis \
   --analyze-v2r3 \
     /absolute/outside/repository/dense-scale-v5.commit.json \
@@ -438,6 +446,8 @@ demonstrate all of the following without opening a development outcome:
 - missing, duplicate, extra, reordered, v2/v3-development, budget-invalid,
   provider-call, replay, and source-drift failures closing the whole fixture;
 - durable one-shot attempt and regular-file v2r3 race/adversarial tests;
+- a qualification failure after durable `ATTEMPT` but before `STARTED`
+  classified as spent `NOT_RUN`, with zero cells and no retry authority;
 - analyzer enforcement of the fixed five-stage order and terminal-field
   barrier; and
 - full repository validation with no provider call and no development result.

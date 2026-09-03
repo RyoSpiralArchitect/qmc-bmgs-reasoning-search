@@ -5,25 +5,77 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+TEMP_PARENT_ENV = "QMC_BMGS_VALIDATION_TEMP_PARENT"
 
 
-def _run(command: list[str], *, cwd: Path = ROOT) -> None:
+def _temporary_parent() -> Path:
+    configured = os.environ.get(TEMP_PARENT_ENV)
+    try:
+        if configured is not None and not configured.strip():
+            raise ValueError("the configured parent is empty")
+        parent = (Path.home() if configured is None else Path(configured)).expanduser()
+        parent = parent.resolve(strict=True)
+        if not parent.is_dir():
+            raise ValueError("the configured parent is not a directory")
+        if parent.is_relative_to(ROOT.resolve()):
+            raise ValueError("the configured parent is inside the source checkout")
+    except (OSError, RuntimeError, ValueError) as error:
+        raise RuntimeError(
+            f"Validation temporary-parent setup failed: {error}. Set "
+            f"{TEMP_PARENT_ENV} to a short, quiescent, existing directory outside "
+            "the source checkout. No shared-temp or symlink-alias fallback is used."
+        ) from error
+    return parent
+
+
+def _probe_unix_socket_path(temporary_root: Path) -> None:
+    # Bind only a local filesystem node, without listening or connecting. Match
+    # the longest existing legacy fixture shape before running the full suite.
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="qmc-bmgs-v2-test-", dir=temporary_root
+        ) as temporary:
+            socket_parent = Path(temporary) / "r1-socket"
+            socket_parent.mkdir()
+            socket_path = socket_parent / ".QMC-BMGS-V2R2-socket.garbage"
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                probe.bind(os.fspath(socket_path))
+    except (AttributeError, NotImplementedError, OSError) as error:
+        raise RuntimeError(
+            f"Unix-socket validation preflight failed under {temporary_root}: "
+            f"{error}. Unix-socket fixtures must be supported; set {TEMP_PARENT_ENV} "
+            "to a shorter, quiescent, existing directory outside the source "
+            "checkout on a filesystem supporting Unix sockets. Socket tests are "
+            "not skipped, and no shared-temp or symlink-alias fallback is used."
+        ) from error
+
+
+def _run(command: list[str], *, temporary_root: Path, cwd: Path = ROOT) -> None:
     print("+", " ".join(command), flush=True)
     environment = os.environ.copy()
+    # Whole-path publication generations include temporary-root ancestors.
+    # Unrelated users of the shared OS temp namespace must not perturb the
+    # intended fault injection of a repository test.
+    environment["TMPDIR"] = str(temporary_root)
     environment["PYTHONPATH"] = str(SRC)
     environment.setdefault("PYTHONPYCACHEPREFIX", "/tmp/qmc_bmgs_pycache")
     subprocess.run(command, cwd=cwd, env=environment, check=True)
 
 
-def main() -> None:
-    _run(
+def _validate(temporary_root: Path) -> None:
+    def run(command: list[str], *, cwd: Path = ROOT) -> None:
+        _run(command, temporary_root=temporary_root, cwd=cwd)
+
+    run(
         [
             sys.executable,
             "-m",
@@ -37,9 +89,9 @@ def main() -> None:
     if shutil.which("ruff") is None:
         print("ruff unavailable: lint check skipped", flush=True)
     else:
-        _run(["ruff", "check", "."])
-    _run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"])
-    _run([sys.executable, "scripts/verify_artifacts.py"])
+        run(["ruff", "check", "."])
+    run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"])
+    run([sys.executable, "scripts/verify_artifacts.py"])
 
     # Catch accidental sibling-import or source-relative assumptions by invoking
     # every CLI module from outside the repository.
@@ -71,27 +123,37 @@ def main() -> None:
         "qmc_bmgs.experiments.countdown_thompson_posthoc_mechanism",
         "qmc_bmgs.experiments.countdown_thompson_selection_margin",
         "qmc_bmgs.experiments.countdown_thompson_dense_scale_manifest",
+        "qmc_bmgs.experiments.countdown_thompson_dense_scale_runner",
+        "qmc_bmgs.experiments.countdown_thompson_dense_scale_analysis",
     ):
         command = [sys.executable, "-m", module, "--self-test"]
         if module == "qmc_bmgs.experiments.countdown_thompson_dense_scale_manifest":
             command.extend(["--repository-root", str(ROOT)])
-        _run(command, cwd=outside)
-    _run(
+        run(command, cwd=outside)
+    run(
         [
             sys.executable,
             "-m",
             "qmc_bmgs.experiments.countdown_thompson_dense_scale_manifest",
             "--verify",
-            str(
-                ROOT
-                / "docs/preregistrations/countdown_thompson_dense_scale_v5"
-            ),
+            str(ROOT / "docs/preregistrations/countdown_thompson_dense_scale_v5"),
             "--repository-root",
             str(ROOT),
         ],
         cwd=outside,
     )
     print("repository validation: PASS")
+
+
+def main() -> None:
+    # A short private namespace avoids the busy OS temp root and preserves room
+    # for legacy Unix-socket fixture names. Always use the real, resolved parent.
+    with tempfile.TemporaryDirectory(
+        prefix=".qv-", dir=_temporary_parent()
+    ) as temporary:
+        temporary_root = Path(temporary).resolve()
+        _probe_unix_socket_path(temporary_root)
+        _validate(temporary_root)
 
 
 if __name__ == "__main__":

@@ -108,12 +108,16 @@ The runner rechecks its source closure before and after planning preflight,
 before durable `STARTED`, and before final commit. The analyzer checks the
 historical runner receipts and independently closes its current replay source
 set. A missing initializer, dirty checkout, import-origin drift, symlink,
-receipt mismatch, Git ancestry mismatch, or already-open timestamp bytecode
-cache fails closed. The startup policy requires safe-path mode, disabled
+receipt mismatch, Git ancestry mismatch, or observable stale bytecode-cache
+state fails closed. The startup policy requires safe-path mode, disabled
 bytecode writes, and the fresh cache namespace before protected modules load;
 checking source bytes after a normal cached import is not sufficient. These
-receipts attest the reviewed source-loading policy, not arbitrary in-process
-code-object tampering.
+receipts attest the reviewed source-loading policy, not the identity of every
+already-loaded code object. Source files and the private cache namespace must
+remain quiescent from fresh-cache creation/process startup through the final
+barrier. Transient pre-attestation source/cache replacement followed by
+restoration cannot be detected retrospectively by these receipts and is
+outside this authority model, as is arbitrary in-process code-object tampering.
 
 The live runtime must reproduce the sealed CPython 3.13.13, arm64, CPU,
 binary64 IID and search conformance bindings. General package importability is

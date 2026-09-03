@@ -1,0 +1,705 @@
+{
+  "analysis": {
+    "analysis_order": [
+      "reproduce_nondiagnostic_anchor_qualification_without_development_material",
+      "integrity_budget_and_two_stage_replay",
+      "common_prefix_mechanism_without_terminal_fields",
+      "terminal_error_reductions",
+      "exact_success_and_development_handoff"
+    ],
+    "anchor_equivalence": {
+      "backup_fields_removed": [
+        "terminal_absolute_error",
+        "terminal_value_denominator",
+        "terminal_value_floor",
+        "terminal_value_floor_applied",
+        "terminal_value_numerator",
+        "terminal_value_rule_id",
+        "terminal_value_scale"
+      ],
+      "comparison": "canonical_projection_exact_equality",
+      "development_matrix_authority_trace_count": 0,
+      "event_removed_fields": [
+        "event_digest",
+        "previous_event_digest"
+      ],
+      "failure_timing": "before_terminal_error_or_success_read",
+      "finished_summary_fields_replaced_after_exact_identity_check": [
+        "method",
+        "run_identity_digest"
+      ],
+      "pairs": [
+        {
+          "anchor_label": "binary_terminal_anchor",
+          "authority_schema": "qmc-bmgs-track-a-method-spec/v2",
+          "scaled_terminal_value_scale": 0
+        },
+        {
+          "anchor_label": "reciprocal_error_anchor",
+          "authority_schema": "qmc-bmgs-track-a-method-spec/v3",
+          "scaled_terminal_value_scale": 1
+        }
+      ],
+      "precondition": "both traces pass canonical validation and two-stage byte replay under their own sealed method",
+      "preserved": [
+        "all_other_run_identity_fields",
+        "event_count",
+        "event_index_kind_charge_and_all_other_payload_fields",
+        "proposal_node_and_point_material",
+        "terminal_value_and_posterior_updates",
+        "stop_events",
+        "all_other_ledger_fields_and_components",
+        "trace_schema_version"
+      ],
+      "projection_schema_version": "countdown_track_a_anchor_equivalence/v1",
+      "qualification": {
+        "budget_profile": {
+          "budget": {
+            "edge_selections": 20000,
+            "generated_perturbation_coordinates": 20000,
+            "legal_action_scores": 20000,
+            "proposal_action_scores": 20000,
+            "proposal_state_evaluations": 20000,
+            "transitions": 20000,
+            "verifier_calls": 3
+          },
+          "primary_axis": "verifier_calls",
+          "profile_id": "dense_scale_anchor_fixture_verifier3",
+          "schema_version": "qmc-bmgs-track-a-budget-profile/v1"
+        },
+        "deterministic_digest": "2b79d8c052aeef0a39209b41e0de5ff1c09a7b4b69234e7434b39da79bc7ca92",
+        "development_cell_count": 0,
+        "development_task_access": false,
+        "execution_count": 8,
+        "exploration_seed": 7168,
+        "fixture_task": {
+          "inputs": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "max_steps": 5,
+          "ruleset_id": "countdown-d6-positive-int-exact-division/v1",
+          "source_multiset_fingerprint": "39d9efe71c971b0bf407d2f342ccd5a6e758adf50e3e6c1ec0985386936c0a45",
+          "target": 720,
+          "task_fingerprint": "5e520a1fff11e557075c5e72ae5a68376e4bdc5e2778fe4191b2c2a1cce698e6",
+          "task_id": "countdown_d6_5e520a1fff11e557"
+        },
+        "identity_separation": {
+          "checked_boundary_order": [
+            "historical_2",
+            "canary_12",
+            "locked_128",
+            "diagnostic_12",
+            "dense_scale_development_12"
+          ],
+          "deterministic_digest": "5879c22004df46a178f2a08db3ab07a88b1ec446ba56b95b3a73d4771c662d2b",
+          "development_identity_only": true,
+          "excluded_full_task_count": 166,
+          "excluded_full_task_digest": "497c6a4a759679559087833bdec3f6af1d70d6d70e2d305a3314ee9c517caf98",
+          "excluded_source_multiset_count": 166,
+          "excluded_source_multiset_digest": "cd5f68e8960bbe8497107189086a2ef052ddfe32eb6b777b58cec96b8ff9e0d1",
+          "fixture_full_task_disjoint": true,
+          "fixture_source_multiset_disjoint": true,
+          "fixture_source_multiset_fingerprint": "39d9efe71c971b0bf407d2f342ccd5a6e758adf50e3e6c1ec0985386936c0a45",
+          "fixture_task_fingerprint": "5e520a1fff11e557075c5e72ae5a68376e4bdc5e2778fe4191b2c2a1cce698e6"
+        },
+        "projection_schema_version": "countdown_track_a_anchor_equivalence/v1",
+        "proposal_spec": {
+          "policy_id": "greedy_rollout_target_error/v1",
+          "positive_control": false,
+          "schema_version": "qmc-bmgs-track-a-proposal-spec/v1"
+        },
+        "raw_trace_persisted_count": 0,
+        "receipt_order": [
+          "iid_binary_terminal_anchor",
+          "iid_reciprocal_error_anchor",
+          "sobol_binary_terminal_anchor",
+          "sobol_reciprocal_error_anchor"
+        ],
+        "receipts": [
+          {
+            "anchor_label": "binary_terminal_anchor",
+            "authority_method_spec": {
+              "beam_width": null,
+              "c_puct": null,
+              "method": "thompson",
+              "method_id": "thompson_binary_terminal_dimnorm_noise/v2",
+              "posterior_sd_scale": 1.0,
+              "prior_bonus": 1.0,
+              "schema_version": "qmc-bmgs-track-a-method-spec/v2",
+              "selected_source": "iid",
+              "selection_rule_id": "probability_prior_sqrt_2_ln_action_noise/v1"
+            },
+            "authority_method_spec_digest": "1cd6a47276bdea94ea65a4f6897447196b5a528017a786794a3d15142cdf7ddc",
+            "expected_authority_trace_sha256": "1a712c7b766dc5e6aa138edb718432636fac838f75e7ca1e4274fd17a4bca9e4",
+            "expected_common_projection_digest": "18534a6eb89bb0a23cf0c6de104f7d1ed810eb4c5a662377fb4957d3690ba8ff",
+            "expected_scaled_trace_sha256": "0d0dc2eb4c52697e78bcb744a48c3a407cac4dc3025b0b9f393e08144efc320b",
+            "scaled_method_spec": {
+              "beam_width": null,
+              "c_puct": null,
+              "greedy_anchor_trajectory_count": 0,
+              "method": "thompson",
+              "method_id": "thompson_scaled_reciprocal_error_terminal_dimnorm_noise/v5",
+              "posterior_sd_scale": 1.0,
+              "prior_bonus": 1.0,
+              "schema_version": "qmc-bmgs-track-a-method-spec/v5",
+              "selected_source": "iid",
+              "selection_rule_id": "probability_prior_sqrt_2_ln_action_noise/v1",
+              "terminal_value_rule_id": "scaled_reciprocal_absolute_error_binary64_floor/v1",
+              "terminal_value_scale": 0
+            },
+            "scaled_method_spec_digest": "00bdc2b2d05c2b523f50704174e3b18d55ec3ac21f29c78b42fc8ee4aeb842f4",
+            "source": "iid"
+          },
+          {
+            "anchor_label": "reciprocal_error_anchor",
+            "authority_method_spec": {
+              "beam_width": null,
+              "c_puct": null,
+              "greedy_anchor_trajectory_count": 0,
+              "method": "thompson",
+              "method_id": "thompson_reciprocal_error_terminal_dimnorm_noise/v3",
+              "posterior_sd_scale": 1.0,
+              "prior_bonus": 1.0,
+              "schema_version": "qmc-bmgs-track-a-method-spec/v3",
+              "selected_source": "iid",
+              "selection_rule_id": "probability_prior_sqrt_2_ln_action_noise/v1",
+              "terminal_value_rule_id": "reciprocal_absolute_error_binary64_floor/v1"
+            },
+            "authority_method_spec_digest": "dd51d37fde5293d548fddcf1c4a02b4760935d3bdd0ebc6f44821f3d4ef16a4f",
+            "expected_authority_trace_sha256": "036ab50644b600cacf8488f74210c9e9725db441b8e8a3b78e90561eb2445763",
+            "expected_common_projection_digest": "f0628fdeda9f93f41ed6ad60f4718738b6cfad3f0ea967c6f4b3391a2d757310",
+            "expected_scaled_trace_sha256": "0657acaf773f995a5c624bb18ad7f45cc0b8349edfd037222b04d50a657fcf22",
+            "scaled_method_spec": {
+              "beam_width": null,
+              "c_puct": null,
+              "greedy_anchor_trajectory_count": 0,
+              "method": "thompson",
+              "method_id": "thompson_scaled_reciprocal_error_terminal_dimnorm_noise/v5",
+              "posterior_sd_scale": 1.0,
+              "prior_bonus": 1.0,
+              "schema_version": "qmc-bmgs-track-a-method-spec/v5",
+              "selected_source": "iid",
+              "selection_rule_id": "probability_prior_sqrt_2_ln_action_noise/v1",
+              "terminal_value_rule_id": "scaled_reciprocal_absolute_error_binary64_floor/v1",
+              "terminal_value_scale": 1
+            },
+            "scaled_method_spec_digest": "c8c6465475d8b78a46f8636202c8f14a1b5b15e0280995532f92689ce90c87a5",
+            "source": "iid"
+          },
+          {
+            "anchor_label": "binary_terminal_anchor",
+            "authority_method_spec": {
+              "beam_width": null,
+              "c_puct": null,
+              "method": "thompson",
+              "method_id": "thompson_binary_terminal_dimnorm_noise/v2",
+              "posterior_sd_scale": 1.0,
+              "prior_bonus": 1.0,
+              "schema_version": "qmc-bmgs-track-a-method-spec/v2",
+              "selected_source": "sobol",
+              "selection_rule_id": "probability_prior_sqrt_2_ln_action_noise/v1"
+            },
+            "authority_method_spec_digest": "94ccd19297ca0edf4e4b89a5331cdfd5c2988b14f7fd2e3e0a7c51e91f671f14",
+            "expected_authority_trace_sha256": "651d1c5a6dd5395dbb54768eeea3c9a8f2e6d6a1f60e399301120dc59f93531f",
+            "expected_common_projection_digest": "75c80b1a60ec85328ee9a88259c81da13ac81ea3ea8719a5e5049754350a482c",
+            "expected_scaled_trace_sha256": "2058e56a97de725c61b78efc338c75c868386fe6fd1e6879a0d5cf32c2f81b0f",
+            "scaled_method_spec": {
+              "beam_width": null,
+              "c_puct": null,
+              "greedy_anchor_trajectory_count": 0,
+              "method": "thompson",
+              "method_id": "thompson_scaled_reciprocal_error_terminal_dimnorm_noise/v5",
+              "posterior_sd_scale": 1.0,
+              "prior_bonus": 1.0,
+              "schema_version": "qmc-bmgs-track-a-method-spec/v5",
+              "selected_source": "sobol",
+              "selection_rule_id": "probability_prior_sqrt_2_ln_action_noise/v1",
+              "terminal_value_rule_id": "scaled_reciprocal_absolute_error_binary64_floor/v1",
+              "terminal_value_scale": 0
+            },
+            "scaled_method_spec_digest": "04e0d3797f0c5be9a6058478ddb326935b9cea37e22faeade77ad4c3a30361ab",
+            "source": "sobol"
+          },
+          {
+            "anchor_label": "reciprocal_error_anchor",
+            "authority_method_spec": {
+              "beam_width": null,
+              "c_puct": null,
+              "greedy_anchor_trajectory_count": 0,
+              "method": "thompson",
+              "method_id": "thompson_reciprocal_error_terminal_dimnorm_noise/v3",
+              "posterior_sd_scale": 1.0,
+              "prior_bonus": 1.0,
+              "schema_version": "qmc-bmgs-track-a-method-spec/v3",
+              "selected_source": "sobol",
+              "selection_rule_id": "probability_prior_sqrt_2_ln_action_noise/v1",
+              "terminal_value_rule_id": "reciprocal_absolute_error_binary64_floor/v1"
+            },
+            "authority_method_spec_digest": "9f4f1fe8e799c6729a23403239688f1dffad66d3b72eaa361436b496d75dfc0d",
+            "expected_authority_trace_sha256": "6be047dad38bfbee09e42ca2c07e88df75e1f493efdecc171b1a26a4f7852d31",
+            "expected_common_projection_digest": "5cbccc2eb19780909b3942ec509ad61424f12d401fff03df071909600a742b4b",
+            "expected_scaled_trace_sha256": "e1136f466718b762cbd50549bbecb8fd9c14553361d54461ee8883739ba6596c",
+            "scaled_method_spec": {
+              "beam_width": null,
+              "c_puct": null,
+              "greedy_anchor_trajectory_count": 0,
+              "method": "thompson",
+              "method_id": "thompson_scaled_reciprocal_error_terminal_dimnorm_noise/v5",
+              "posterior_sd_scale": 1.0,
+              "prior_bonus": 1.0,
+              "schema_version": "qmc-bmgs-track-a-method-spec/v5",
+              "selected_source": "sobol",
+              "selection_rule_id": "probability_prior_sqrt_2_ln_action_noise/v1",
+              "terminal_value_rule_id": "scaled_reciprocal_absolute_error_binary64_floor/v1",
+              "terminal_value_scale": 1
+            },
+            "scaled_method_spec_digest": "20238c7c1eff61bdfde171df7332dbb82f7eeebeaf44c3ccdd9942e48b70bb63",
+            "source": "sobol"
+          }
+        ],
+        "required_before_development_result_open": true,
+        "scope": "nondiagnostic_public_fixture_only",
+        "v2_or_v3_development_execution_authority": false
+      },
+      "replay_closed_storage_bytes_replaced_as_schema_overhead": [
+        "ledger_snapshot.live_storage.bytes",
+        "ledger_snapshot.peak_live_storage.bytes"
+      ],
+      "run_identity_replaced_fields": [
+        "configuration_id",
+        "method_id"
+      ],
+      "scope": "nondiagnostic_implementation_qualification_only",
+      "selection_method_field_replaced_after_exact_spec_check": true,
+      "top_level_removed_fields": [
+        "deterministic_digest",
+        "final_event_digest"
+      ]
+    },
+    "claim_boundary": {
+      "confidence_intervals": false,
+      "development_not_confirmation": true,
+      "locked_128_authority": false,
+      "method_superiority_claim": false,
+      "p_values": false,
+      "qmc_comparison": false,
+      "task_transfer_claim": false
+    },
+    "deterministic_digest": "07303c90974612e9ac20fc285718170385dc9e13de5abb929a2038c2ebf70b02",
+    "development_handoff": {
+      "candidate_scale_order": [
+        1,
+        2,
+        4,
+        8,
+        16,
+        32,
+        64
+      ],
+      "failure_status": "STOP_REPAIR_NO_LOCKED_128_RUN",
+      "minimum_net_exact_success_gain": 2,
+      "minimum_new_exact_successes": 2,
+      "new_success_divergence_guard": "each new-success pair first diverges only after at least one scale-dependent terminal backup on the common prefix",
+      "scale_selection": "maximize exact-success count across 48 task-seed cells; break ties by lower scale",
+      "success_status": "READY_TO_PREREGISTER_SOURCE_DISJOINT_CONFIRMATION"
+    },
+    "integer_reductions": {
+      "arithmetic": "exact_reduced_rational",
+      "empty_required_vector": "INVALID_ANALYSIS",
+      "even_median": "reduce((sorted[n//2-1]+sorted[n//2])/2)",
+      "odd_median": "sorted[n//2]"
+    },
+    "integrity_gates": {
+      "budget_valid": true,
+      "exact_384_cell_set": true,
+      "no_missing_duplicate_or_extra_cells": true,
+      "no_non_primary_guard_binding_or_exhaustion": true,
+      "provider_calls": 0,
+      "two_stage_byte_replay": true
+    },
+    "mechanism_pairing": {
+      "baseline_scale": 0,
+      "include_first_action_divergence_then_stop": true,
+      "outcome_fields_read": false,
+      "pair_key": "(task_fingerprint,exploration_seed,positive_scale)",
+      "predecision_equal_fields": [
+        "trajectory_index",
+        "depth",
+        "state",
+        "canonical_action_order",
+        "proposal_behavior_digest",
+        "perturbation_point_digest",
+        "selection_rule_id",
+        "noise_dimension_normalizer",
+        "posterior_visit_vector"
+      ]
+    },
+    "reported_scale_fields": [
+      "success_vector",
+      "exact_success_count",
+      "first_hit_trajectory_index_vector",
+      "minimum_terminal_absolute_error_vector",
+      "terminal_absolute_error_vectors",
+      "terminal_value_vectors",
+      "paired_new_success_count_vs_scale_0",
+      "paired_lost_success_count_vs_scale_0",
+      "paired_net_success_difference_vs_scale_0",
+      "paired_minimum_error_win_tie_loss_vs_scale_0",
+      "feedback_informed_first_divergence_count",
+      "first_divergence_coordinate_distribution"
+    ],
+    "schema_version": "qmc-bmgs-countdown-thompson-dense-scale-analysis/v1"
+  },
+  "budget": {
+    "deterministic_digest": "c41e5a817c261cd88281c52b8367ecca4f208b8f9e8fed0b6624deb84547e062",
+    "exact_non_primary_exhaustion_is_invalid": true,
+    "profile": {
+      "spec": {
+        "budget": {
+          "edge_selections": 86,
+          "generated_perturbation_coordinates": 316,
+          "legal_action_scores": 256,
+          "proposal_action_scores": 317,
+          "proposal_state_evaluations": 87,
+          "transitions": 86,
+          "verifier_calls": 18
+        },
+        "primary_axis": "legal_action_scores",
+        "profile_id": "score256",
+        "schema_version": "qmc-bmgs-track-a-budget-profile/v1"
+      },
+      "spec_digest": "2a15f65f016ccf6e68310e6c53c100faea611aea4f026fa7775734f2d9a81736"
+    },
+    "structural_guard_authority_digest": "a691e532fb71c3e148ecad48042233150521b6df7b92e29b36f9c35091f7ea85"
+  },
+  "methods": {
+    "anchor_contract": {
+      "development_v2_or_v3_cell_count": 0,
+      "qualification_scope": "nondiagnostic_public_fixture_only",
+      "scale_0": "existing_v2_binary_terminal_behavior",
+      "scale_1": "existing_v3_reciprocal_error_terminal_behavior"
+    },
+    "deterministic_digest": "66195d7888efaf588f4eb050a7c9272a8159b5550e786afe1432f9e5df2beebd",
+    "method_order": [
+      "thompson_scaled_dense_iid_s0_v5",
+      "thompson_scaled_dense_iid_s1_v5",
+      "thompson_scaled_dense_iid_s2_v5",
+      "thompson_scaled_dense_iid_s4_v5",
+      "thompson_scaled_dense_iid_s8_v5",
+      "thompson_scaled_dense_iid_s16_v5",
+      "thompson_scaled_dense_iid_s32_v5",
+      "thompson_scaled_dense_iid_s64_v5"
+    ],
+    "methods": [
+      {
+        "exploration_seeds": [
+          7168,
+          7169,
+          7170,
+          7171
+        ],
+        "label": "thompson_scaled_dense_iid_s0_v5",
+        "spec": {
+          "beam_width": null,
+          "c_puct": null,
+          "greedy_anchor_trajectory_count": 0,
+          "method": "thompson",
+          "method_id": "thompson_scaled_reciprocal_error_terminal_dimnorm_noise/v5",
+          "posterior_sd_scale": 1.0,
+          "prior_bonus": 1.0,
+          "schema_version": "qmc-bmgs-track-a-method-spec/v5",
+          "selected_source": "iid",
+          "selection_rule_id": "probability_prior_sqrt_2_ln_action_noise/v1",
+          "terminal_value_rule_id": "scaled_reciprocal_absolute_error_binary64_floor/v1",
+          "terminal_value_scale": 0
+        },
+        "spec_digest": "00bdc2b2d05c2b523f50704174e3b18d55ec3ac21f29c78b42fc8ee4aeb842f4",
+        "terminal_value_scale": 0
+      },
+      {
+        "exploration_seeds": [
+          7168,
+          7169,
+          7170,
+          7171
+        ],
+        "label": "thompson_scaled_dense_iid_s1_v5",
+        "spec": {
+          "beam_width": null,
+          "c_puct": null,
+          "greedy_anchor_trajectory_count": 0,
+          "method": "thompson",
+          "method_id": "thompson_scaled_reciprocal_error_terminal_dimnorm_noise/v5",
+          "posterior_sd_scale": 1.0,
+          "prior_bonus": 1.0,
+          "schema_version": "qmc-bmgs-track-a-method-spec/v5",
+          "selected_source": "iid",
+          "selection_rule_id": "probability_prior_sqrt_2_ln_action_noise/v1",
+          "terminal_value_rule_id": "scaled_reciprocal_absolute_error_binary64_floor/v1",
+          "terminal_value_scale": 1
+        },
+        "spec_digest": "c8c6465475d8b78a46f8636202c8f14a1b5b15e0280995532f92689ce90c87a5",
+        "terminal_value_scale": 1
+      },
+      {
+        "exploration_seeds": [
+          7168,
+          7169,
+          7170,
+          7171
+        ],
+        "label": "thompson_scaled_dense_iid_s2_v5",
+        "spec": {
+          "beam_width": null,
+          "c_puct": null,
+          "greedy_anchor_trajectory_count": 0,
+          "method": "thompson",
+          "method_id": "thompson_scaled_reciprocal_error_terminal_dimnorm_noise/v5",
+          "posterior_sd_scale": 1.0,
+          "prior_bonus": 1.0,
+          "schema_version": "qmc-bmgs-track-a-method-spec/v5",
+          "selected_source": "iid",
+          "selection_rule_id": "probability_prior_sqrt_2_ln_action_noise/v1",
+          "terminal_value_rule_id": "scaled_reciprocal_absolute_error_binary64_floor/v1",
+          "terminal_value_scale": 2
+        },
+        "spec_digest": "5a1dc52a15c8039984f7a792f807016c5fb909d9243642a41ae47f3633bb2ca3",
+        "terminal_value_scale": 2
+      },
+      {
+        "exploration_seeds": [
+          7168,
+          7169,
+          7170,
+          7171
+        ],
+        "label": "thompson_scaled_dense_iid_s4_v5",
+        "spec": {
+          "beam_width": null,
+          "c_puct": null,
+          "greedy_anchor_trajectory_count": 0,
+          "method": "thompson",
+          "method_id": "thompson_scaled_reciprocal_error_terminal_dimnorm_noise/v5",
+          "posterior_sd_scale": 1.0,
+          "prior_bonus": 1.0,
+          "schema_version": "qmc-bmgs-track-a-method-spec/v5",
+          "selected_source": "iid",
+          "selection_rule_id": "probability_prior_sqrt_2_ln_action_noise/v1",
+          "terminal_value_rule_id": "scaled_reciprocal_absolute_error_binary64_floor/v1",
+          "terminal_value_scale": 4
+        },
+        "spec_digest": "ae168809e1b45d0a0f2c36cce48962237c3c14cbc87ccebace1cb99a67af9215",
+        "terminal_value_scale": 4
+      },
+      {
+        "exploration_seeds": [
+          7168,
+          7169,
+          7170,
+          7171
+        ],
+        "label": "thompson_scaled_dense_iid_s8_v5",
+        "spec": {
+          "beam_width": null,
+          "c_puct": null,
+          "greedy_anchor_trajectory_count": 0,
+          "method": "thompson",
+          "method_id": "thompson_scaled_reciprocal_error_terminal_dimnorm_noise/v5",
+          "posterior_sd_scale": 1.0,
+          "prior_bonus": 1.0,
+          "schema_version": "qmc-bmgs-track-a-method-spec/v5",
+          "selected_source": "iid",
+          "selection_rule_id": "probability_prior_sqrt_2_ln_action_noise/v1",
+          "terminal_value_rule_id": "scaled_reciprocal_absolute_error_binary64_floor/v1",
+          "terminal_value_scale": 8
+        },
+        "spec_digest": "558008b1b58e6700703eca5080a32c9e47c6ff48e5f1be9de26a7beba66458a6",
+        "terminal_value_scale": 8
+      },
+      {
+        "exploration_seeds": [
+          7168,
+          7169,
+          7170,
+          7171
+        ],
+        "label": "thompson_scaled_dense_iid_s16_v5",
+        "spec": {
+          "beam_width": null,
+          "c_puct": null,
+          "greedy_anchor_trajectory_count": 0,
+          "method": "thompson",
+          "method_id": "thompson_scaled_reciprocal_error_terminal_dimnorm_noise/v5",
+          "posterior_sd_scale": 1.0,
+          "prior_bonus": 1.0,
+          "schema_version": "qmc-bmgs-track-a-method-spec/v5",
+          "selected_source": "iid",
+          "selection_rule_id": "probability_prior_sqrt_2_ln_action_noise/v1",
+          "terminal_value_rule_id": "scaled_reciprocal_absolute_error_binary64_floor/v1",
+          "terminal_value_scale": 16
+        },
+        "spec_digest": "e7427d36358dc281e7a02461d0e053a9ed7ea595e83af5add3c80aeafe01d1b7",
+        "terminal_value_scale": 16
+      },
+      {
+        "exploration_seeds": [
+          7168,
+          7169,
+          7170,
+          7171
+        ],
+        "label": "thompson_scaled_dense_iid_s32_v5",
+        "spec": {
+          "beam_width": null,
+          "c_puct": null,
+          "greedy_anchor_trajectory_count": 0,
+          "method": "thompson",
+          "method_id": "thompson_scaled_reciprocal_error_terminal_dimnorm_noise/v5",
+          "posterior_sd_scale": 1.0,
+          "prior_bonus": 1.0,
+          "schema_version": "qmc-bmgs-track-a-method-spec/v5",
+          "selected_source": "iid",
+          "selection_rule_id": "probability_prior_sqrt_2_ln_action_noise/v1",
+          "terminal_value_rule_id": "scaled_reciprocal_absolute_error_binary64_floor/v1",
+          "terminal_value_scale": 32
+        },
+        "spec_digest": "0e164236f1da4a9d0e04e8d3f17aad82acbc481c9d351a42dabfcb81c9c917dc",
+        "terminal_value_scale": 32
+      },
+      {
+        "exploration_seeds": [
+          7168,
+          7169,
+          7170,
+          7171
+        ],
+        "label": "thompson_scaled_dense_iid_s64_v5",
+        "spec": {
+          "beam_width": null,
+          "c_puct": null,
+          "greedy_anchor_trajectory_count": 0,
+          "method": "thompson",
+          "method_id": "thompson_scaled_reciprocal_error_terminal_dimnorm_noise/v5",
+          "posterior_sd_scale": 1.0,
+          "prior_bonus": 1.0,
+          "schema_version": "qmc-bmgs-track-a-method-spec/v5",
+          "selected_source": "iid",
+          "selection_rule_id": "probability_prior_sqrt_2_ln_action_noise/v1",
+          "terminal_value_rule_id": "scaled_reciprocal_absolute_error_binary64_floor/v1",
+          "terminal_value_scale": 64
+        },
+        "spec_digest": "34cd99b69c5b001754de65a052a1986613e4e408cdb192abf95b0c42d0b37a40",
+        "terminal_value_scale": 64
+      }
+    ],
+    "pairing_contract": {
+      "configuration_excluded_from_node_stream_identity": true,
+      "iid_only": true,
+      "no_greedy_anchor": true,
+      "same_task_state_seed_visit_uses_same_iid_coordinates": true,
+      "single_changed_factor": "terminal_value_scale"
+    },
+    "scale_order": [
+      0,
+      1,
+      2,
+      4,
+      8,
+      16,
+      32,
+      64
+    ],
+    "schema_version": "qmc-bmgs-countdown-thompson-dense-scale-methods/v1"
+  },
+  "proposal": {
+    "deterministic_digest": "f9f0d84d7e8ae1cb344efc7d56a9db0adc038929658ef9a81259cf52fe3364f5",
+    "label": "heuristic",
+    "materialization": "lazy_visited_states_only_at_later_execution",
+    "provider_calls": 0,
+    "spec": {
+      "policy_id": "greedy_rollout_target_error/v1",
+      "positive_control": false,
+      "schema_version": "qmc-bmgs-track-a-proposal-spec/v1"
+    },
+    "spec_digest": "ec4838a7e934c67fc2fcb4b46f553d67ac3526a0a89288568d0cf51a1e082067"
+  },
+  "runtime_binding": {
+    "deterministic_digest": "bfd7429ab09aa64365efccedec3da99082a93e6c54ab8f2d8b79cb98099504e2",
+    "diagnostic_runtime_binding_digest": "952e29d3691c30e5281a2bd2ecf4b15a27bef059be50013128ac4053d8ac7e45",
+    "iid_runtime": {
+      "digest": "950a142172599edf74d574d6d57c08209c112036ad816428d7985fecf6bdf94e",
+      "metadata": {
+        "architecture": "arm64",
+        "byteorder": "little",
+        "device": "cpu",
+        "dtype": "float64",
+        "generator_version": "sha256-counter-open-unit-float51/v2",
+        "iid_counter_hash": "sha256",
+        "iid_open_unit_bits": 51,
+        "normal_transform": {
+          "clip": 1.1102230246251565e-16,
+          "formula": "sqrt(2)*erfinv(2*clip(u)-1)",
+          "version": "clipped-torch-erfinv-float64/v1"
+        },
+        "python_version": "3.13.13",
+        "runtime_conformance_digest": "ef329bb698ed0c91c29f76292f30a7d65e7f3802fdf92386cf2c57ade894660f",
+        "source": "iid",
+        "torch_git_version": "70d99e998b4955e0049d13a98d77ae1b14db1f45",
+        "torch_version": "2.11.0"
+      }
+    },
+    "search_runtime": {
+      "digest": "3c2601ebd77d79838ac17a40d01473088332b25e2e6b92d82ef787cb148b3894",
+      "metadata": {
+        "architecture": "arm64",
+        "float_mantissa_bits": 53,
+        "libc": [
+          "",
+          ""
+        ],
+        "python_implementation": "CPython",
+        "python_version": "3.13.13",
+        "search_schema_version": "qmc-bmgs-track-a-countdown-search/v1",
+        "version": "qmc-bmgs-track-a-search-runtime/v1"
+      }
+    },
+    "source_files": [
+      {
+        "byte_count": 70360,
+        "path": "src/qmc_bmgs/benchmarks/countdown.py",
+        "sha256": "4072437e8cc626a99508f70f289bc020838b8389b73f685caf7a4dd5ac77bbf5"
+      },
+      {
+        "byte_count": 10450,
+        "path": "src/qmc_bmgs/substrate/budget.py",
+        "sha256": "b7c62ffe9dfd4823a145879360aedcd003bf014cd4abd42f9c0d9562e1354d9b"
+      },
+      {
+        "byte_count": 95888,
+        "path": "src/qmc_bmgs/substrate/countdown_search.py",
+        "sha256": "299bf2474fa62dd5b9a31dc8d3279dbf2d44edf30ca77baa2e061576e808ac9f"
+      },
+      {
+        "byte_count": 55620,
+        "path": "src/qmc_bmgs/substrate/perturbations.py",
+        "sha256": "9d3b089d23d16a0730490574252e92801c516563cdb3f40a305d7769f79f0265"
+      },
+      {
+        "byte_count": 13355,
+        "path": "src/qmc_bmgs/substrate/proposals.py",
+        "sha256": "1cf3f6ad1944d31a6c4ade9c806f1be094ac4374ba4b1f9ab3b524907cf34457"
+      },
+      {
+        "byte_count": 30764,
+        "path": "src/qmc_bmgs/substrate/trace.py",
+        "sha256": "8f959ef3511d6ab50777652b241c1b9c4532169594379554aa75b4d14d72773e"
+      }
+    ]
+  },
+  "schema_version": "qmc-bmgs-countdown-thompson-dense-scale-public-contract/v1"
+}

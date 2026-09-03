@@ -84,7 +84,9 @@ engineering research repoです。
 次のsource-disjoint scale設計は
 [dense terminal scale dose response v5](docs/strategy/countdown_thompson_dense_scale_dose_response_v5.md)、
 その実装・認可・一回限りの実行・独立解析の分離は
-[dense-scale execution contract](docs/countdown_thompson_dense_scale_execution_contract.md)
+[dense-scale execution contract](docs/countdown_thompson_dense_scale_execution_contract.md)、
+専用runner／analyzerと公開fixtureの使い方は
+[dense-scale implementation](docs/countdown_thompson_dense_scale_implementation.md)
 を参照してください。
 
 ## Layout
@@ -454,8 +456,10 @@ seal digestは
 次段の実装、public 8-trace qualification、別PRのauthorization review、1回限りの
 exact 384-cell run、独立analysisの順序は
 [`docs/countdown_thompson_dense_scale_execution_contract.md`](docs/countdown_thompson_dense_scale_execution_contract.md)
-に固定した。このdesign-only revisionはrunner、authorization candidate、development
-outcomeを作らない。実装PRがnondiagnostic full-shaped 384-cell fixtureとfresh exact-head
-reviewを通過するまで、planningへ進まない。
+に固定した。専用runner／analyzerと公開fixtureは
+[`docs/countdown_thompson_dense_scale_implementation.md`](docs/countdown_thompson_dense_scale_implementation.md)
+を参照。実装が存在することと実行認可は別であり、この実装変更はauthorization
+candidateもdevelopment outcomeも作らない。実装PRがnondiagnostic full-shaped
+384-cell fixtureとfresh exact-head reviewを通過し、mergeされるまでplanningへ進まない。
 
 自然言語reasoningへの一般化や一般的なQMC優位は、まだ主張しません。

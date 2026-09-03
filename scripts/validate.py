@@ -71,6 +71,8 @@ def main() -> None:
         "qmc_bmgs.experiments.countdown_thompson_posthoc_mechanism",
         "qmc_bmgs.experiments.countdown_thompson_selection_margin",
         "qmc_bmgs.experiments.countdown_thompson_dense_scale_manifest",
+        "qmc_bmgs.experiments.countdown_thompson_dense_scale_runner",
+        "qmc_bmgs.experiments.countdown_thompson_dense_scale_analysis",
     ):
         command = [sys.executable, "-m", module, "--self-test"]
         if module == "qmc_bmgs.experiments.countdown_thompson_dense_scale_manifest":

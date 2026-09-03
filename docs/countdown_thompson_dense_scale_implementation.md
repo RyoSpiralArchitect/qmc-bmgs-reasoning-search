@@ -151,6 +151,12 @@ The validation harness supplies a private temporary namespace to every child
 command, so unrelated shared-OS-temp churn does not preempt the deliberately
 injected failure in legacy publication tests. Their assertions and source
 bytes are unchanged.
+The namespace uses a short name under the user's home by default; set
+`QMC_BMGS_VALIDATION_TEMP_PARENT` to another short, writable, quiescent parent
+outside the checkout if needed. An upfront local Unix-socket probe checks the
+longest existing socket-fixture path shape before the expensive tests start.
+Unsupported or overlong paths fail explicitly; socket tests are not skipped,
+and a shared temporary directory is not silently substituted.
 
 The full-shaped test runs from a clean disposable clone, rejects any sealed
 preregistration open or production planning/loading call, then analyzes all

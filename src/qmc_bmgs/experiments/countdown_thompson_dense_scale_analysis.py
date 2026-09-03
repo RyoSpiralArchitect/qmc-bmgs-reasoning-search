@@ -472,7 +472,13 @@ def reduce_replay_closed_traces(
                 "scale": scale,
                 **mechanism_by_scale[scale],
                 "minimum_terminal_absolute_error_vector": minimum,
+                "minimum_terminal_absolute_error_summary": exact_integer_summary(
+                    minimum
+                ),
                 "terminal_absolute_error_vectors": [row["errors"] for row in rows],
+                "terminal_absolute_error_summaries": [
+                    exact_integer_summary(row["errors"]) for row in rows
+                ],
                 "terminal_value_vectors": [row["values"] for row in rows],
                 "paired_minimum_error_win_tie_loss_vs_scale_0": {
                     "wins": sum(a < b for a, b in zip(minimum, baseline_minimum)),

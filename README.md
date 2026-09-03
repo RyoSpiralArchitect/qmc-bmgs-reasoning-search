@@ -439,7 +439,7 @@ authorization/source/bundleの前後再検証、no-overwrite summary publication
 v2/v3/v4のどれもbase searchとしてgreedy/beamを上回れなければ、locked-128は
 開かず`STOP_REPAIR_NO_LOCKED_128_RUN`とする。
 
-v5 preregistrationはまだsearch runnerを持たず、次のコマンドは旧4 cohortの
+v5 preregistrationの検証は専用search runnerから分離している。次のコマンドは旧4 cohortの
 identity authority、新12-task生成、8 scale、384-cell schedule、canonical bytesを再検証しますが、
 開発cohortのproposal/perturbation/search outcomeは生成しません。
 
@@ -453,7 +453,7 @@ PYTHONPATH=src python -m \
 seal digestは
 `49f820692aa4f3551ca5634bdc89efe225fe05d1dc8acb8e814f231f3eea222f`です。
 
-次段の実装、public 8-trace qualification、別PRのauthorization review、1回限りの
+実装のレビュー、public 8-trace qualification、別PRのauthorization review、1回限りの
 exact 384-cell run、独立analysisの順序は
 [`docs/countdown_thompson_dense_scale_execution_contract.md`](docs/countdown_thompson_dense_scale_execution_contract.md)
 に固定した。専用runner／analyzerと公開fixtureは

@@ -286,7 +286,9 @@ class DenseReductionTests(unittest.TestCase):
             "exact_success_count",
             "first_hit_trajectory_index_vector",
             "minimum_terminal_absolute_error_vector",
+            "minimum_terminal_absolute_error_summary",
             "terminal_absolute_error_vectors",
+            "terminal_absolute_error_summaries",
             "terminal_value_vectors",
             "paired_new_success_count_vs_scale_0",
             "paired_lost_success_count_vs_scale_0",
@@ -359,6 +361,125 @@ class DenseReductionTests(unittest.TestCase):
             self.cells, traces, fixture=True, stage_observer=observed.append
         )
         self.assertEqual(observed, list(analysis.STAGE_ORDER[2:]))
+
+    def test_stage_four_exact_summaries_keep_48_cells_and_full_ordered_vectors(self):
+        # Synthetic reducer inputs only: differing observation counts make
+        # pooled or filtered estimands distinguishable from each cell's vector.
+        order = [
+            (cell.task_fingerprint, cell.exploration_seed)
+            for cell in self.cells
+            if cell.terminal_value_scale == 0
+        ]
+        huge = 10**400  # Converting these errors to binary64 would overflow.
+        minima_by_scale = {}
+        vectors_by_scale = {}
+        summaries_by_scale = {}
+        for scale in analysis.SCALES:
+            base = huge + scale * 1000
+            minima = [base + index for index in range(48)]
+            minima[-1] += 1  # Mean denominator 48, even median denominator 2.
+            vectors = []
+            summaries = []
+            for index, minimum in enumerate(minima):
+                if index % 3 == 0:
+                    vector = [minimum + 9, minimum]
+                    mean = median = {"numerator": 2 * minimum + 9, "denominator": 2}
+                elif index % 3 == 1:
+                    vector = [minimum + 4, minimum, minimum + 9]
+                    mean = {"numerator": 3 * minimum + 13, "denominator": 3}
+                    median = {"numerator": minimum + 4, "denominator": 1}
+                else:
+                    vector = [minimum]
+                    mean = median = {"numerator": minimum, "denominator": 1}
+                vectors.append(vector)
+                summaries.append({"mean": mean, "median": median})
+            minima_by_scale[scale] = minima
+            vectors_by_scale[scale] = vectors
+            summaries_by_scale[scale] = summaries
+
+        traces = []
+        for cell in self.cells:
+            index = order.index((cell.task_fingerprint, cell.exploration_seed))
+            vector = vectors_by_scale[cell.terminal_value_scale][index]
+            template = _trace(cell.terminal_value_scale, divergent=False)
+            events = [template["events"][0]]
+            for observation, error in enumerate(vector):
+                selection, terminal, backup = copy.deepcopy(template["events"][1:4])
+                selection["payload"]["trajectory_index"] = observation
+                selection["payload"]["point_digest"] = f"point-{observation}"
+                terminal["payload"] = {
+                    "trajectory_index": observation,
+                    "observation_index": observation,
+                    "verification": {"final_value": 20 - error, "target": 20},
+                }
+                backup["payload"].update(
+                    trajectory_index=observation,
+                    terminal_absolute_error=error,
+                    terminal_value=0.0,
+                )
+                update = backup["payload"]["updates"][0]
+                update["before"]["visits"] = observation
+                update["after"].update(visits=observation + 1, mean=0.0)
+                events.extend((selection, terminal, backup))
+            traces.append({"events": events})
+
+        stages = []
+        calls = []
+        original_summary = analysis.exact_integer_summary
+
+        def observe(stage):
+            if stage == analysis.STAGE_ORDER[4]:
+                self.assertEqual(len(calls), len(analysis.SCALES) * 49)
+            stages.append(stage)
+
+        def summarize(values):
+            self.assertEqual(stages[-1], analysis.STAGE_ORDER[3])
+            calls.append(list(values))
+            return original_summary(values)
+
+        with patch.object(analysis, "exact_integer_summary", side_effect=summarize):
+            result = analysis.reduce_replay_closed_traces(
+                self.cells, traces, fixture=True, stage_observer=observe
+            )
+        self.assertEqual(stages, list(analysis.STAGE_ORDER[2:]))
+        self.assertEqual(
+            calls,
+            [
+                vector
+                for scale in analysis.SCALES
+                for vector in [minima_by_scale[scale], *vectors_by_scale[scale]]
+            ],
+        )
+        self.assertEqual(
+            result["task_seed_order"],
+            [
+                {"task_fingerprint": task, "exploration_seed": seed}
+                for task, seed in order
+            ],
+        )
+        self.assertEqual(result["scale_order"], list(analysis.SCALES))
+        for scale, row in zip(analysis.SCALES, result["per_scale"]):
+            with self.subTest(scale=scale):
+                base = huge + scale * 1000
+                self.assertEqual(row["scale"], scale)
+                self.assertEqual(
+                    row["minimum_terminal_absolute_error_vector"],
+                    minima_by_scale[scale],
+                )
+                self.assertEqual(
+                    row["minimum_terminal_absolute_error_summary"],
+                    {
+                        "mean": {"numerator": 48 * base + 1129, "denominator": 48},
+                        "median": {"numerator": 2 * base + 47, "denominator": 2},
+                    },
+                )
+                self.assertEqual(
+                    row["terminal_absolute_error_vectors"], vectors_by_scale[scale]
+                )
+                self.assertEqual(len(row["terminal_absolute_error_summaries"]), 48)
+                self.assertEqual(
+                    row["terminal_absolute_error_summaries"], summaries_by_scale[scale]
+                )
 
     def test_first_hit_is_trajectory_not_observation_index(self):
         traces = [

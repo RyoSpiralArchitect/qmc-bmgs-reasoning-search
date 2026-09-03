@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -14,16 +15,23 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 
 
-def _run(command: list[str], *, cwd: Path = ROOT) -> None:
+def _run(command: list[str], *, temporary_root: Path, cwd: Path = ROOT) -> None:
     print("+", " ".join(command), flush=True)
     environment = os.environ.copy()
+    # Whole-path publication generations include temporary-root ancestors.
+    # Unrelated users of the shared OS temp namespace must not perturb the
+    # intended fault injection of a repository test.
+    environment["TMPDIR"] = str(temporary_root)
     environment["PYTHONPATH"] = str(SRC)
     environment.setdefault("PYTHONPYCACHEPREFIX", "/tmp/qmc_bmgs_pycache")
     subprocess.run(command, cwd=cwd, env=environment, check=True)
 
 
-def main() -> None:
-    _run(
+def _validate(temporary_root: Path) -> None:
+    def run(command: list[str], *, cwd: Path = ROOT) -> None:
+        _run(command, temporary_root=temporary_root, cwd=cwd)
+
+    run(
         [
             sys.executable,
             "-m",
@@ -37,9 +45,9 @@ def main() -> None:
     if shutil.which("ruff") is None:
         print("ruff unavailable: lint check skipped", flush=True)
     else:
-        _run(["ruff", "check", "."])
-    _run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"])
-    _run([sys.executable, "scripts/verify_artifacts.py"])
+        run(["ruff", "check", "."])
+    run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"])
+    run([sys.executable, "scripts/verify_artifacts.py"])
 
     # Catch accidental sibling-import or source-relative assumptions by invoking
     # every CLI module from outside the repository.
@@ -77,23 +85,28 @@ def main() -> None:
         command = [sys.executable, "-m", module, "--self-test"]
         if module == "qmc_bmgs.experiments.countdown_thompson_dense_scale_manifest":
             command.extend(["--repository-root", str(ROOT)])
-        _run(command, cwd=outside)
-    _run(
+        run(command, cwd=outside)
+    run(
         [
             sys.executable,
             "-m",
             "qmc_bmgs.experiments.countdown_thompson_dense_scale_manifest",
             "--verify",
-            str(
-                ROOT
-                / "docs/preregistrations/countdown_thompson_dense_scale_v5"
-            ),
+            str(ROOT / "docs/preregistrations/countdown_thompson_dense_scale_v5"),
             "--repository-root",
             str(ROOT),
         ],
         cwd=outside,
     )
     print("repository validation: PASS")
+
+
+def main() -> None:
+    # A sibling stays outside the checked source tree and shared OS temp root.
+    with tempfile.TemporaryDirectory(
+        prefix=".qmc-bmgs-validation-", dir=ROOT.parent
+    ) as temporary:
+        _validate(Path(temporary).resolve())
 
 
 if __name__ == "__main__":

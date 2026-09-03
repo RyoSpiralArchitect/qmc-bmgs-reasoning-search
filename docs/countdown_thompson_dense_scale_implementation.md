@@ -68,6 +68,23 @@ full-shaped integration test therefore uses a disposable sibling of the
 checkout, not the shared OS temporary directory. It does not relax the writer's
 generation checks or retry a production attempt.
 
+## Exact error summaries
+
+Stage four computes two deterministic views of the already required integer
+error vectors, before stage five reads exact success:
+
+- `minimum_terminal_absolute_error_summary`: reduced-rational mean and median
+  of all 48 task/seed minimum errors for that scale, with equal cell weight;
+- `terminal_absolute_error_summaries`: 48 reduced-rational mean/median pairs in
+  the same frozen task/seed order, each using that cell's complete nonempty
+  terminal-error vector.
+
+Each rational is stored as integer `numerator` and positive `denominator`.
+There is no pooling of terminal observations across cells, outcome-based row
+filtering, or floating-point error aggregation. These views supplement the
+preregistered raw vectors and counts; they do not change scale selection or the
+handoff rule. The frozen analysis manifest and its digest remain unchanged.
+
 ## Fixed 384-cell public fixture
 
 The fixture is separate at every public authority boundary:
@@ -130,6 +147,23 @@ authorization, repository root or output path. Their self-tests are wired into
 `scripts/validate.py`; repository tests separately exercise fixed public cells,
 adversarial authority/publication cases and reduction invariants. The sealed
 manifest verifier remains a separate read-only check, not a search run.
+The validation harness supplies a private temporary namespace to every child
+command, so unrelated shared-OS-temp churn does not preempt the deliberately
+injected failure in legacy publication tests. Their assertions and source
+bytes are unchanged.
+
+The full-shaped test runs from a clean disposable clone, rejects any sealed
+preregistration open or production planning/loading call, then analyzes all
+384 committed public cells from a later source-identical Git revision. Summary
+publication deliberately shares the raw parent to exercise the authority
+barriers across its own directory update.
+
+Two initial public-fixture integration attempts committed the raw collective
+but failed final summary publication. A search-free probe isolated generation
+changes in the shared OS temporary ancestor. Those attempts were not counted
+as passes: the test namespace was isolated, and a deterministic sibling-churn
+regression retains fail-closed summary quarantine. A separate regression checks
+that raw-authority ambiguity is not downgraded after exact summary rollback.
 
 An implementation fixture or green tests do not authorize `--plan`. First
 finish the full-shaped fixture, independently replay it, complete exact-head

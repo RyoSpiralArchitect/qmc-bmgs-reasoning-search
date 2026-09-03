@@ -82,7 +82,9 @@ engineering research repoです。
 、後続のfeedback/anchor ablationは
 [Thompson feedback and anchor v3/v4](docs/strategy/countdown_thompson_feedback_anchor_v3_v4.md)、
 次のsource-disjoint scale設計は
-[dense terminal scale dose response v5](docs/strategy/countdown_thompson_dense_scale_dose_response_v5.md)
+[dense terminal scale dose response v5](docs/strategy/countdown_thompson_dense_scale_dose_response_v5.md)、
+その実装・認可・一回限りの実行・独立解析の分離は
+[dense-scale execution contract](docs/countdown_thompson_dense_scale_execution_contract.md)
 を参照してください。
 
 ## Layout
@@ -435,7 +437,7 @@ authorization/source/bundleの前後再検証、no-overwrite summary publication
 v2/v3/v4のどれもbase searchとしてgreedy/beamを上回れなければ、locked-128は
 開かず`STOP_REPAIR_NO_LOCKED_128_RUN`とする。
 
-現在の次段はsearch runnerを持たないv5 preregistrationまでです。次のコマンドは旧4 cohortの
+v5 preregistrationはまだsearch runnerを持たず、次のコマンドは旧4 cohortの
 identity authority、新12-task生成、8 scale、384-cell schedule、canonical bytesを再検証しますが、
 開発cohortのproposal/perturbation/search outcomeは生成しません。
 
@@ -448,5 +450,12 @@ PYTHONPATH=src python -m \
 
 seal digestは
 `49f820692aa4f3551ca5634bdc89efe225fe05d1dc8acb8e814f231f3eea222f`です。
+
+次段の実装、public 8-trace qualification、別PRのauthorization review、1回限りの
+exact 384-cell run、独立analysisの順序は
+[`docs/countdown_thompson_dense_scale_execution_contract.md`](docs/countdown_thompson_dense_scale_execution_contract.md)
+に固定した。このdesign-only revisionはrunner、authorization candidate、development
+outcomeを作らない。実装PRがnondiagnostic full-shaped 384-cell fixtureとfresh exact-head
+reviewを通過するまで、planningへ進まない。
 
 自然言語reasoningへの一般化や一般的なQMC優位は、まだ主張しません。

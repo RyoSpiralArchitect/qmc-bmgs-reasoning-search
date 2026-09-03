@@ -637,6 +637,35 @@ def _summary(
     return _digest(base)
 
 
+def _admit_historical_execution_head(
+    core: Any,
+    reviewed: Any,
+    hint: Any,
+    repository_root: Path,
+    *,
+    fixture: bool,
+) -> str:
+    """Admit a control-file hint using independent Git/source authority."""
+    historical_head = core.require_git_oid(hint.execution_head_revision)
+    if fixture and historical_head != reviewed.authorization_revision:
+        raise DenseScaleAnalysisError("fixture execution differs from its source epoch")
+    # Only runner revision -> authorization revision is strict, and the external
+    # loader closes that edge. Execution may equal the authorization merge HEAD.
+    core.require_ancestor(
+        repository_root,
+        reviewed.authorization_revision,
+        historical_head,
+    )
+    core.require_ancestor(repository_root, historical_head, reviewed.execution_head)
+    core.verify_historical_source_receipts(
+        repository_root,
+        historical_head,
+        reviewed.payload["runner_build_attestation"]["source_files"],
+    )
+    hint.revalidate()
+    return historical_head
+
+
 def _analyze(
     artifact_path: Path,
     *,
@@ -673,22 +702,13 @@ def _analyze(
     )
     # The manifest supplies only a candidate revision, never its own authority.
     # Git ancestry and exact historical source blobs independently admit it.
-    historical_head = core.require_git_oid(hint.execution_head_revision)
-    if fixture and historical_head != reviewed.authorization_revision:
-        raise DenseScaleAnalysisError("fixture execution differs from its source epoch")
-    core.require_ancestor(
+    historical_head = _admit_historical_execution_head(
+        core,
+        reviewed,
+        hint,
         repository_root,
-        reviewed.authorization_revision,
-        historical_head,
-        strict=not fixture,
+        fixture=fixture,
     )
-    core.require_ancestor(repository_root, historical_head, reviewed.execution_head)
-    core.verify_historical_source_receipts(
-        repository_root,
-        historical_head,
-        reviewed.payload["runner_build_attestation"]["source_files"],
-    )
-    hint.revalidate()
     inputs = (
         core.public_fixture_inputs()
         if fixture

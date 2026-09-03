@@ -407,6 +407,48 @@ class DenseReductionTests(unittest.TestCase):
 
 
 class DenseAnalysisBoundaryTests(unittest.TestCase):
+    def test_production_historical_execution_may_equal_authorization_revision(self):
+        from unittest.mock import Mock
+
+        revision = "b" * 40
+        ancestry_calls = []
+
+        def require_ancestor(root, ancestor, descendant, *, strict=False):
+            ancestry_calls.append((ancestor, descendant, strict))
+            if strict and ancestor == descendant:
+                raise analysis.DenseScaleAnalysisError(
+                    "strict ancestry rejected equality"
+                )
+
+        historical_receipts = Mock()
+        core = SimpleNamespace(
+            require_git_oid=lambda value: value,
+            require_ancestor=require_ancestor,
+            verify_historical_source_receipts=historical_receipts,
+        )
+        receipts = {"public-source": {"byte_count": 1, "sha256": "a" * 64}}
+        reviewed = SimpleNamespace(
+            authorization_revision=revision,
+            execution_head="c" * 40,
+            payload={"runner_build_attestation": {"source_files": receipts}},
+        )
+        hint = SimpleNamespace(execution_head_revision=revision, revalidate=Mock())
+        self.assertEqual(
+            analysis._admit_historical_execution_head(
+                core,
+                reviewed,
+                hint,
+                Path("/repo"),
+                fixture=False,
+            ),
+            revision,
+        )
+        self.assertEqual(
+            ancestry_calls, [(revision, revision, False), (revision, "c" * 40, False)]
+        )
+        historical_receipts.assert_called_once_with(Path("/repo"), revision, receipts)
+        hint.revalidate.assert_called_once_with()
+
     def test_self_test_and_bad_cli_never_load_execution_modules(self):
         with patch.object(
             analysis, "_modules", side_effect=AssertionError("operational import")

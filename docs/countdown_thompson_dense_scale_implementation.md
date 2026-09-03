@@ -50,9 +50,13 @@ revision and current clean HEAD. The six search-source receipts must also
 match the frozen preregistration's runtime binding.
 
 Operational invocations require `-P -B` and a newly created, empty, owner-only
-bytecode-cache namespace. These are source-loading receipts, not protection
-against arbitrary code-object mutation by a malicious process or same-UID
-attacker. Publication retains the reviewed local POSIX/identity-epoch limits;
+bytecode-cache namespace. Source/cache writers must be quiescent from fresh
+cache creation and process startup through the final barrier. These receipts
+check current Git/source bytes and observable loader/cache policy; they do not
+retrospectively measure every loaded code object or detect transient
+pre-attestation replacement followed by restoration. That case and arbitrary
+code-object mutation are outside the authority model, not detected attacks.
+Publication retains the reviewed local POSIX/identity-epoch limits;
 it does not claim NFS, SMB, FUSE, reboot, mount-namespace or device/inode ABA
 safety.
 

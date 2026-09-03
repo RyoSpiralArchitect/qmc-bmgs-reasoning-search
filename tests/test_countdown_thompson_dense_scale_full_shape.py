@@ -50,6 +50,19 @@ core.replay_countdown_track_a_search_bytes = replay
 from qmc_bmgs.experiments import countdown_thompson_dense_scale_runner as runner
 runner.plan_execution = forbidden
 runner.run_execution = forbidden
+from qmc_bmgs.experiments import countdown_thompson_dense_scale_publication as publication
+original_summary = publication.publish_dense_scale_fixture_summary
+
+def debug_summary(*args, **kwargs):
+    try:
+        return original_summary(*args, **kwargs)
+    except BaseException:
+        # Public-fixture diagnostic only. Production CLI remains outcome-quiet.
+        import traceback
+        traceback.print_exc()
+        raise
+
+publication.publish_dense_scale_fixture_summary = debug_summary
 module = importlib.import_module(sys.argv[1])
 raise SystemExit(module.main(sys.argv[2:]))
 """

@@ -88,7 +88,9 @@ engineering research repoです。
 専用runner／analyzerと公開fixtureの使い方は
 [dense-scale implementation](docs/countdown_thompson_dense_scale_implementation.md)、
 実行結果の分解と次の修正開発候補は
-[feedback opportunity observation](docs/observations/countdown_thompson_feedback_opportunity_20260904.md)
+[feedback opportunity observation](docs/observations/countdown_thompson_feedback_opportunity_20260904.md)、
+その次の実験設計（未実行）は
+[feedback × budget factorial v6](docs/strategy/countdown_thompson_feedback_budget_factorial_v6.md)
 を参照してください。
 
 ## Layout

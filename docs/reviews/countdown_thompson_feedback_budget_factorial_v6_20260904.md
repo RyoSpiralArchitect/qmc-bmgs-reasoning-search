@@ -67,4 +67,3 @@ legacy search and replay checks. It does not execute the newly proposed v6
 development study or establish its future production prefix/replay gates.
 The later review-note/README-only commit does not change the validated code,
 tests, or frozen design.
-

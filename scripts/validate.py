@@ -92,6 +92,15 @@ def _validate(temporary_root: Path) -> None:
         run(["ruff", "check", "."])
     run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"])
     run([sys.executable, "scripts/verify_artifacts.py"])
+    run(
+        [
+            sys.executable,
+            "-P",
+            "-B",
+            "scripts/audit_dense_feedback_opportunity.py",
+            "--self-test",
+        ]
+    )
 
     # Catch accidental sibling-import or source-relative assumptions by invoking
     # every CLI module from outside the repository.

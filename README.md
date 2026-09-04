@@ -86,7 +86,9 @@ engineering research repoです。
 その実装・認可・一回限りの実行・独立解析の分離は
 [dense-scale execution contract](docs/countdown_thompson_dense_scale_execution_contract.md)、
 専用runner／analyzerと公開fixtureの使い方は
-[dense-scale implementation](docs/countdown_thompson_dense_scale_implementation.md)
+[dense-scale implementation](docs/countdown_thompson_dense_scale_implementation.md)、
+実行結果の分解と次の修正開発候補は
+[feedback opportunity observation](docs/observations/countdown_thompson_feedback_opportunity_20260904.md)
 を参照してください。
 
 ## Layout

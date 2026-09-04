@@ -36,3 +36,22 @@ committed. It produced one canonical receipt successfully; it performed no
 generative search or replay. Review of the code alone was not reported as proof
 that this operation succeeded: the separately published receipt supplies that
 evidence.
+
+## Validation and independent result check
+
+`python3 -B scripts/validate.py` completed with `repository validation: PASS`,
+including the existing full suite, artifact checks, CLI self-tests, and frozen
+dense-scale seal verification. Because it was started while the new synthetic
+test file was being authored, the 41 new tests were also run separately against
+the corrected source with `python3 -P -B -m unittest discover -s tests -p
+test_dense_feedback_opportunity_audit.py`; all passed. No combined final-HEAD
+full-suite count is claimed.
+
+A separate reviewer then checked only the published audit receipt and original
+summary, without importing the auditor or opening raw traces. It independently
+recomputed canonical bytes, the receipt digest, all 336 ordered unique pairs,
+full preceding support, classifications, rational score margins, per-scale
+counts, original W/T/L and new/lost success counts: zero discrepancies.
+The nested scale-16 counts `48 -> 15 -> 9 -> 4 -> 1` were confirmed. This is
+derived-result consistency, not an independent recheck of raw event timing or
+a new generative replay.

@@ -91,6 +91,7 @@ engineering research repoです。
 [feedback opportunity observation](docs/observations/countdown_thompson_feedback_opportunity_20260904.md)、
 その次の実験設計（未実行）は
 [feedback × budget factorial v6](docs/strategy/countdown_thompson_feedback_budget_factorial_v6.md)
+と [design review](docs/reviews/countdown_thompson_feedback_budget_factorial_v6_20260904.md)
 を参照してください。
 
 ## Layout

@@ -473,6 +473,7 @@ def pair_row(pair: dict, baseline: dict, scaled: dict) -> dict:
         }
     )
     support = pair["shared_prefix_backup_values"]
+    result["shared_prefix_backup_values"] = support
     for row in support:
         trajectory = row["trajectory_index"]
         for view, label in ((baseline, "baseline"), (scaled, "scaled")):

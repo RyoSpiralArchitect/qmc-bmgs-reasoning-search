@@ -92,6 +92,7 @@ def _validate(temporary_root: Path) -> None:
         run(["ruff", "check", "."])
     run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"])
     run([sys.executable, "scripts/verify_artifacts.py"])
+    run([sys.executable, "-P", "-B", "scripts/check_feedback_budget_design.py"])
     run(
         [
             sys.executable,

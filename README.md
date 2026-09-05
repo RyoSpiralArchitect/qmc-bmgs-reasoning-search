@@ -93,6 +93,9 @@ engineering research repoです。
 [feedback × budget factorial v6](docs/strategy/countdown_thompson_feedback_budget_factorial_v6.md)
 と [design review](docs/reviews/countdown_thompson_feedback_budget_factorial_v6_20260904.md)
 を参照してください。
+予算256／512の実装と公開問題での履歴・再現チェックは
+[public qualification](docs/countdown_feedback_budget_public_qualification.md)
+にまとめています。
 
 ## Layout
 

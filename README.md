@@ -96,6 +96,8 @@ engineering research repoです。
 予算256／512の実装と公開問題での履歴・再現チェックは
 [public qualification](docs/countdown_feedback_budget_public_qualification.md)
 にまとめています。
+公開12問×4seed×4条件を保存・再解析まで通す全192セルの検証は
+[full-shape fixture](docs/countdown_feedback_budget_full_shape.md) を参照してください。
 
 ## Layout
 

@@ -77,8 +77,11 @@ field always remains false.
 
 ## Next gate
 
-Implement and qualify the separately named 192-cell public fixture, production
-manifest/runner/analyzer domains, exact cell closure, and publication contract.
-Then generate and seal the fresh excluded cohort and review its concrete
+The [separately named192-cell public fixture](countdown_feedback_budget_full_shape.md)
+extends this qualification through exact cell closure, durable publication,
+and independent saved-record analysis. Its fixture identities were fixed by
+this32-trace stage; this wrapper and the original receipts remain unchanged.
+Production manifest/runner/analyzer domains and publication qualification are
+subsequent work, followed by the fresh excluded cohort seal and its concrete
 authorization candidate. The existing STOP decision and consumed authorization
 are unchanged.

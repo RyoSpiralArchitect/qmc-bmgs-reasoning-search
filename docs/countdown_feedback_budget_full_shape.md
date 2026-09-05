@@ -8,6 +8,10 @@ remains unchanged: inputs `(1,2,3,4,5,6)`, targets 1–12, budgets 256/512, scal
 [exact 192-cell manifest](fixtures/countdown_feedback_budget_v6_full_shape.json)
 binds every task, factor, component digest, cell key, and execution order.
 
+The [dated observation](observations/countdown_feedback_budget_v6_full_shape_20260905.md)
+records the completed run, independent analysis, saved-summary verification,
+and the tracked hashes for all 192 cells.
+
 ## Execution and analysis
 
 `run_feedback_budget_full_shape.py` reconstructs the fixed tasks without any

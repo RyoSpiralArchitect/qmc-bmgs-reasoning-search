@@ -8,6 +8,10 @@ the new profiles and exercises the unchanged search package.
 The [dated observation](observations/countdown_feedback_budget_v6_public_20260905.md)
 and [tracked receipt](qualifications/countdown_feedback_budget_v6_public_20260905.json)
 record the first qualification and independent verification.
+After the full-PR review correction, a
+[fresh qualification receipt](qualifications/countdown_feedback_budget_v6_public_revalidated_20260905.json)
+records verification with the corrected executable bytes. Historical receipts
+remain bound to their producing revisions.
 
 ## What is checked
 
@@ -77,10 +81,10 @@ field always remains false.
 
 ## Next gate
 
-The [separately named192-cell public fixture](countdown_feedback_budget_full_shape.md)
+The [separately named 192-cell public fixture](countdown_feedback_budget_full_shape.md)
 extends this qualification through exact cell closure, durable publication,
 and independent saved-record analysis. Its fixture identities were fixed by
-this32-trace stage; this wrapper and the original receipts remain unchanged.
+this 32-trace stage; the original receipts remain unchanged.
 Production manifest/runner/analyzer domains and publication qualification are
 subsequent work, followed by the fresh excluded cohort seal and its concrete
 authorization candidate. The existing STOP decision and consumed authorization

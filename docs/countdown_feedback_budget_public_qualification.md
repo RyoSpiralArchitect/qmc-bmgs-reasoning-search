@@ -5,6 +5,10 @@ This implements the public qualification gate of the
 The fixed public problem is `(1,2,3,4,5,6) -> 720`. A standalone wrapper constructs
 the new profiles and exercises the unchanged search package.
 
+The [dated observation](observations/countdown_feedback_budget_v6_public_20260905.md)
+and [tracked receipt](qualifications/countdown_feedback_budget_v6_public_20260905.json)
+record the first qualification and independent verification.
+
 ## What is checked
 
 The wrapper executes 16 new-profile traces (budgets 256/512, scales 0/16,

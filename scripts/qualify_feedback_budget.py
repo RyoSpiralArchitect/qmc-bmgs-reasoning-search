@@ -554,6 +554,10 @@ def verify(output: Path) -> dict:
         and runtime_receipt() == runtime,
         "source/runtime changed during verification",
     )
+    require(
+        set(p.name for p in output.iterdir()) == {"records.jsonl", "receipt.json"},
+        "public evidence file closure differs",
+    )
     return expected
 
 

@@ -301,6 +301,21 @@ class PublicEvidenceBoundaries(unittest.TestCase):
         self.attest.assert_not_called()
         analyze.assert_not_called()
 
+    def test_late_extra_entry_is_rejected_after_analysis(self):
+        self.create_evidence()
+
+        def add_entry(rows):
+            self.assertEqual(rows, self.rows)
+            (self.output / "failure.json").mkdir()
+            return self.analysis
+
+        with (
+            patch.object(QUALIFY, "analyze_matrix", side_effect=add_entry),
+            self.assertRaisesRegex(QUALIFY.QualificationError, "file closure"),
+        ):
+            QUALIFY.verify(self.output)
+        self.assertTrue((self.output / "failure.json").is_dir())
+
     def test_failure_or_extra_file_invalidates_evidence_closure_before_analysis(self):
         self.create_evidence()
         for name in ("failure.json", "unclaimed-record.jsonl"):

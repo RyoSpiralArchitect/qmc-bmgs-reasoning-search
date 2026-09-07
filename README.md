@@ -98,6 +98,9 @@ engineering research repoです。
 にまとめています。
 公開12問×4seed×4条件を保存・再解析まで通す全192セルの検証は
 [full-shape fixture](docs/countdown_feedback_budget_full_shape.md) を参照してください。
+その先の本実験用の契約・除外境界・192セル候補の組み立ては
+[development contract](docs/countdown_feedback_budget_development_contract.md)
+にまとめています。新cohortの生成・seal・実行・認可はまだ行いません。
 
 ## Layout
 

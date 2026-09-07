@@ -30,8 +30,9 @@ It retains all six identity boundaries separately:
 | **Union** | **179** | **167** |
 
 The 13 public tasks intentionally share one input multiset. This is not treated
-as thirteen independent source groups. No historical outcomes or locked task
-definitions are opened by this compiler. The historical preregistration is a
+as thirteen independent source groups. No historical development outcomes or
+locked task definitions are opened by this compiler. The public qualification
+receipts are read as fixed input evidence. The historical preregistration is a
 pinned identity input, not reused execution authority. This step does not
 substitute for the future cohort builder's complete authority verification.
 
@@ -93,6 +94,8 @@ On 2026-09-07 the contract digest was
 and the synthetic schedule-candidate digest was
 `35761709902de870b3f78e76bb0651bea99dcaaef3cc754e66b24d6e3cbbbe98`.
 These bind the candidate data, not an attested producing executable or a study.
+The [dated validation note](reviews/countdown_feedback_budget_development_contract_20260907.md)
+records the 20 focused tests, full 909-test validation, and remaining boundaries.
 
 ## Remaining gate
 

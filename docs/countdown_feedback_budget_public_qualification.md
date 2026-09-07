@@ -13,6 +13,23 @@ After the full-PR review correction, a
 records verification with the corrected executable bytes. Historical receipts
 remain bound to their producing revisions.
 
+### Preserve evidence history when merging
+
+Merge evidence-bearing PRs with a **merge commit**, not squash or rebase. The
+source verifier requires each producing revision to be an ancestor of the
+checkout; identical final file contents do not replace that ancestry. Use a
+complete clone (not a shallow clone) when retrieving historical evidence.
+`python3 -P -B scripts/check_feedback_budget_provenance.py` checks all three
+tracked PR27 receipt/summary revision chains in the committed tree, and is part
+of repository validation. It also accepts `--revision FULL_COMMIT_OID` to check
+a candidate merge. This ancestry-only guard does not perform trace replay.
+
+The original `d63980c` receipt is historical: check out that producing revision
+for its original verifier. The refreshed receipt and full-shape summary were
+produced at `112d41b` and can be verified at later commits only while their
+protected executable bytes remain identical. Do not relabel old receipts as
+new evidence or weaken attestation to accept a rewritten/squashed history.
+
 ## What is checked
 
 The wrapper executes 16 new-profile traces (budgets 256/512, scales 0/16,

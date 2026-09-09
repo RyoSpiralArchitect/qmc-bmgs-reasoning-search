@@ -109,6 +109,11 @@ generator acceptance nor execution readiness. The live qualification reports
 Eight domain negatives reject the identity contract/schedule, public fixture/
 analysis, v5 preregistration and three old authorizations before generation.
 
+The [dated review/qualification record](reviews/countdown_feedback_budget_admission_20260910.md)
+retains the fresh-review P2, corrected ordering, targeted reviewer recheck,
+985-test validation and independently verified admission receipt. The interrupted
+pre-fix receipt is retained separately and was not promoted.
+
 ## Remaining gate
 
 Review this addition and its fresh qualification. The remaining implementation

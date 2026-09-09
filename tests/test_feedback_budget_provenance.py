@@ -64,7 +64,7 @@ class FeedbackBudgetProvenanceTests(unittest.TestCase):
     def test_real_repository_receipts_retain_their_producing_ancestors(self):
         result = gate.verify(ROOT)
         self.assertEqual(result["status"], "PUBLIC_RECEIPT_ANCESTRY_PASS")
-        self.assertEqual(len(result["receipts"]), 4)
+        self.assertEqual(len(result["receipts"]), 5)
         self.assertFalse(result["trace_replay_performed"])
         self.assertFalse(result["development_execution_authorized"])
 

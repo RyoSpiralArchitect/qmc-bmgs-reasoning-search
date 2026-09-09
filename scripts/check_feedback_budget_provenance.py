@@ -32,6 +32,25 @@ RECEIPTS = {
         ("source", "public_qualification_source", "qualification_revision"),
         ("source", "public_qualification_source", "package_source", "runner_revision"),
     ),
+    "docs/qualifications/countdown_feedback_budget_v6_admission_20260910.json": (
+        ("admission_context", "source", "admission_revision"),
+        ("admission_context", "source", "public_path_source", "execution_revision"),
+        (
+            "admission_context",
+            "source",
+            "public_path_source",
+            "public_qualification_source",
+            "qualification_revision",
+        ),
+        (
+            "admission_context",
+            "source",
+            "public_path_source",
+            "public_qualification_source",
+            "package_source",
+            "runner_revision",
+        ),
+    ),
 }
 
 

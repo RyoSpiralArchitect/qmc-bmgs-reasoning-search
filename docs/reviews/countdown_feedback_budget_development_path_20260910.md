@@ -53,6 +53,16 @@ or executed, and there were zero provider calls.
 
 ## Automated negatives and local inspection
 
+Full `python3 -B scripts/validate.py` passed at receipt/ancestry commit
+`afbf718f1b1fa392d440a36eb9261f63182c4b4d`: **953 tests in 518.817 seconds**
+(the unit-test duration), followed by compilation/Ruff, artifact and ancestry
+checks, all outside-checkout CLI self-tests and the existing v5 seal verification.
+All 44 new-path tests and the earlier 20 contract/compiler tests passed; no tests
+were skipped. The producing executable was unchanged. A further independent
+verify from this receipt-bearing descendant also returned the identical
+`16788fa...` summary digest. These are local checks, not a hosted CI or independent
+review approval.
+
 The focused checks cover immutable/strict public input reconstruction, complete
 cell binding, rehashed last-cell identity/trace corruption, old384 rejection,
 full-payload prefixes, outcome-redacted views, exact finite arithmetic, all seven

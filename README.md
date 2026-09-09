@@ -101,6 +101,9 @@ engineering research repoです。
 その先の本実験用の契約・除外境界・192セル候補の組み立ては
 [development contract](docs/countdown_feedback_budget_development_contract.md)
 にまとめています。新cohortの生成・seal・実行・認可はまだ行いません。
+新しいdomainでの実行→順序固定の解析→一回限りの保存は
+[development-path public adapter](docs/countdown_feedback_budget_development_path.md)
+で公開192セルを使って検証します。本実験のcohort／認可を受け入れる層は未実装です。
 
 ## Layout
 

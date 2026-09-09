@@ -70,7 +70,7 @@ production cell keys, and execution authorization stay explicitly false.
 The contract reserves a new development domain,
 `qmc-bmgs-countdown-thompson-feedback-budget/v1`, and distinct future
 preregistration/cohort/record/run-binding/authorization/publication/analysis
-schemas. Those reserved names are not implemented production protocols. Public
+schemas. Those reserved names alone are not implemented production protocols. Public
 receipts and the old 384-cell authorization are not accepted as this candidate;
 the old authorization validator also rejects the new contract/candidate objects.
 
@@ -99,9 +99,11 @@ records the 20 focused tests, full 909-test validation, and remaining boundaries
 
 ## Remaining gate
 
-Implement and qualify the production runner/analyzer and their one-shot
-publication path, with full source/runtime closure and a separate public
-fixture. Then generate and seal the fresh excluded cohort, review an exact
+The [development-path public adapter](countdown_feedback_budget_development_path.md)
+now connects new-domain execution, ordered analysis and one-shot publication on
+the fixed public tasks. This contract compiler itself remains identity-only and
+non-authorizing. Production cohort/seal and authorization admission are still
+missing and must be implemented and qualified. Then generate and seal the fresh excluded cohort, review an exact
 execution authorization candidate, and obtain permission for one complete run.
 No v6 development result, causal claim, method-quality improvement, or locked-128
 authority follows from these contract/compiler tests.

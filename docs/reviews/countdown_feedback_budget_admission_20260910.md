@@ -154,6 +154,14 @@ The ancestry guard now covers five receipts, including all nested admission
 producing revisions. Receipt-bearing history must retain the actual producing
 commits; no squash/rebase merge is acceptable. PR28 remains unmerged.
 
+After receipt promotion at `cac6184f2c473d55757a62f9fedcd9056f70670d`, the
+**13 provenance tests**, committed-tree five-receipt guard and artifact verifier
+passed. A fresh-cache source/runtime attestation from that receipt-bearing
+descendant exactly matched the producing receipt (`DESCENDANT_SOURCE_RUNTIME_PASS`).
+The full 985-test run above belongs to the producing executable; these focused
+checks cover the subsequent receipt/ancestry-guard change. No protected admission,
+public or search executable, frozen design or old preregistration changed.
+
 Claim ceiling: public raw replay, verified historical identity prerequisites,
 synthetic positive sealing tests and review-candidate plumbing only. The real
 cohort roundtrip is not performed. Production execution admission and one-shot

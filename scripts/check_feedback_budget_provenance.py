@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check PR27 receipt ancestry in a committed Git tree, without running search.
+"""Check public receipt ancestry in a committed Git tree, without running search.
 
 This is a merge/retrieval guard, not source/runtime attestation or trace replay.
 Use a complete clone and preserve the producing commits when merging evidence.
@@ -23,6 +23,11 @@ RECEIPTS = {
     "docs/qualifications/countdown_feedback_budget_v6_public_20260905.json": QUALIFICATION_PATHS,
     "docs/qualifications/countdown_feedback_budget_v6_public_revalidated_20260905.json": QUALIFICATION_PATHS,
     "docs/qualifications/countdown_feedback_budget_v6_full_shape_20260905.summary.json": (
+        ("source", "execution_revision"),
+        ("source", "public_qualification_source", "qualification_revision"),
+        ("source", "public_qualification_source", "package_source", "runner_revision"),
+    ),
+    "docs/qualifications/countdown_feedback_budget_v6_development_path_20260910.summary.json": (
         ("source", "execution_revision"),
         ("source", "public_qualification_source", "qualification_revision"),
         ("source", "public_qualification_source", "package_source", "runner_revision"),

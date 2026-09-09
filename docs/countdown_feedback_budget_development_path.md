@@ -120,6 +120,10 @@ tests also exercise real public search/replay, but their synthetic storage
 bindings are not source-qualified execution receipts. Repository validation
 invokes the CLI from outside the checkout.
 
+The [2026-09-10 qualification note](reviews/countdown_feedback_budget_development_path_20260910.md)
+records the producing commit, independently verified summary, unchanged 192
+search traces and exact claim ceiling. It is not an independent code-review approval.
+
 ## Next gate
 
 Review this implementation and freshly produced qualification; then implement

@@ -35,8 +35,10 @@ candidate-cell keys nor the older public/384-cell keys.
 Every record also binds its execution source/runtime/baseline receipt. The
 immutable input object accepts only the canonical, independently reconstructed
 public manifest. Rehashed alternate tasks, candidates and old authorizations
-are rejected. The future development seal, cohort loader, exact authorization
-and one-shot consumption registry are **not implemented**. There is no generic
+are rejected. This public adapter does not load development seals or authorizations.
+A separate [cohort/review-candidate layer](countdown_feedback_budget_development_admission.md)
+now implements seal reconstruction and review-only candidates; execution
+authorization and one-shot consumption are still **not implemented**. There is no generic
 `--run`, task, seed, cohort, authorization, resume or provider CLI. Well-formed
 storage bindings and the pure numerical reducer do not attest their own inputs.
 
@@ -126,9 +128,10 @@ search traces and exact claim ceiling. It is not an independent code-review appr
 
 ## Next gate
 
-Review this implementation and freshly produced qualification; then implement
-and qualify development cohort/seal and authorization admission against the
-frozen recipe and historical authorities. Generate/seal the fresh source-disjoint
+The [fresh review](reviews/countdown_feedback_budget_admission_20260910.md) found
+no actionable P1/P2 issue in the public path. Review and qualify the separate
+cohort/review-candidate layer and remaining execution-authorization connector
+against the frozen recipe and historical authorities. Generate/seal the fresh source-disjoint
 cohort only after those prerequisite gates close. Review the exact authorization
 candidate and obtain explicit permission before a complete development run.
 New executable bytes require fresh qualification, not an alias to this receipt.

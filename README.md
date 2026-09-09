@@ -103,7 +103,9 @@ engineering research repoです。
 にまとめています。新cohortの生成・seal・実行・認可はまだ行いません。
 新しいdomainでの実行→順序固定の解析→一回限りの保存は
 [development-path public adapter](docs/countdown_feedback_budget_development_path.md)
-で公開192セルを使って検証します。本実験のcohort／認可を受け入れる層は未実装です。
+で公開192セルを使って検証します。
+[cohort／認可候補の入口](docs/countdown_feedback_budget_development_admission.md)
+は封印の独立検証とreview用候補まで。本実験の実行認可・一回限りの消費処理は未実装です。
 
 ## Layout
 

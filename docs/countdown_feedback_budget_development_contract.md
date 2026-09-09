@@ -102,8 +102,10 @@ records the 20 focused tests, full 909-test validation, and remaining boundaries
 The [development-path public adapter](countdown_feedback_budget_development_path.md)
 now connects new-domain execution, ordered analysis and one-shot publication on
 the fixed public tasks. This contract compiler itself remains identity-only and
-non-authorizing. Production cohort/seal and authorization admission are still
-missing and must be implemented and qualified. Then generate and seal the fresh excluded cohort, review an exact
+non-authorizing. The separate [cohort/review-candidate admission layer](countdown_feedback_budget_development_admission.md)
+now implements seal reconstruction and review-only candidates. Its review and
+qualification, and the production execution/authorization-consumption connector,
+must close before generation. Then generate and seal the fresh excluded cohort, review an exact
 execution authorization candidate, and obtain permission for one complete run.
 No v6 development result, causal claim, method-quality improvement, or locked-128
 authority follows from these contract/compiler tests.

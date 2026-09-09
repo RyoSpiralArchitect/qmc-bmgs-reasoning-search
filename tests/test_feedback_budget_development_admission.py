@@ -468,6 +468,49 @@ class AdmissionStorageTests(SyntheticSetup, unittest.TestCase):
         ):
             M.load_seal(self.path)
 
+    def test_partial_or_malformed_transaction_markers_never_generate(self):
+        self.publish()
+        for name in ("STARTED.json", "SEALED.json"):
+            path = self.path / name
+            original = path.read_bytes()
+            for raw in (b"", b"{}\n", b"{malformed\n"):
+                path.write_bytes(raw)
+                with (
+                    patch.object(
+                        M.historical, "generate_solvable_task_suite"
+                    ) as generator,
+                    patch.object(M, "revalidate_context") as context,
+                    self.subTest(name=name, raw=raw),
+                    self.assertRaises((ValueError, KeyError, TypeError)),
+                ):
+                    M.load_seal(self.path)
+                generator.assert_not_called()
+                context.assert_not_called()
+                path.write_bytes(original)
+
+    def test_rehashed_marker_linkage_lies_never_generate(self):
+        self.publish()
+        for name, key, changed in (
+            ("STARTED.json", "status", "fake"),
+            ("STARTED.json", "admission_context", {}),
+            ("SEALED.json", "seal_sha256", "f" * 64),
+            ("SEALED.json", "started_sha256", "f" * 64),
+            ("SEALED.json", "seal_byte_count", 1),
+        ):
+            path = self.path / name
+            original = path.read_bytes()
+            value = M.core.parse_canonical(original)
+            value[key] = changed
+            path.write_bytes(M.canonical(rehash(value)))
+            with (
+                patch.object(M.historical, "generate_solvable_task_suite") as generator,
+                self.subTest(name=name, key=key),
+                self.assertRaises(ValueError),
+            ):
+                M.load_seal(self.path)
+            generator.assert_not_called()
+            path.write_bytes(original)
+
     def test_symlink_hardlink_and_extra_files_rejected_before_generator(self):
         for kind in ("symlink", "hardlink", "extra"):
             self.path = self.root / kind

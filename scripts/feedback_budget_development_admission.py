@@ -531,7 +531,11 @@ def load_seal(path):
     parent = mechanics._PinnedParent.open(path)
     try:
         raw, generation = storage._observe(parent, NAMES)
-        seal = validate_seal_bytes(raw["preregistration.json"])
+        # Transaction-content closure is a prerequisite to regeneration, not
+        # merely a post-solver check. An uncertain/partial final marker must
+        # never cause the fixed new recipe to run.
+        seal = core.parse_canonical(raw["preregistration.json"])
+        core.require_digest(seal)
         started = core.parse_canonical(raw["STARTED.json"])
         require(
             canonical(_started(seal["admission_context"], started["owner_nonce"]))
@@ -542,6 +546,7 @@ def load_seal(path):
             canonical(_closed(started, seal)) == raw["SEALED.json"],
             "cohort final seal differs",
         )
+        validate_seal_bytes(raw["preregistration.json"])
         after, final_generation = storage._observe(parent, NAMES)
         require(
             raw == after and generation == final_generation,

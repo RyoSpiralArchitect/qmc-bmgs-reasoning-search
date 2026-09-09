@@ -56,3 +56,41 @@ corrected. Its temporary path initially used macOS's `/var` alias, correctly
 rejected by no-follow storage; the test now uses the canonical temporary path.
 Linked-file rejection raised the storage layer's RuntimeError subtype; the
 assertion now accepts that failure family. No production guard was weakened.
+
+## Fresh reviewer output: admission increment at 74c7f27
+
+The second fresh read-only subagent reviewed `143b279..74c7f27` in the same
+disposable clone with default project-local hiding. Restoration completed
+immediately after its return; no user-level memories were hidden. Its report:
+
+> One actionable P2 found; no P1 identified.
+>
+> [P2] Validate both transaction markers before regenerating the cohort
+> (`feedback_budget_development_admission.py`, lines 533–543).
+>
+> `load_seal()` calls `validate_seal_bytes()` before validating `STARTED.json` or `SEALED.json`. That validator invokes the new recipe through `_cohort()` at line 451. Consequently, an interrupted final publication with a valid preregistration but empty/malformed `SEALED.json` reaches the generator/solver before the loader discovers that the transaction was never validly sealed. Malformed STARTED metadata has the same problem. This leaves transaction-content closure outside the promised reject-before-generation gate.
+>
+> Reproduction used the existing explicitly synthetic fixture, with source context and new generation mocked:
+>
+> - Replace `STARTED.json` with canonical `{}`: generator called once, then `KeyError: owner_nonce`.
+> - Replace `SEALED.json` with canonical `{}`: generator called once, then `cohort final seal differs`.
+>
+> Close both markers and their linkage against the parsed preregistration before invoking exact recipe regeneration; add negatives asserting zero generator calls for malformed/partial markers.
+>
+> Validation: **30 tests and 55 subtests passed**; `git diff --check` passed. No actual new v6 generation, search, provider execution, source-qualified CLI, project edits, hidden context, memory, or prior review reports were used. The absent production execution/authorization-consumption connector is explicitly documented and is not a finding.
+
+## Stateful annotation and correction
+
+The P2 is correct. Transaction markers must close before the generation gate.
+The loader now parses the preregistration and validates both canonical markers
+and their byte/digest linkage before independent cohort regeneration. Regression
+tests cover empty, malformed and `{}` markers plus five rehashed linkage lies,
+requiring zero generator calls (and zero context calls for malformed markers).
+
+The in-progress qualification and full validation of `74c7f27` were deliberately
+interrupted after this finding, not reported as passes. The qualifier had already
+created its summary slot and returned `INVALID_ADMISSION` / `PublicationUncertain`
+after interruption during post-publication checks. Its occupied local file
+`artifacts/work/feedback-budget-admission-v6-20260910.json` is retained, is not
+promoted and is not a qualified receipt. The corrected executable requires a
+new named qualification; the existing public experiment/receipt is unchanged.

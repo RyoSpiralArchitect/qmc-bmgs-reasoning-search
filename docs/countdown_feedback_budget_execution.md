@@ -56,6 +56,17 @@ summary. Storage alone cannot authenticate a candidate or scientific result.
 - `PUBLICATION_UNCERTAIN`: publication or post-COMMIT boundary uncertain; retain
   artifacts. No competing failure marker can countermand a possibly durable
   COMMIT. Do not automatically adopt an uncertain invocation as qualification.
+- `RESULT_DELIVERY_UNCERTAIN`: the operation completed, but delivery to stdout
+  failed. A completed run retains known `authorization_consumed: true`; it is
+  never relabeled `NOT_RUN` and must never be repeated.
+
+Independent analysis can validate structurally complete artifacts after a failed
+producer invocation. It cannot know that invocation's return status from COMMIT
+alone. Disposition of an uncertain invocation is an **operator gate**, not an
+automatic recovery feature: record the failure, inspect the retained artifacts,
+and explicitly decide whether to reanalyze. Do not chain later qualification
+commands after nonzero exit, or call a reanalysis a successful original run.
+Neither reanalysis nor a replacement summary restores the fixed study claim.
 
 Only a complete admitted development analysis maps the frozen conjunction to
 `DEVELOPMENT_SIGNAL_FOR_SEPARATE_CONFIRMATION_DESIGN` or

@@ -105,10 +105,15 @@ def claim_value(authorization, reviewed, execution_head, nonce):
 def consume(authorization, reviewed, execution_head, snapshot_type):
     """Durable exclusive claim BEFORE output creation; every occupied slot stays."""
     mechanics._require_posix_capabilities()
-    if not os.path.lexists(LEDGER):
-        created = base._create_directory(LEDGER)
-        created.close()
-    parent = mechanics._PinnedParent.open(LEDGER)
+    try:
+        if not os.path.lexists(LEDGER):
+            created = base._create_directory(LEDGER)
+            created.close()
+        parent = mechanics._PinnedParent.open(LEDGER)
+    except base.PublicationUncertain as error:
+        raise ExecutionFailure(
+            "CONSUMPTION_UNCERTAIN", None, "ledger creation uncertain; retain namespace"
+        ) from error
     owned = None
     attempted = False
     try:

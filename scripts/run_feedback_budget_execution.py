@@ -834,6 +834,7 @@ def main():
     if actual != allowed:
         parser.error("exact mode-specific argument set required")
     mode = DEVELOPMENT if command.endswith("development") else PUBLIC
+    completed = False
     try:
         if command == "self_test":
             result = self_test()
@@ -854,28 +855,33 @@ def main():
             result = analyze_and_save(mode, args["output"], args["summary"])
         else:
             result = verify(mode, args["output"], args["summary"])
-        print(canonical(result).decode(), end="")
+        completed = True
+        print(canonical(result).decode(), end="", flush=True)
         return 0
     except BaseException as error:
-        status = (
-            error.status
-            if isinstance(error, storage.ExecutionFailure)
-            else (
+        if completed:
+            # The operation already returned success. A closed stdout cannot
+            # countermand its durable claim/publication or imply NOT_RUN.
+            status = "RESULT_DELIVERY_UNCERTAIN"
+            consumed = command.startswith(("run_", "analyze_", "verify_"))
+        elif isinstance(error, storage.ExecutionFailure):
+            status, consumed = error.status, error.authorization_consumed
+        elif isinstance(error, storage.base.PublicationUncertain):
+            status = "PUBLICATION_UNCERTAIN"
+            consumed = True if command.startswith("analyze_") else None
+        else:
+            status = (
                 "INVALID_ANALYSIS"
                 if command.startswith(("analyze_", "verify_"))
                 else "NOT_RUN"
             )
-        )
+            consumed = None
         result = dict(
             status=status,
             error_type=type(error).__name__,
             reason=str(error),
             scientific_decision=None,
-            authorization_consumed=(
-                error.authorization_consumed
-                if isinstance(error, storage.ExecutionFailure)
-                else None
-            ),
+            authorization_consumed=consumed,
             locked_128_evaluation_authorized=False,
         )
         print(canonical(result).decode(), end="", file=sys.stderr)

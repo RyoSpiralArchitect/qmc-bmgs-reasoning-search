@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -445,6 +446,131 @@ class StorageTests(Setup):
 
 
 class AdapterTests(Setup):
+    def test_completed_run_stdout_failure_preserves_consumed_lifecycle(self):
+        stderr = io.StringIO()
+        stdout = SimpleNamespace(
+            write=lambda value: (_ for _ in ()).throw(BrokenPipeError("closed stdout")),
+            flush=lambda: None,
+        )
+
+        def record(inputs, cell, binding):
+            return rehash(
+                {
+                    **self.row(cell["cell_index"]),
+                    "run_binding_digest": binding["deterministic_digest"],
+                }
+            )
+
+        def reduce(inputs, rows, binding):
+            return rehash(
+                {
+                    **self.receipt(),
+                    "run_binding_digest": binding["deterministic_digest"],
+                }
+            )
+
+        argv = [
+            R.SCRIPT,
+            "--run-public",
+            "--authorization",
+            str(self.auth_path),
+            "--confirm-digest",
+            self.auth["deterministic_digest"],
+            "--reviewed-revision",
+            "f" * 40,
+        ]
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(sys, "stdout", stdout),
+            patch.object(sys, "stderr", stderr),
+            patch.object(R, "admit", return_value=self.admitted),
+            patch.object(self.admitted, "revalidate"),
+            patch.object(R.public, "_output", side_effect=lambda x: Path(x)),
+            patch.object(R, "record", side_effect=record),
+            patch.object(R, "reduce_rows", side_effect=reduce),
+        ):
+            code = R.main()
+        result = R.core.parse_canonical(stderr.getvalue().encode())
+        self.assertEqual(code, 1)
+        self.assertEqual(result["status"], "RESULT_DELIVERY_UNCERTAIN")
+        self.assertTrue(result["authorization_consumed"])
+        self.assertEqual(len(S.inspect(self.output).rows), 192)
+        with (
+            patch.object(R, "admit") as admit,
+            self.assertRaises(S.ExecutionFailure) as raised,
+        ):
+            R.run(R.PUBLIC, self.auth_path, self.auth["deterministic_digest"], "f" * 40)
+        admit.assert_not_called()
+        self.assertEqual(raised.exception.status, "AUTHORIZATION_ALREADY_SPENT")
+
+    def test_uncertain_summary_publication_is_not_invalid_science(self):
+        stderr = io.StringIO()
+        summary = self.root / "uncertain-summary.json"
+
+        def uncertain(*args):
+            calls = []
+
+            def check():
+                calls.append(1)
+                if len(calls) == 2:
+                    raise ValueError("post-write revalidation")
+
+            return S.base.publish_summary(summary, {"synthetic_only": True}, check)
+
+        argv = [
+            R.SCRIPT,
+            "--analyze-public",
+            "--output",
+            str(self.output),
+            "--summary",
+            str(summary),
+        ]
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(sys, "stderr", stderr),
+            patch.object(R, "analyze_and_save", side_effect=uncertain),
+        ):
+            code = R.main()
+        result = R.core.parse_canonical(stderr.getvalue().encode())
+        self.assertEqual(code, 1)
+        self.assertEqual(result["status"], "PUBLICATION_UNCERTAIN")
+        self.assertIsNone(result["scientific_decision"])
+        self.assertTrue(summary.exists())
+
+    def test_uncertain_candidate_and_ledger_initialization_keep_uncertainty(self):
+        stderr = io.StringIO()
+        argv = [
+            R.SCRIPT,
+            "--prepare-public",
+            "--output",
+            str(self.output),
+            "--authorization",
+            str(self.auth_path),
+        ]
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(sys, "stderr", stderr),
+            patch.object(
+                R,
+                "prepare",
+                side_effect=S.base.PublicationUncertain("candidate retained"),
+            ),
+        ):
+            self.assertEqual(R.main(), 1)
+        result = R.core.parse_canonical(stderr.getvalue().encode())
+        self.assertEqual(result["status"], "PUBLICATION_UNCERTAIN")
+        with (
+            patch.object(
+                S.base,
+                "_create_directory",
+                side_effect=S.base.PublicationUncertain("ledger retained"),
+            ),
+            self.assertRaises(S.ExecutionFailure) as raised,
+        ):
+            S.consume(self.auth, "f" * 40, "f" * 40, R.core.FileSnapshot)
+        self.assertEqual(raised.exception.status, "CONSUMPTION_UNCERTAIN")
+        self.assertIsNone(raised.exception.authorization_consumed)
+
     def test_spent_claim_rejects_before_admission_regeneration_or_search(self):
         S.consume(self.auth, "f" * 40, "f" * 40, R.core.FileSnapshot)
         with (

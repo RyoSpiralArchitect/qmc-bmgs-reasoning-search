@@ -105,7 +105,10 @@ engineering research repoです。
 [development-path public adapter](docs/countdown_feedback_budget_development_path.md)
 で公開192セルを使って検証します。
 [cohort／認可候補の入口](docs/countdown_feedback_budget_development_admission.md)
-は封印の独立検証とreview用候補まで。本実験の実行認可・一回限りの消費処理は未実装です。
+は封印の独立検証とreview用候補まで。
+[一回限りの実行connector](docs/countdown_feedback_budget_execution.md) が
+公開fixtureでの認可消費・実行・独立解析と、review済みcohort候補の入口を接続します。
+実装・公開fixtureの検証・新cohortの認可と実測は別の段階です。
 
 ## Layout
 

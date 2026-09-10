@@ -137,6 +137,16 @@ def _validate(temporary_root: Path) -> None:
         ],
         cwd=outside,
     )
+    run(
+        [
+            sys.executable,
+            "-P",
+            "-B",
+            str(ROOT / "scripts/run_feedback_budget_execution.py"),
+            "--self-test",
+        ],
+        cwd=outside,
+    )
     for module in (
         "qmc_bmgs.policy",
         "qmc_bmgs.anthropic_countdown",

@@ -116,9 +116,10 @@ pre-fix receipt is retained separately and was not promoted.
 
 ## Remaining gate
 
-Review this addition and its fresh qualification. The remaining implementation
-gate is the production execution/authorization-consumption connector and its
-public/synthetic failure qualification. Then generate/seal the fixed fresh
+The [execution connector](countdown_feedback_budget_execution.md) now supplies
+the one-shot consumption path and its separately recorded PUBLIC/synthetic
+qualification. The admission-only candidate described above remains unchanged
+and is NOT accepted as executable authority by that connector. Generate/seal the fixed fresh
 cohort once, independently verify it, review its exact authorization candidate
 and obtain explicit permission before one complete 192-cell development run.
 No development signal, causal claim, quality gain or locked-128 authority follows.

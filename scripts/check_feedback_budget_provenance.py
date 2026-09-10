@@ -51,6 +51,34 @@ RECEIPTS = {
             "runner_revision",
         ),
     ),
+    "docs/qualifications/countdown_feedback_budget_v6_connector_20260910.summary.json": (
+        ("environment", "source", "execution_revision"),
+        ("environment", "source", "admission_source", "admission_revision"),
+        (
+            "environment",
+            "source",
+            "admission_source",
+            "public_path_source",
+            "execution_revision",
+        ),
+        (
+            "environment",
+            "source",
+            "admission_source",
+            "public_path_source",
+            "public_qualification_source",
+            "qualification_revision",
+        ),
+        (
+            "environment",
+            "source",
+            "admission_source",
+            "public_path_source",
+            "public_qualification_source",
+            "package_source",
+            "runner_revision",
+        ),
+    ),
 }
 
 

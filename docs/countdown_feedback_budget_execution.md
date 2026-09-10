@@ -103,5 +103,7 @@ summary; verification also needs its original local raw run, public candidate,
 claim ledger, and unchanged ancestor implementation. Raw artifacts are local,
 hash-bound and ignored; tracked summaries are not portable raw replay evidence.
 
-Implementation and qualification status is recorded separately in the dated
-review/validation notes. No example here invokes a development experiment.
+The [dated review/qualification record](reviews/countdown_feedback_budget_connector_20260910.md)
+records the fixed P2, independently rechecked 31 connector tests, 1,016-test full
+validation and source-qualified PUBLIC run/analyze/verify result. No example
+here invokes a development experiment.

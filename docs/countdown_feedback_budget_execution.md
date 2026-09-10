@@ -107,3 +107,8 @@ The [dated review/qualification record](reviews/countdown_feedback_budget_connec
 records the fixed P2, independently rechecked 31 connector tests, 1,016-test full
 validation and source-qualified PUBLIC run/analyze/verify result. No example
 here invokes a development experiment.
+
+The later [authorized development observation](observations/countdown_feedback_budget_v6_development_20260910.md)
+records one completed 192-cell run, independent analysis and saved-summary
+verification under this unchanged connector. Its fixed study claim is consumed;
+neither a positive development screen nor a copied summary authorizes another run.

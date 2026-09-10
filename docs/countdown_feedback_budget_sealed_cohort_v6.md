@@ -1,5 +1,12 @@
 # Feedback × budget v6: sealed development cohort
 
+Later execution record (2026-09-10): this exact candidate was reviewed and
+explicitly authorized for one complete development run, which then passed
+independent analysis and saved-summary verification. See the separate
+[development observation](observations/countdown_feedback_budget_v6_development_20260910.md).
+This page preserves the earlier input-admission/candidate snapshot; its sealed
+JSON and historical qualification receipts were not rewritten.
+
 The fixed cohort has been generated once and independently verified by exact
 recipe regeneration. This is an input-admission result, **not a search result or
 execution authorization**. The frozen design, seed, exclusions, acceptance order,
@@ -17,7 +24,8 @@ execution authorization**. The frozen design, seed, exclusions, acceptance order
   not 48 independent tasks.
 - No search outcomes, hardness/calibration profiles or solution witnesses were
   inspected by the cohort adapter or persisted into the cohort.
-- No development search or development authorization consumption has occurred.
+- At this input-admission snapshot, no development search or development
+  authorization consumption had occurred.
 
 The population is conditional on exhaustive solvability and the fixed identity
 exclusions. It is not an unconditional random sample of Countdown tasks.
@@ -75,7 +83,7 @@ The independently verified [PUBLIC connector qualification](reviews/countdown_fe
 still has a null scientific decision and one public source multiset. It
 qualifies the path, not this cohort's exploration performance.
 
-## Remaining authority gate
+## Review-only candidate snapshot and later consumption
 
 The [exact connector candidate](preregistrations/countdown_thompson_feedback_budget_v6_execution_authorization_candidate.json)
 has been prepared against this seal and the tracked PUBLIC connector summary.
@@ -95,20 +103,23 @@ The candidate binds all 192 cells through the full input, contract and schedule
 digests; the exact seal above; the verified PUBLIC summary and COMMIT; unchanged
 source/runtime; and the output path plus no-follow parent component identities.
 Its exact output is the local directory
-`artifacts/work/feedback-budget-development-v6-20260910`, which does not exist.
-The fixed development study claim remains absent from the ledger.
+`artifacts/work/feedback-budget-development-v6-20260910`, which did not exist
+at candidate preparation. The fixed development study claim was then absent.
+The later separately authorized single run occupied both; its claim is now
+consumed and retained. No replacement candidate or output restores it.
 
 Status remains `REVIEW_AND_EXPLICIT_CONFIRMATION_REQUIRED`, with
 `candidate_is_execution_authority: false` and
 `locked_128_evaluation_authorized: false`. It is not an instruction to execute.
 
-A separate review and explicit approval of the exact candidate digest and a
-full commit OID containing these unchanged candidate/evidence bytes are required
-before the one complete 192-cell run. Do not mutate the JSON flags to grant
-permission. A review target is not itself an approval; the later execution must
-revalidate it against current Git bytes, original local artifacts and source.
-Nothing here authorizes a retry, alternate cohort, provider run or locked-128
-evaluation.
+Execution required separate review and explicit approval of the exact candidate
+digest and a full commit containing its unchanged bytes. Those gates were later
+closed for `a91e34f4916f5ade43f85e40906859bd6e653eca`, with the actual run
+revalidating Git bytes, original local artifacts and source before consumption.
+The candidate JSON flags were not changed to grant permission. A review target
+is not itself an approval, and the successful single run grants no retry,
+alternate cohort, provider run or locked-128 evaluation. The later development
+signal permits proposing a separate confirmation design, not executing it.
 
 ## Validation follow-through
 

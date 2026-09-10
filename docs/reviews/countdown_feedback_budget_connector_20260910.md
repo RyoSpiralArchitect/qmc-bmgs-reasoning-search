@@ -116,7 +116,9 @@ After this qualification, the fixed fresh cohort was sealed, independently
 verified and bound into an unchanged review-only execution candidate. Their
 separate [cohort/candidate record](../countdown_feedback_budget_sealed_cohort_v6.md)
 preserves the recipe, exact hashes and chronology; the earlier qualification
-receipts were not rewritten. Review of the exact candidate and a full
-candidate-bearing commit, followed by separate explicit permission for one
-192-cell development run, remains outstanding. No development claim has been
-consumed, and no locked-128 permission follows from any of these steps.
+receipts were not rewritten. At this qualification-stage snapshot, review of the
+exact candidate and explicit permission for one development run were still
+outstanding, and no development claim had been consumed. Those later steps and
+the one completed experiment are recorded separately in the
+[development observation](../observations/countdown_feedback_budget_v6_development_20260910.md).
+No locked-128 permission follows from either the qualification or that result.

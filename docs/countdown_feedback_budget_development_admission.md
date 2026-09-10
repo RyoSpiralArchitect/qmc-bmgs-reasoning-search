@@ -4,7 +4,9 @@ This layer follows the [public computational path](countdown_feedback_budget_dev
 It implements outcome-blind cohort sealing, independent seal verification and
 an **authorization candidate for review**, not execution authorization. The
 frozen v6 design, contract, public executables, old STOP and consumed
-authorizations are unchanged. No fresh v6 tasks have been generated here.
+authorizations are unchanged. This admission-only qualification generated no fresh
+tasks; the later [actual cohort realization](countdown_feedback_budget_sealed_cohort_v6.md)
+is recorded separately and does not rewrite the earlier receipt.
 
 ## Trust and ordering
 
@@ -96,7 +98,8 @@ PYTHONPATH="$PWD/src" PYTHONPYCACHEPREFIX="$cache" python3 -P -B scripts/feedbac
 `--verify-qualification FILE --expected-digest DIGEST` recomputes the receipt in
 another process with another fresh cache prefix.
 `--seal-cohort --qualification FILE --expected-digest DIGEST` is a **separate
-generation operation; it has not been invoked**. CLI availability and a passing
+generation operation**. Its later successful invocation and independent verification
+are documented in the cohort realization record. CLI availability and a passing
 preflight do not instruct generation before review/qualification gates close.
 `--verify-seal DIRECTORY` repeats that sealed recipe; `--candidate DIRECTORY
 --output PATH` emits only a review candidate. There are no task/seed/budget/

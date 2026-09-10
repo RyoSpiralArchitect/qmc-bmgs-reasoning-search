@@ -77,14 +77,38 @@ qualifies the path, not this cohort's exploration performance.
 
 ## Remaining authority gate
 
-Prepare the connector candidate against this exact seal and the tracked PUBLIC
-connector summary; promote its unchanged bytes for review. The candidate must
-remain `REVIEW_AND_EXPLICIT_CONFIRMATION_REQUIRED`, with
-`candidate_is_execution_authority: false`. It is not an instruction to execute.
+The [exact connector candidate](preregistrations/countdown_thompson_feedback_budget_v6_execution_authorization_candidate.json)
+has been prepared against this seal and the tracked PUBLIC connector summary.
+The source-qualified prepare command independently reanalyzed the saved PUBLIC
+run and reconstructed the sealed acceptance order, then exited 0. Its checkout
+HEAD was `30123c8c218e5900eb996d5711f6fea7264b091e`; the approved producing
+connector source remains `47cb90880b1e437095d3668ac887165d9bc55c03`.
+The unchanged candidate bytes are promoted for review, not authority.
 
-A separate explicit approval of the exact candidate and reviewed commit is
-required before the one complete 192-cell run. Nothing here authorizes a retry,
-alternate cohort, provider run or locked-128 evaluation.
+Candidate digest:
+`0c35ff3e916142b8d122c68b9229d8e35ecf542e06f281bac9c82e38fc88e3e8`
+
+Candidate file/stdout SHA-256 (66,026 bytes):
+`c82c76681aa5cd1c019fd4a745fb74513e759029c65eb1d6816d5d3e319059ef`
+
+The candidate binds all 192 cells through the full input, contract and schedule
+digests; the exact seal above; the verified PUBLIC summary and COMMIT; unchanged
+source/runtime; and the output path plus no-follow parent component identities.
+Its exact output is the local directory
+`artifacts/work/feedback-budget-development-v6-20260910`, which does not exist.
+The fixed development study claim remains absent from the ledger.
+
+Status remains `REVIEW_AND_EXPLICIT_CONFIRMATION_REQUIRED`, with
+`candidate_is_execution_authority: false` and
+`locked_128_evaluation_authorized: false`. It is not an instruction to execute.
+
+A separate review and explicit approval of the exact candidate digest and a
+full commit OID containing these unchanged candidate/evidence bytes are required
+before the one complete 192-cell run. Do not mutate the JSON flags to grant
+permission. A review target is not itself an approval; the later execution must
+revalidate it against current Git bytes, original local artifacts and source.
+Nothing here authorizes a retry, alternate cohort, provider run or locked-128
+evaluation.
 
 ## Validation follow-through
 
@@ -96,5 +120,13 @@ provenance tests then passed (4.815 s), and the six-receipt ancestry guard passe
 These were metadata/test changes; the qualified computation and admission
 executables were not modified.
 
+Final candidate packaging checks passed: 31 connector tests (8.395 s), all 13
+provenance tests (5.295 s), artifact verification, Ruff and diff whitespace checks.
+This focused descendant check is separate from the earlier 1,016-test full
+validation; it does not claim a second full-suite run at the candidate commit.
+
 Ignored operation logs are in
-`artifacts/work/feedback-budget-cohort-v6-20260910.log`.
+`artifacts/work/feedback-budget-cohort-v6-20260910.log` and
+`artifacts/work/feedback-budget-development-candidate-v6-20260910.log`;
+final packaging checks are in
+`artifacts/work/feedback-budget-candidate-packaging-v6-20260910.log`.

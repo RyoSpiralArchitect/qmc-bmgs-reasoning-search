@@ -112,6 +112,11 @@ The interrupted pre-fix validation log and unused pre-fix candidate remain
 separate and do not count as qualification.
 
 This closes the connector's PUBLIC qualification, not the new-cohort screen.
-The next distinct gates are one fixed cohort seal, independent seal verification,
-an exact reviewed execution candidate, and explicit permission for a single
-192-cell development run. No locked-128 permission follows from any of these.
+After this qualification, the fixed fresh cohort was sealed, independently
+verified and bound into an unchanged review-only execution candidate. Their
+separate [cohort/candidate record](../countdown_feedback_budget_sealed_cohort_v6.md)
+preserves the recipe, exact hashes and chronology; the earlier qualification
+receipts were not rewritten. Review of the exact candidate and a full
+candidate-bearing commit, followed by separate explicit permission for one
+192-cell development run, remains outstanding. No development claim has been
+consumed, and no locked-128 permission follows from any of these steps.

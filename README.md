@@ -101,7 +101,8 @@ engineering research repoです。
 その先の本実験用の契約・除外境界・192セル候補の組み立ては
 [development contract](docs/countdown_feedback_budget_development_contract.md)
 にまとめています。[新cohortの12問は封印・独立検証済み](docs/countdown_feedback_budget_sealed_cohort_v6.md)
-ですが、開発探索の実行とその認可は別の段階です。
+で、[実行認可候補](docs/preregistrations/countdown_thompson_feedback_budget_v6_execution_authorization_candidate.json)
+も固定しました。ただしreview・明示認可は別の段階で、開発192セルは未実行です。
 新しいdomainでの実行→順序固定の解析→一回限りの保存は
 [development-path public adapter](docs/countdown_feedback_budget_development_path.md)
 で公開192セルを使って検証します。

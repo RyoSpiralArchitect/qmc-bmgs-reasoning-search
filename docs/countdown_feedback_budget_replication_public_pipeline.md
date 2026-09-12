@@ -15,7 +15,7 @@ anchors. No additional arithmetic fixture definitions are introduced here.
 
 ## Execution and independent verification
 
-`run_feedback_budget_replication_fixture.py` composes three separately reviewed
+`run_feedback_budget_replication_fixture.py` composes three dedicated
 modules: a fixed-input kernel, ordered analysis and new-domain publication.
 The existing v6 pipeline and search-source bytes remain unchanged; the new
 modules do not alter their globals, accept their authorizations or relabel their

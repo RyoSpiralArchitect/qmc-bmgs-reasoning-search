@@ -198,6 +198,7 @@ def _output(path):
 def run(output, progress=None):
     output = _output(output)
     require(not os.path.lexists(output), "output directory already occupied")
+    pub.descriptor_preflight()
     source, runtime = attest(), runtime_receipt()
     qualification, inputs = qualify_baseline(), k.public_inputs()
     binding = k.binding(inputs, source, runtime, qualification)

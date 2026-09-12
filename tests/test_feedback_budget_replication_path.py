@@ -614,6 +614,21 @@ class NewDomainPublicationTests(unittest.TestCase):
             self.publish(lambda emit: self.fail("action ran"))
         self.assertFalse(self.output.exists())
 
+    def test_runner_descriptor_gate_precedes_baseline_search_and_admission(self):
+        with (
+            patch.object(R, "_output", side_effect=lambda path: path),
+            patch.object(P.resource, "getrlimit", return_value=(256, 256)),
+            patch.object(R, "attest") as attest,
+            patch.object(R, "runtime_receipt") as runtime,
+            patch.object(R, "qualify_baseline") as baseline,
+            patch.object(P, "publish") as publish,
+            self.assertRaisesRegex(ValueError, "1152"),
+        ):
+            R.run(self.output)
+        for callback in (attest, runtime, baseline, publish):
+            callback.assert_not_called()
+        self.assertFalse(self.output.exists())
+
     def test_summary_snapshot_uses_the_same_64MiB_control_bound(self):
         with (
             patch.object(R, "_output", return_value=self.root / "summary.json"),

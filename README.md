@@ -112,9 +112,13 @@ engineering research repoです。
 次の [v7 source-disjoint確認設計](docs/strategy/countdown_thompson_feedback_budget_confirmation_v7.md)
 は新64問×4seed×4条件の1,024セルを固定し、効果幅`1/24`と改善task割合`1/6`を
 引き継ぎます。整数換算では256組中11組以上の純増・差の差と、64問中11問以上の
-paired rescueが必要です。設計とsynthetic検算のみで、新cohort生成・実行は未認可です。
+paired rescueが必要です。新cohort生成・実行は未認可です。
 これは固定cohortでの再現screenであり、有意差検定や母集団性能の確認ではありません。
-新しいdomainでの実行→順序固定の解析→一回限りの保存は
+続く [v7 outcome-blind contract](docs/countdown_feedback_budget_replication_contract.md)
+は旧開発12問も含む8群の除外境界と、別domainの1,024セル候補を組み立てます。
+公開fixtureは同じ入力のtarget違い64定義で、独立な64問題の性能評価ではありません。
+予定表の検査までで、新pipelineの公開1,024セル実行・解析・保存のqualificationは未実施です。
+v6 development domainでの実行→順序固定の解析→一回限りの保存は
 [development-path public adapter](docs/countdown_feedback_budget_development_path.md)
 で公開192セルを使って検証済みです。
 [cohort／認可候補の入口](docs/countdown_feedback_budget_development_admission.md)

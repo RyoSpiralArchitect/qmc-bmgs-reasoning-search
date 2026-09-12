@@ -112,6 +112,10 @@ The self-test hashes labelled synthetic strings for 64 identity rows and checks
 both synthetic and planned PUBLIC layouts without search/replay/runtime probing.
 Its status is `REPLICATION_CONTRACT_SYNTHETIC_PASS_NOT_AUTHORIZED`.
 
+The [dated review/validation note](reviews/countdown_feedback_budget_replication_contract_20260913.md)
+records the 31 focused tests, 1,074-test full validation, independent fresh-eye
+review, exact metadata digests and unchanged execution/qualification boundaries.
+
 The planned next qualification must independently exercise the unchanged
 32 component/anchor traces and the new full-shaped PUBLIC pipeline: all 1,024
 cells, two-stage independent replay, ordered outcome-redacted mechanism analysis,

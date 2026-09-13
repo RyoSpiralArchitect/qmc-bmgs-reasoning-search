@@ -7,6 +7,12 @@ the already fixed PUBLIC manifest: inputs `[1,2,3,4,5,6]`, targets `1..64`, four
 seeds, scales 0/16 and budgets 256/512. Its 1,024 cells share **one input source**;
 they are software qualification fixtures, not a 64-source replication study.
 
+The fixed PUBLIC path was executed, independently analyzed, saved and verified
+at `ead82d677c4e038d8d2f310b04fe7dc3adb5eb9b` on 2026-09-13. See the
+[review and qualification record](reviews/countdown_feedback_budget_replication_public_pipeline_20260913.md)
+for byte-identical tracked artifacts, all qualification counts and the retained
+nonpassing PUBLIC numerical screen. This closes the PUBLIC path only.
+
 No task generator, cohort seal, replication input, authorization candidate,
 provider call, optional sample-size extension or resume entrypoint is exposed.
 The full PUBLIC schedule bytes/digest are unchanged from contract review. The

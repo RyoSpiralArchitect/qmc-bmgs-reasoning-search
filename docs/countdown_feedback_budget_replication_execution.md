@@ -15,6 +15,14 @@ reduction except for its docstring and domain; an AST comparison tests this.
 The connector independently admits inputs and replays/reduces new-domain
 records. It does not relabel an old receipt or mutate old module globals.
 
+The [dated qualification record](reviews/countdown_feedback_budget_replication_execution_20260913.md)
+documents the actual connector PUBLIC execution, independent analysis and
+saved-summary verification at `91359c9327861210c03ad0bc4e267af240f4ec93`,
+1,183 passing tests, exact scientific trace equality with the preceding PUBLIC
+path and an actual spent-claim refusal. This qualifies the fixed PUBLIC connector
+path, not a real 64-source seal or a replication result. No replication-generation
+or exact-candidate execution permission is inferred.
+
 ## Fixed study and ordered gates
 
 The study is `feedback_budget_confirmation_64_seed_26091301/v1`, in domain
@@ -50,8 +58,8 @@ both new test files and the previous PUBLIC summary/COMMIT bytes. Reading those
 files is not a substitute for the new connector's actual PUBLIC qualification.
 
 The old v5 authority chain is independently verified, and the already sealed
-v6 cohort's generation order and manifest are reproduced. No old search or
-authorization is rerun. All twelve v6 tasks are retained in the exclusions.
+v6 cohort's generation order and manifest are reproduced. No consumed development
+experiment or its authorization is rerun. All twelve v6 tasks remain excluded.
 The resulting eight-group union remains 243 full-task identities and 179 source
 identities. Locked-128 material has only its existing identity-exclusion role.
 

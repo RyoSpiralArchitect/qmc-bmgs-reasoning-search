@@ -121,7 +121,12 @@ paired rescueが必要です。新cohort生成・実行は未認可です。
 で、固定の公開1,024セルを実行・保存し、全履歴の独立解析と保存結果の一致検証まで
 完了しました。[実動確認・レビュー記録](docs/reviews/countdown_feedback_budget_replication_public_pipeline_20260913.md)
 に証跡と不利な結果を残しています。公開データの数値screenは不通過で、性能向上の
-証拠ではありません。新64入力のcohort生成・本番用の認可消費経路・追試実行は未実施です。
+証拠ではありません。
+続く [v7本番用の入口と一回限りの実行connector](docs/countdown_feedback_budget_replication_execution.md)
+も実装し、その別domainの公開1,024セルで認可消費・実行・独立解析・保存結果の一致検証まで
+完了しました。[今回の検証記録](docs/reviews/countdown_feedback_budget_replication_execution_20260913.md)
+には1,183テストの通過、旧公開経路との全履歴一致、使用済み枠の再実行拒否を残しています。
+新64入力のcohort生成・封印・本番の実行候補・追試実行はまだ未実施です。
 v6 development domainでの実行→順序固定の解析→一回限りの保存は
 [development-path public adapter](docs/countdown_feedback_budget_development_path.md)
 で公開192セルを使って検証済みです。

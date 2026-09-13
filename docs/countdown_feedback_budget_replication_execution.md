@@ -23,6 +23,13 @@ path and an actual spent-claim refusal. This qualifies the fixed PUBLIC connecto
 path, not a real 64-source seal or a replication result. No replication-generation
 or exact-candidate execution permission is inferred.
 
+Later input-admission record (2026-09-13): the separately authorized fixed
+[64-source cohort](countdown_feedback_budget_sealed_cohort_v7.md) has now been
+generated/sealed once and independently verified inside candidate preparation.
+The exact non-authorizing 1,024-cell candidate has been promoted unchanged and
+locally reviewed against its committed bytes. Replication execution remains
+unperformed and requires separate explicit approval of that exact candidate.
+
 ## Fixed study and ordered gates
 
 The study is `feedback_budget_confirmation_64_seed_26091301/v1`, in domain
@@ -79,8 +86,9 @@ Synthetic positive sealing/storage tests repeat the existing target-720 task
 under explicit identity/generator/context mocks. They intentionally are not
 64 source-distinct accepted tasks; an unmocked admission test rejects them.
 Fault tests use malformed metadata and the same PUBLIC identities. Their
-success proves neither a real generator roundtrip nor a solvable cohort. A
-real positive 64-source seal remains the separately authorized later operation.
+success proves neither a real generator roundtrip nor a solvable cohort. The
+separately authorized real 64-source seal and independent roundtrip are recorded
+in the linked input-admission note; they are not evidence supplied by these mocks.
 
 ## Sealing before outcome access
 

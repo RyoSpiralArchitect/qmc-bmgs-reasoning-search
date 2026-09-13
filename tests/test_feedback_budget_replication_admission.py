@@ -562,6 +562,33 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result["status"], "PUBLICATION_UNCERTAIN")
         self.assertIsNone(result["cohort_generation_consumed"])
 
+    def test_verified_seal_stdout_failure_keeps_known_generation_consumption(self):
+        stderr = io.StringIO()
+
+        def fail(*args):
+            raise BrokenPipeError("synthetic stdout closed")
+
+        stream = SimpleNamespace(write=fail, flush=lambda: None)
+        with (
+            patch.object(
+                sys, "argv", [M.SCRIPT, "--verify-seal", "synthetic-directory"]
+            ),
+            patch.object(sys, "stdout", SimpleNamespace(buffer=stream)),
+            patch.object(sys, "stderr", stderr),
+            patch.object(
+                M,
+                "load_seal",
+                return_value=SimpleNamespace(
+                    manifest={"deterministic_digest": "0" * 64}
+                ),
+            ),
+        ):
+            self.assertEqual(M.main(), 1)
+        result = M.core.parse_canonical(stderr.getvalue().encode())
+        self.assertEqual(result["status"], "RESULT_DELIVERY_UNCERTAIN")
+        self.assertTrue(result["cohort_generation_consumed"])
+        self.assertFalse(result["replication_execution_authorized"])
+
     def test_outside_checkout_readonly_mode_and_no_ignored_overrides(self):
         for args, expected in (
             (("--self-test",), 0),

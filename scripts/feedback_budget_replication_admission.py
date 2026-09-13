@@ -964,7 +964,7 @@ def main():
             status=status,
             reason=str(error),
             error_type=type(error).__name__,
-            cohort_generation_consumed=bool(args.seal_cohort) if completed else None,
+            cohort_generation_consumed=(not args.self_test) if completed else None,
             replication_execution_authorized=False,
             scientific_decision=None,
         )

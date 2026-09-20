@@ -518,6 +518,30 @@ class TransportFixture(unittest.TestCase):
         environment.assert_not_called()
         replay.assert_not_called()
 
+    def test_changed_started_reference_is_not_dereferenced_before_anchor(self):
+        path = self.public_output / "STARTED.json"
+        started = B.parse(path.read_bytes())
+        forbidden = self.root / "must-not-read.json"
+        started["binding"] = rehash(
+            {**started["binding"], "authorization_path": str(forbidden)}
+        )
+        private_file(path, B.canonical(rehash(started)))
+        capture = R.snapshot_file
+
+        def guarded_snapshot(path):
+            self.assertNotEqual(Path(path), forbidden)
+            return capture(path)
+
+        with (
+            patch.object(R, "snapshot_file", side_effect=guarded_snapshot),
+            patch.object(S, "inspect_claim") as claim,
+            patch.object(R, "environment") as environment,
+            self.assertRaisesRegex(ValueError, "STARTED hash.*before reference"),
+        ):
+            B.inspect_transport()
+        claim.assert_not_called()
+        environment.assert_not_called()
+
     def test_immutable_source_seal_and_current_identity_changes_reject(self):
         value = B.inspect_transport()
         old = self.cohort / "SEALED.json"

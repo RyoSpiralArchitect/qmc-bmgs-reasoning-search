@@ -273,6 +273,14 @@ def inspect_transport():
         public.raw["COMMIT.json"] == commit_snapshot.raw,
         "historical PUBLIC COMMIT differs",
     )
+    anchored_commit = parse(commit_snapshot.raw)
+    core.require_digest(anchored_commit)
+    # Authenticate STARTED before following its authorization path or claim.
+    # The complete cell/receipt transaction is still closed separately below.
+    require(
+        sha(public.raw["STARTED.json"]) == anchored_commit["started_sha256"],
+        "historical PUBLIC STARTED hash differs before reference access",
+    )
     started = parse(public.raw["STARTED.json"])
     core.require_digest(started)
     require(

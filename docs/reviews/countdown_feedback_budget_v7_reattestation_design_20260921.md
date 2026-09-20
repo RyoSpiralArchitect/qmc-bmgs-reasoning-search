@@ -74,3 +74,12 @@ stdout failed, it must report RESULT_DELIVERY_UNCERTAIN, never imply NOT_RUN.
 That reporting path was corrected and given an injected-failure test after this
 static review. Positive re-attestation and full validation are recorded in the
 separate completion receipt, not inferred from this document.
+
+Before candidate publication, an additional stateful check tightened the order:
+authenticate STARTED against the reviewed COMMIT hash **before** opening any path
+named inside STARTED. Full transaction closure already preceded replay, but its
+reference dereference also needs that earlier authenticity check. A tampered-path
+test now proves the named target and claim are not read. The initial full-validator
+and prepare processes at `69046466fddbced273e858cc6d6f0cd8473ff629` were explicitly
+interrupted before editing; their logs are retained as interrupted, not PASS.
+No candidate bundle, replication output or replication claim had been created.

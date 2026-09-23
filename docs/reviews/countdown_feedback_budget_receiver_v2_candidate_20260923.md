@@ -106,3 +106,31 @@ authority. No actionable metadata defect was found in this single-agent review.
 Next gate: commit these exact candidate/preparation bytes, then independently
 invoke the unchanged genuine production admission in a fresh process. Even a
 successful result will not authorize execution or consume the fixed claim.
+
+## Fresh-process actual admission and final preservation
+
+The exact candidate and preparation receipt were committed at
+`119aaf9cef45276c41964b1ec45650534e6df48a`. One fresh-process verification ran
+from 2026-09-23 08:34:37 UTC; successful exit 0 was observed at 09:40:57 UTC.
+It invoked the unchanged genuine sealed-mode admission, reconstructed the
+entire candidate, and completed the final source/evidence/unused-state checks.
+
+The exact result is
+`RECEIVER_V2_CANDIDATE_INDEPENDENTLY_RECONSTRUCTED_NOT_AUTHORIZED`, digest
+`68cabef308820b5f2a10cecd97bebbb6aee3ae43c86dd674363b3de51504a367`.
+It records production admission verified, but no production adapter execution,
+no execution authority and zero replication search calls. This is fresh-process
+verification, not a separate-agent, independent-implementation or human review.
+
+The post-verification packaging check passed: all 324 original tracked files
+(78,689,314 bytes) and executable modes, the original three ledger records,
+both source closures, exact raw/promoted candidate bytes and reviewed PUBLIC
+summary/COMMIT were preserved. The sealed payload matches its original bound
+digest/hash. Production output, summary and fixed claim remain absent.
+
+No additional code or policy change was made after source freeze. The prior
+PUBLIC negative screen remains unchanged, and no new scientific result is
+claimed. The remaining execution entry-point review and explicit exact-digest
+confirmation are separate future gates. See the
+[final report](../countdown_feedback_budget_receiver_v2_candidate_20260923.md)
+and its exact verification/operation receipts for the evidence identities.

@@ -57,3 +57,44 @@ Synthetic commits/summaries are labelled and are not promoted as real evidence.
 No actionable source defect remained in this bounded review. Full repository
 validation and fresh-process metadata preflight/check are pending at source
 freeze; their results cannot be inferred from the focused tests above.
+
+## Frozen implementation and full validation
+
+Implementation: `4d419343d6a542a132d2336456000e9c638f1cc3`.
+No executable, test or policy changed after this freeze. The complete repository
+validator exited 0: **1,340 tests, zero skips, 854.023 seconds of test execution**,
+plus compilation, lint, artifact/provenance and CLI checks. The validator began
+at 2026-10-01 11:46:36 UTC; successful completion was observed at 12:03:56 UTC.
+These are invocation/observation timestamps, not performance benchmarks.
+
+## Actual preflight rejection, not an execution failure
+
+Exactly one actual metadata-only preflight used a fresh process and private
+cache, absolute `PYTHONPATH`, and `python3 -P -B`. It started at 11:46:36 UTC;
+exit 1 was observed at 11:47:23 UTC. Its error was `original output parent
+changed`, before production dispatch or any new admission/consumption/search.
+The generic failure receipt conservatively reports consumption as unknown;
+separate read-only observations establish that the original claim/output/summary
+were absent at observation time.
+
+Across all seven output-parent path components, the candidate records device
+16777231, while the actual current binding records 16777234. Paths and inode
+numbers are identical. This does not establish physical-disk identity or reboot
+causality and is not an accepted re-attestation mapping. The underlying existing
+bridge policy explicitly rejects later device/inode transitions; the new wrapper
+must not relax it.
+
+The exact failure result is saved as a **preflight-failure** artifact. No successful
+preflight is promoted to the path required by `--check`/`--run`. No reviewed check,
+run, actual production analysis or saved-summary verification was attempted.
+No binding was patched, no replacement candidate/certificate was created and
+no automatic retry was performed. No remaining source defect was identified;
+the operational result remains **NOT_READY_TO_RUN** pending a separately
+authorized and reviewed current-receiver re-attestation design.
+
+Read-only observation at the implementation HEAD confirmed all 333 prior tracked
+files / 78,928,252 bytes unchanged by blob and executable mode, as well as exact
+raw candidate, three sealed-cohort files and three prior ledger records. The
+original output, summary and fixed replication claim remained absent. See the
+[task report](../countdown_feedback_budget_receiver_v2_entrypoint_20261001.md)
+and its linked receipts for the operation boundary and safe next decision.

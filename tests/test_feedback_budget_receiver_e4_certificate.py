@@ -10,9 +10,11 @@ import io
 import os
 from pathlib import Path
 import subprocess
+import struct
 import sys
 from types import SimpleNamespace
 import unittest
+import uuid
 from unittest.mock import Mock, patch
 
 
@@ -55,7 +57,11 @@ class ReceiverE4Certificate(unittest.TestCase):
         )
         cls.screens = dict(original_public=False, receiver_v2_public=False)
         cls.template = K._projection(cls.old, cls.source, cls.screens)
-        cls.locations = cls.old["location_correspondence"]["current_locations"]
+        live = cls.old["location_correspondence"]["current_locations"]
+        cls.locations = dict(
+            live_locations=copy.deepcopy(live),
+            persistent_locations=K._persistent_locations(live),
+        )
         cls.values = {path: read(path) for path, _ in V.ANCHORS}
         # Genuine PUBLIC metadata only, not environment baseline or numerical replay.
         cls.inputs = R.load_inputs(S.PUBLIC)
@@ -277,7 +283,7 @@ class ReceiverE4Certificate(unittest.TestCase):
 
     def test_bool_float_and_count_aliases_rejected_after_rehash(self):
         for path in (
-            ("case", "device"),
+            ("case", "historical_device"),
             ("study", "accepted_source_multisets"),
             ("reconstruction", "public_traces_replayed"),
             ("claim_ceiling", "new_public_attempts"),
@@ -300,7 +306,7 @@ class ReceiverE4Certificate(unittest.TestCase):
             raw + b"\n",
             b" " + raw,
             raw.replace(b'"status":', b'"status":null,"status":', 1),
-            raw.replace(b'"device":16777234', b'"device":NaN', 1),
+            raw.replace(b'"historical_device":16777234', b'"historical_device":NaN', 1),
             K.canonical(dict(self.template, deterministic_digest="0" * 64)),
         )
         for changed in bad:
@@ -308,7 +314,7 @@ class ReceiverE4Certificate(unittest.TestCase):
                 K._compare_certificate(changed, self.template)
 
     def test_all_23_chains_and_negative_results_preserved(self):
-        mapping = self.template["location_correspondence"]
+        mapping = self.template["historical_location_correspondence"]
         self.assertEqual(
             len(mapping["original_chains"]) + len(mapping["prior_observation_chains"]),
             23,
@@ -320,16 +326,18 @@ class ReceiverE4Certificate(unittest.TestCase):
             self.screens,
         )
         wrong = copy.deepcopy(self.template)
-        wrong["location_correspondence"]["prior_observation_chains"].reverse()
+        wrong["historical_location_correspondence"][
+            "prior_observation_chains"
+        ].reverse()
         with self.assertRaises(Exception):
             K._compare_certificate(K.canonical(rehash(wrong)), self.template)
 
     def test_negative_screen_or_epoch_owner_rewrite_rejected(self):
         for field in ("owner", "historical_epoch"):
             wrong = copy.deepcopy(self.template)
-            wrong["location_correspondence"]["prior_observation_chains"][0][field] = (
-                "rewritten"
-            )
+            wrong["historical_location_correspondence"]["prior_observation_chains"][0][
+                field
+            ] = "rewritten"
             with self.assertRaises(Exception):
                 K._compare_certificate(K.canonical(rehash(wrong)), self.template)
         with self.assertRaises(Exception):
@@ -410,7 +418,7 @@ class ReceiverE4Certificate(unittest.TestCase):
         stack.enter_context(patch.object(C, "unused", side_effect=action("unused")))
         stack.enter_context(patch.object(K.core, "git_head", return_value="b" * 40))
         stack.enter_context(
-            patch.object(N, "current_locations", return_value=self.locations)
+            patch.object(K, "_capture_locations", return_value=self.locations)
         )
         stack.enter_context(
             patch.object(K, "attest", side_effect=action("source", self.source))
@@ -609,14 +617,22 @@ class ReceiverE4Certificate(unittest.TestCase):
             patch.object(K, "_guard"),
             patch.object(K.core, "git_head", return_value="b" * 40),
             patch.object(K, "attest", return_value=self.source) as attest,
+            patch.object(
+                K, "_capture_locations", return_value=self.locations
+            ) as locations,
+            patch.object(C, "unused") as unused,
+            patch.object(K.core, "git_bytes", return_value=b""),
             patch.object(N, "stable_state") as old,
         ):
-            evidence = object()
+            evidence = SimpleNamespace(revalidate=Mock())
             K._stable(evidence, self.source, "b" * 40, self.locations, self.inputs)
             self.assertEqual(attest.call_count, 2)
-            old.assert_called_once_with(
-                evidence, self.old["source"], "b" * 40, self.locations, self.inputs
-            )
+            # attest still chains N.attest(FROZEN_REVISION); its obsolete
+            # device-number stability entry point must not be invoked.
+            old.assert_not_called()
+            self.assertEqual(locations.call_count, 2)
+            self.assertEqual(unused.call_count, 2)
+            self.assertEqual(evidence.revalidate.call_count, 2)
 
     def test_stable_rejects_new_source_or_head_drift(self):
         for head, source in (
@@ -638,18 +654,29 @@ class ReceiverE4Certificate(unittest.TestCase):
             patch.object(K.core, "git_head", return_value="b" * 40),
             patch.object(K, "attest", return_value=self.source),
             patch.object(
-                N,
-                "stable_state",
+                C,
+                "unused",
                 side_effect=ValueError("original slot or location changed"),
             ),
+            patch.object(K, "_capture_locations", return_value=self.locations),
         ):
             with self.assertRaisesRegex(Exception, "original slot"):
-                K._stable(object(), self.source, "b" * 40, self.locations)
+                K._stable(
+                    SimpleNamespace(revalidate=Mock()),
+                    self.source,
+                    "b" * 40,
+                    self.locations,
+                )
 
     def test_revalidate_brackets_full_frozen_runtime_check(self):
         with (
             patch.object(K, "_stable") as stable,
-            patch.object(N, "revalidate") as frozen,
+            patch.object(
+                V,
+                "historical_sources",
+                return_value=self.old["historical_source_receipts"],
+            ) as history,
+            patch.object(R, "check_environment") as runtime,
         ):
             evidence = object()
             K._revalidate(
@@ -662,7 +689,204 @@ class ReceiverE4Certificate(unittest.TestCase):
                 self.inputs,
             )
             self.assertEqual(stable.call_count, 2)
-            self.assertEqual(frozen.call_args.args[1], self.old["source"])
+            history.assert_called_once_with()
+            runtime.assert_called_once_with(self.old["environment"])
+
+    def test_uuid_attribute_requires_complete_nonzero_value(self):
+        raw = struct.pack("=I", 20) + uuid.UUID(K.DATA_VOLUME_UUID).bytes
+        self.assertEqual(K._uuid_buffer(raw), K.DATA_VOLUME_UUID)
+        for malformed in (
+            raw[:-1],
+            raw + b"x",
+            bytes(20),
+            struct.pack("=I", 19) + raw[4:],
+            struct.pack("=I", 20) + bytes(16),
+            bytearray(raw),
+        ):
+            with self.subTest(raw=malformed), self.assertRaises(Exception):
+                K._uuid_buffer(malformed)
+
+    def test_no_uuid_fallback_on_unsupported_platform_or_query_failure(self):
+        with patch.object(K.sys, "platform", "linux"):
+            with self.assertRaisesRegex(Exception, "requires macOS"):
+                K._volume_uuid(1)
+        library = SimpleNamespace(fgetattrlist=Mock(return_value=-1))
+        with (
+            patch.object(K.sys, "platform", "darwin"),
+            patch.object(K.ctypes, "CDLL", return_value=library),
+        ):
+            with self.assertRaisesRegex(Exception, "no device-number fallback"):
+                K._volume_uuid(1)
+
+    def capture_fixture(self, *, device=100, wrong_uuid=False, drift=False):
+        """Synthetic descriptor metadata; no host volume claim or reconstruction."""
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        live = copy.deepcopy(self.locations["live_locations"])
+        for location in live.values():
+            for pair in location["identities"]:
+                pair[0] = device
+        after = copy.deepcopy(live)
+        if drift:
+            after["cohort"]["identities"][-1][0] += 1
+        stack.enter_context(
+            patch.object(V, "current_locations", side_effect=[live, after])
+        )
+        parents = []
+
+        def opened(path):
+            location = next(
+                x for x in live.values() if Path(x["path"]).is_relative_to(path)
+            )
+            parent = SimpleNamespace(
+                descriptor=0 if str(path) == "/" else 1,
+                component_identities=tuple(
+                    tuple(p) for p in location["identities"][: len(path.parts)]
+                ),
+                assert_path=Mock(),
+                close=Mock(),
+            )
+            parents.append(parent)
+            return parent
+
+        stack.enter_context(
+            patch.object(S.mechanics._PinnedParent, "open", side_effect=opened)
+        )
+        stack.enter_context(
+            patch.object(
+                K,
+                "_volume_uuid",
+                side_effect=lambda fd: (
+                    "00000000-0000-0000-0000-000000000001"
+                    if wrong_uuid
+                    else K.ROOT_VOLUME_UUID
+                    if fd == 0
+                    else K.DATA_VOLUME_UUID
+                ),
+            )
+        )
+        return live, parents
+
+    def test_persistent_capture_accepts_new_boot_local_number(self):
+        live, parents = self.capture_fixture(device=16777229)
+        captured = K._capture_locations()
+        self.assertEqual(captured["live_locations"], live)
+        self.assertEqual(
+            captured["persistent_locations"], self.locations["persistent_locations"]
+        )
+        self.assertTrue(parents)
+        for parent in parents:
+            parent.assert_path.assert_called_once_with()
+            parent.close.assert_called_once_with()
+
+    def test_capture_rejects_same_inode_on_wrong_volume(self):
+        _, parents = self.capture_fixture(wrong_uuid=True)
+        with self.assertRaisesRegex(Exception, "volume UUID differs"):
+            K._capture_locations()
+        self.assertTrue(all(p.close.called for p in parents))
+
+    def test_capture_rejects_device_change_during_observation(self):
+        self.capture_fixture(drift=True)
+        with self.assertRaisesRegex(Exception, "changed during UUID capture"):
+            K._capture_locations()
+
+    def test_uuid_read_failure_closes_descriptor_without_fallback(self):
+        _, parents = self.capture_fixture()
+        with patch.object(
+            K, "_volume_uuid", side_effect=ValueError("UUID unavailable")
+        ):
+            with self.assertRaisesRegex(Exception, "UUID unavailable"):
+                K._capture_locations()
+        self.assertEqual(len(parents), 1)
+        parents[0].close.assert_called_once_with()
+
+    def test_device_changes_between_operations_do_not_rewrite_history(self):
+        old_raw = K.canonical(self.old)
+        migrated = copy.deepcopy(self.locations)
+        for location in migrated["live_locations"].values():
+            for pair in location["identities"]:
+                pair[0] += 50
+        returned = K._historical_locations(self.old, migrated)
+        self.assertEqual(
+            returned, self.old["location_correspondence"]["current_locations"]
+        )
+        self.assertEqual(K.canonical(self.old), old_raw)
+        identity = self.template["receiver_identity"]
+        self.assertNotIn("device", self.template["case"])
+        self.assertEqual(self.template["case"]["historical_device"], 16777234)
+        self.assertIs(identity["historical_volume_uuid_recorded"], False)
+        self.assertIs(identity["historical_physical_volume_continuity_proven"], False)
+        self.assertEqual(
+            identity["persistent_locations"], migrated["persistent_locations"]
+        )
+
+    def test_migration_rejects_inode_path_uuid_role_or_type_drift(self):
+        for kind in ("inode", "path", "uuid", "role", "type", "extra"):
+            bad = copy.deepcopy(self.locations)
+            live = bad["live_locations"]["cohort"]
+            if kind == "inode":
+                live["identities"][-1][1] += 1
+            elif kind == "path":
+                live["path"] += "-other"
+            elif kind == "uuid":
+                bad["persistent_locations"]["cohort"]["components"][-1][
+                    "volume_uuid"
+                ] = K.ROOT_VOLUME_UUID
+            elif kind == "role":
+                bad["live_locations"].pop("ledger")
+            elif kind == "type":
+                live["identities"][-1][0] = True
+            else:
+                live["unrecognized"] = True
+            with self.subTest(kind=kind), self.assertRaises(Exception):
+                K._historical_locations(self.old, bad)
+
+    def test_stable_still_rejects_live_device_drift_with_unchanged_uuid(self):
+        changed = copy.deepcopy(self.locations)
+        changed["live_locations"]["cohort"]["identities"][-1][0] += 1
+        with (
+            patch.object(K, "_guard"),
+            patch.object(K.core, "git_head", return_value="b" * 40),
+            patch.object(K, "attest", return_value=self.source),
+            patch.object(K, "_capture_locations", return_value=changed),
+        ):
+            with self.assertRaisesRegex(Exception, "identity changed during operation"):
+                K._stable(
+                    SimpleNamespace(revalidate=Mock()),
+                    self.source,
+                    "b" * 40,
+                    self.locations,
+                )
+
+    def test_uuid_or_inode_failure_stops_before_numerics(self):
+        wiring = self.operation()
+        changed = copy.deepcopy(self.locations)
+        changed["persistent_locations"]["cohort"]["components"][-1]["volume_uuid"] = (
+            K.ROOT_VOLUME_UUID
+        )
+        with patch.object(K, "_capture_locations", return_value=changed):
+            with self.assertRaisesRegex(K.CertificateFailure, "persistent receiver"):
+                K.reconstruct("a" * 40)
+        wiring.environment.assert_not_called()
+        wiring.public.assert_not_called()
+        wiring.sealed.assert_not_called()
+
+    def test_current_identity_receipt_is_detached_and_not_certificate_authority(self):
+        self.operation()
+        capture = K.reconstruct("a" * 40)
+        before = K.canonical(K._state(capture).locations)
+        receipt = K.operation_receipt(capture)
+        receipt["receiver_identity"]["live_locations"].clear()
+        self.assertEqual(K.canonical(K._state(capture).locations), before)
+        self.assertNotIn("live_locations", self.template["receiver_identity"])
+
+    def test_source_owned_persistent_identity_is_part_of_full_proposal_comparison(self):
+        altered = copy.deepcopy(self.template)
+        altered["receiver_identity"]["persistent_locations"]["cohort"]["components"][
+            -1
+        ]["volume_uuid"] = K.ROOT_VOLUME_UUID
+        with self.assertRaises(Exception):
+            K._compare_certificate(K.canonical(rehash(altered)), self.template)
 
     def test_callable_guard_rejects_new_and_frozen_helper_substitution(self):
         K._guard()
@@ -670,6 +894,9 @@ class ReceiverE4Certificate(unittest.TestCase):
             (K, "_projection"),
             (K, "historical"),
             (K, "_stable"),
+            (K, "_capture_locations"),
+            (K, "_volume_uuid"),
+            (K, "_historical_locations"),
             (N, "replay_one"),
             (N, "reconstruct_seal"),
             (N, "correspondence"),
@@ -803,7 +1030,6 @@ class ReceiverE4Certificate(unittest.TestCase):
             "execute",
             "run_replication",
             "mkdir",
-            "open",
             "write_bytes",
             "write_text",
             "unlink",
@@ -811,6 +1037,22 @@ class ReceiverE4Certificate(unittest.TestCase):
             "replace",
             "fsync",
         }
+        # The one permitted open is the already frozen read-only, component-wise
+        # O_NOFOLLOW descriptor walker. Builtin/open-file and all other open
+        # calls remain forbidden; do not broadly allow calls named `open`.
+        open_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and (
+                (isinstance(node.func, ast.Attribute) and node.func.attr == "open")
+                or (isinstance(node.func, ast.Name) and node.func.id == "open")
+            )
+        ]
+        self.assertEqual(len(open_calls), 1)
+        self.assertEqual(
+            ast.unparse(open_calls[0]), "S.mechanics._PinnedParent.open(prefix)"
+        )
         calls = {
             node.func.attr
             for node in ast.walk(tree)

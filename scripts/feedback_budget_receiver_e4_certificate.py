@@ -8,11 +8,14 @@ Actual numerical operations require separate approval and a fresh process.
 from __future__ import annotations
 
 import argparse
+import ctypes
 from dataclasses import dataclass
 import importlib.util
 from pathlib import Path
+import struct
 import sys
 from types import MappingProxyType
+import uuid
 from weakref import WeakKeyDictionary
 
 
@@ -43,9 +46,14 @@ canonical, parse, require, digested, sha, exact = (
     N.sha,
     N.exact,
 )
-DOMAIN = S.DOMAIN + "/receiver-e4-certificate/v1"
+DOMAIN = S.DOMAIN + "/receiver-e4-certificate/v2"
 STATUS = "ORIGINAL_INPUT_AND_PUBLIC_EVIDENCE_RECONSTRUCTED_NOT_EXECUTION_AUTHORITY"
 METHOD = "fresh_process_same_frozen_implementation_full_recomputation"
+# Boot-local st_dev is NOT a persistent volume identity. These UUIDs were first
+# observed on 2026-10-14 after checking all retained bytes and path/inode chains.
+# This pins the current receiver, not a retroactive UUID claim about old E4.
+ROOT_VOLUME_UUID = "C026C959-2B1E-4273-ADF5-64BE3D5D8ADF"
+DATA_VOLUME_UUID = "5CF14066-7B07-4A1D-8F3F-0A1806A1A4E7"
 PINS = MappingProxyType(
     {
         "observation": (
@@ -99,7 +107,8 @@ CERTIFICATE_KEYS = (
     "source",
     "historical_e4",
     "evidence",
-    "location_correspondence",
+    "historical_location_correspondence",
+    "receiver_identity",
     "environment",
     "reconstruction",
     "study",
@@ -176,6 +185,161 @@ def historical_references():
         )
         for label, pin in PINS.items()
     }
+
+
+class _AttrList(ctypes.Structure):
+    _fields_ = [
+        ("bitmapcount", ctypes.c_uint16),
+        ("reserved", ctypes.c_uint16),
+        ("common", ctypes.c_uint32),
+        ("volume", ctypes.c_uint32),
+        ("directory", ctypes.c_uint32),
+        ("file", ctypes.c_uint32),
+        ("fork", ctypes.c_uint32),
+    ]
+
+
+def _uuid_buffer(raw):
+    require(
+        type(raw) is bytes
+        and len(raw) == 20
+        and struct.unpack_from("=I", raw)[0] == 20,
+        "complete volume UUID attribute required",
+    )
+    value = uuid.UUID(bytes=raw[4:])
+    require(value.int != 0, "persistent volume UUID unavailable")
+    return str(value).upper()
+
+
+def _volume_uuid(descriptor):
+    """Read ATTR_VOL_UUID from the held descriptor; never follow a path or guess."""
+    require(sys.platform == "darwin", "persistent receiver identity requires macOS")
+    library = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    call = library.fgetattrlist
+    call.argtypes = [
+        ctypes.c_int,
+        ctypes.POINTER(_AttrList),
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_ulong,
+    ]
+    call.restype = ctypes.c_int
+    # ATTR_VOL_INFO | ATTR_VOL_UUID, per the Darwin sys/attr.h ABI.
+    attributes = _AttrList(5, 0, 0, 0x80040000, 0, 0, 0)
+    buffer = ctypes.create_string_buffer(20)
+    require(
+        call(descriptor, ctypes.byref(attributes), buffer, len(buffer), 0) == 0,
+        "persistent volume UUID query failed; no device-number fallback",
+    )
+    return _uuid_buffer(buffer.raw)
+
+
+def _persistent_locations(locations):
+    """Source-owned comparison template; not a live observation or capability."""
+    require(
+        type(locations) is dict and set(locations) == set(V.LOCATIONS),
+        "exact six persistent location roles required",
+    )
+    result = {}
+    for role, path in V.LOCATIONS.items():
+        location = locations[role]
+        require(
+            type(location) is dict and set(location) == {"path", "identities"},
+            "closed location required",
+        )
+        exact(location["path"], str(path), "fixed receiver path differs")
+        identities = location["identities"]
+        require(
+            type(identities) is list and len(identities) == len(path.parts),
+            "complete receiver identity chain required",
+        )
+        for pair in identities:
+            require(
+                type(pair) is list
+                and len(pair) == 2
+                and all(type(x) is int and x > 0 for x in pair),
+                "plain positive device and inode required",
+            )
+        result[role] = dict(
+            path=str(path),
+            components=[
+                dict(
+                    volume_uuid=ROOT_VOLUME_UUID if index == 0 else DATA_VOLUME_UUID,
+                    inode=pair[1],
+                )
+                for index, pair in enumerate(identities)
+            ],
+        )
+    return result
+
+
+def _capture_locations():
+    """Separate persistent UUID/inode identity from operation-local dev/inode."""
+    locations = V.current_locations()  # preserves private/no-follow checks
+    expected = _persistent_locations(locations)
+    persistent = {}
+    prefixes = {}
+    for role, path in V.LOCATIONS.items():
+        components = []
+        for index in range(len(path.parts)):
+            prefix = Path(*path.parts[: index + 1])
+            parent = S.mechanics._PinnedParent.open(prefix)
+            try:
+                exact(
+                    [list(x) for x in parent.component_identities],
+                    locations[role]["identities"][: index + 1],
+                    "receiver changed while reading volume UUID",
+                )
+                component = dict(
+                    volume_uuid=_volume_uuid(parent.descriptor),
+                    inode=parent.component_identities[-1][1],
+                )
+                parent.assert_path()
+                require(
+                    prefix not in prefixes or prefixes[prefix] == component,
+                    "shared prefix persistent identity changed",
+                )
+                prefixes[prefix] = component
+                components.append(component)
+            finally:
+                parent.close()
+        persistent[role] = dict(path=str(path), components=components)
+    exact(persistent, expected, "pinned persistent volume UUID differs")
+    exact(V.current_locations(), locations, "receiver changed during UUID capture")
+    return dict(live_locations=locations, persistent_locations=persistent)
+
+
+def _historical_locations(old, locations):
+    """Authenticate continuity of path/inode, never rewrite historical st_dev."""
+    historical_locations = old["location_correspondence"]["current_locations"]
+    expected = _persistent_locations(historical_locations)
+    exact(
+        _persistent_locations(locations["live_locations"]),
+        expected,
+        "historical receiver path or inode differs",
+    )
+    exact(
+        locations["persistent_locations"],
+        expected,
+        "persistent receiver identity differs",
+    )
+    # Only the frozen PURE historical comparator receives these old identities.
+    # Live snapshots and stability guards always receive the actual new ones.
+    return historical_locations
+
+
+def _receiver_identity(old):
+    return dict(
+        policy="pinned_volume_uuid_path_inode_and_full_content/v1",
+        uuid_baseline_date="2026-10-14",
+        persistent_locations=_persistent_locations(
+            old["location_correspondence"]["current_locations"]
+        ),
+        historical_volume_uuid_recorded=False,
+        historical_physical_volume_continuity_proven=False,
+        operation_local_device_identities_in_operation_receipt=True,
+        complete_content_and_numerical_reconstruction_required=True,
+    )
 
 
 def historical(evidence, frozen):
@@ -263,7 +427,7 @@ def _projection(old, source, screens):
             status=STATUS,
             case=dict(
                 name="E4",
-                device=16777234,
+                historical_device=16777234,
                 historical_chain_counts=dict(
                     original_v7=3,
                     receiver_20260921=8,
@@ -288,7 +452,8 @@ def _projection(old, source, screens):
                     "sealed_metadata",
                 )
             },
-            location_correspondence=old["location_correspondence"],
+            historical_location_correspondence=old["location_correspondence"],
+            receiver_identity=_receiver_identity(old),
             environment=old["environment"],
             reconstruction=dict(
                 **{
@@ -344,7 +509,21 @@ def _stable(evidence, source, head, locations, inputs=None):
     _guard()
     require(core.git_head(ROOT) == head, "certifier operation HEAD changed")
     exact(attest(source["implementation_revision"]), source, "certifier source changed")
-    N.stable_state(evidence, source["frozen_reconstruction"], head, locations, inputs)
+    # Keep the frozen E4 code/records unchanged. Its cross-boot device-number
+    # check is replaced HERE, not monkeypatched or passed fabricated identities.
+    evidence.revalidate()
+    exact(_capture_locations(), locations, "receiver identity changed during operation")
+    C.unused(S.REPLICATION)
+    require(
+        not core.git_bytes(ROOT, "status", "--porcelain", "--untracked-files=all"),
+        "certifier source checkout must remain clean",
+    )
+    if inputs is not None:
+        require(type(inputs) is R.Inputs, "genuine PUBLIC inputs required")
+        inputs.revalidate()
+    evidence.revalidate()
+    exact(_capture_locations(), locations, "receiver identity changed during operation")
+    C.unused(S.REPLICATION)
     exact(attest(source["implementation_revision"]), source, "certifier source changed")
     require(core.git_head(ROOT) == head, "certifier operation HEAD changed")
     _guard()
@@ -352,15 +531,8 @@ def _stable(evidence, source, head, locations, inputs=None):
 
 def _revalidate(evidence, source, history, environment, head, locations, inputs=None):
     _stable(evidence, source, head, locations, inputs)
-    N.revalidate(
-        evidence,
-        source["frozen_reconstruction"],
-        history,
-        environment,
-        head,
-        locations,
-        inputs,
-    )
+    exact(V.historical_sources(), history, "historical source changed")
+    R.check_environment(environment)
     _stable(evidence, source, head, locations, inputs)
 
 
@@ -431,12 +603,13 @@ def reconstruct(revision):
         )
         _RECONSTRUCTION_STARTED = True
         C.unused(S.REPLICATION)
-        head, locations = core.git_head(ROOT), N.current_locations()
+        head, locations = core.git_head(ROOT), _capture_locations()
         source, evidence = attest(revision), V.Evidence()
         phase = "authenticated_historical_metadata"
         old = historical(evidence, source["frozen_reconstruction"])
+        historical_locations = _historical_locations(old, locations)
         prior, history, cohort, archives, mapping = N.inspect_metadata(
-            evidence, source["frozen_reconstruction"], head, locations
+            evidence, source["frozen_reconstruction"], head, historical_locations
         )
         _stable(evidence, source, head, locations)
         phase = "genuine_environment"
@@ -524,6 +697,7 @@ def operation_receipt(capture):
             status="PROPOSAL_RECONSTRUCTED_NOT_ISSUED",
             operation_head=state.head,
             implementation_source=state.source,
+            receiver_identity=parse(canonical(state.locations)),
             certificate=N.reference(state.raw),
             work=parse(state.work_raw),
             original_study_slot_absent_at_completion=True,
@@ -576,6 +750,7 @@ def verify_proposal(revision, reviewed_revision):
                 status="WHOLE_RECONSTRUCTED_PROPOSAL_BYTE_IDENTICAL_NOT_ISSUED",
                 operation_head=head,
                 implementation_source=state.source,
+                receiver_identity=parse(canonical(state.locations)),
                 reviewed_proposal=dict(
                     path=PROPOSAL,
                     reviewed_revision=reviewed_revision,
@@ -626,6 +801,10 @@ def failure_receipt(error, work=None, delivery="NOT_ATTEMPTED"):
 
 def _guard():
     N._guard()
+    require(
+        S.mechanics._PinnedParent.open.__func__ is _OPEN_PARENT,
+        "receiver descriptor opener substituted",
+    )
     for module, name, expected in _DEPENDENCIES:
         require(
             getattr(module, name) is expected,
@@ -640,7 +819,7 @@ def self_test():
         len(FRESH_KEYS) == 16
         and len(HISTORICAL_KEYS) == 7
         and len(set(FRESH_KEYS + HISTORICAL_KEYS)) == 23
-        and len(set(CERTIFICATE_KEYS)) == 12,
+        and len(set(CERTIFICATE_KEYS)) == 13,
         "closed field partition differs",
     )
     return digested(
@@ -708,6 +887,7 @@ def main():
         raise SystemExit(1) from error
 
 
+_OPEN_PARENT = S.mechanics._PinnedParent.open.__func__
 _DEPENDENCIES = tuple(
     (module, name, getattr(module, name))
     for module, names in (
@@ -730,7 +910,9 @@ _DEPENDENCIES = tuple(
                 "ceiling",
             ),
         ),
-        (V, ("Evidence",)),
+        (V, ("Evidence", "current_locations", "historical_sources")),
+        (S.mechanics, ("_PinnedParent",)),
+        (S.mechanics._PinnedParent, ("assert_path", "close")),
         (
             R,
             (
@@ -738,6 +920,7 @@ _DEPENDENCIES = tuple(
                 "reviewed_file",
                 "oid",
                 "environment",
+                "check_environment",
                 "load_inputs",
                 "Inputs",
             ),
@@ -753,6 +936,13 @@ _DEPENDENCIES = tuple(
                 "closed_source",
                 "historical",
                 "historical_references",
+                "_AttrList",
+                "_uuid_buffer",
+                "_volume_uuid",
+                "_persistent_locations",
+                "_capture_locations",
+                "_historical_locations",
+                "_receiver_identity",
                 "_projection",
                 "_compare_certificate",
                 "_stable",

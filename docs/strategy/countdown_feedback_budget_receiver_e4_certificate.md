@@ -1,6 +1,7 @@
 # E4 read-only certificate proposal verifier
 
-Status: **C1 IMPLEMENTATION — NOT AN ISSUED CERTIFICATE OR EXECUTION AUTHORITY**.
+Status: **C1 IMPLEMENTATION WITH PERSISTENT-IDENTITY FIX — NOT AN ISSUED
+CERTIFICATE OR EXECUTION AUTHORITY**.
 
 This acceptance policy belongs to the same frozen three-file closure as
 `scripts/feedback_budget_receiver_e4_certificate.py` and
@@ -9,7 +10,57 @@ This acceptance policy belongs to the same frozen three-file closure as
 `c19db4a7994eeb5f33c610cdee3ebc0c72e2a004`, source digest
 `52deaa2df32b9b03786bd6afeaedb885146a68ddc7de9d0a195f5462275f2456`.
 The [certificate-only design](countdown_feedback_budget_receiver_e4_certificate_design_20261010.md)
-remains the C0 scope and later C2–C5 gate specification.
+remains the C0 scope and later C2–C5 gate specification. The 2026-10-14 correction
+below supersedes its cross-boot device-number comparison and proposal schema,
+not the original study, numerical implementation, claim slots or consent scope.
+
+## 2026-10-14 identity correction (same study, not a new E5 experiment)
+
+The previous orchestrator treated `st_dev=16777234` as persistent receiver
+identity. On 2026-10-14 every protected path had `st_dev=16777229`, unchanged
+inodes and byte-identical retained evidence. macOS boot time was 2026-10-12
+23:03:57 JST, after the 2026-10-10 observation. The current value equals the
+device node's `st_rdev` for `/dev/disk3s5`. BSD device identifiers are allocated
+in an attachment/mount context, not permanent disk identities. Apple's
+`diskutil(8)` IDENTIFIERS section explicitly directs software to use UUIDs
+across attachment/reboot changes. Apple distinguishes a nonpersistent
+[volume identifier](https://developer.apple.com/documentation/foundation/urlresourcevalues/volumeidentifier)
+from a persistent
+[volume UUID](https://developer.apple.com/documentation/foundation/urlresourcevalues/volumeuuidstring).
+The application bug is the cross-boot equality requirement. A reboot occurred
+between observations, but historical UUIDs and kernel allocation logs were not
+retained; do not claim proof of the exact allocator event or physical continuity.
+
+The corrected certifier separates two scopes:
+
+- Persistent receiver: fixed paths, every component's inode, and source-pinned
+  volume UUIDs. The root component's current APFS system snapshot UUID is
+  `C026C959-2B1E-4273-ADF5-64BE3D5D8ADF`; all remaining components of the six
+  fixed paths reside on Data UUID `5CF14066-7B07-4A1D-8F3F-0A1806A1A4E7`.
+  These are a new 2026-10-14 baseline, NOT invented historical E4 UUIDs.
+- One running operation: actual full `(st_dev, st_ino)` chains and persistent
+  bindings must remain exactly unchanged. Source, HEAD, all evidence snapshots,
+  private/no-follow descriptor checks, unused claims, runtime, complete archived
+  content and all numerical reconstructions remain mandatory.
+
+UUIDs are read with Darwin `fgetattrlist(ATTR_VOL_INFO | ATTR_VOL_UUID)` from
+held no-follow descriptors, not guessed from device names or accepted from a
+caller. Every shared prefix must agree. Missing/zero/truncated UUID, unsupported
+platform, different UUID, changed path/inode, or mid-operation device change
+rejects. Root and Data have different UUIDs despite sharing the observed
+`st_dev`; one UUID for the whole chain would be incorrect. An OS snapshot change
+or a real move to a different volume intentionally requires a new review.
+
+The frozen E4/E3/E2 sources and historical records remain byte-identical. No
+constant is monkeypatched and no live stat record is normalized to an old device
+number. After current UUID and historical path/inode correspondence checks,
+the frozen **pure historical mapping** is reconstructed from authenticated old
+identities and compared whole. It is named `historical_location_correspondence`
+in the v2 proposal. Separate `receiver_identity` binds the current persistent
+UUID/path/inode projection and explicitly says historical UUID continuity is
+unproven. Actual operation-local device numbers appear only in the detached
+operation/verification receipt, so a later boot need not change proposal bytes.
+This is neither new experiment data nor receiver admission or execution authority.
 
 ## Authority boundary
 
@@ -42,15 +93,18 @@ and static registries.
 
 ## Exact ordered computation
 
-1. Check original unspent study slots, source closure, current HEAD and six E4
-   location chains on device16777234. Read the three fixed E4 historical records
+1. Check original unspent study slots, source closure, current HEAD and the six
+   fixed receiver location chains with the persistent-identity correction above.
+   Read the three fixed E4 historical records
    against review `3a69f33121be244c21143979be0a04fe71cdac5e`; check their complete
    pinned bytes before parsing any of them. Caller-selected paths are unsupported.
 2. Authenticate the existing lower metadata/archives and all 23 direct historical
    chains: 3 original-v7, 8 receiver-20260921, 6 E2 and 6 E3. Epoch ownership stays
    separate even when device numbers recur; no physical continuity or reboot
-   cause is inferred. The historical 23-key record is a closed 16 fresh / 7
-   immutable-envelope partition. Its c19db4a HEAD is never rewritten.
+   cause is inferred. The historical 23-key record retains its 16 comparison / 7
+   immutable-envelope partition: the location comparison is explicitly historical,
+   while current persistent and operation-local identities are checked separately.
+   Its c19db4a HEAD and device identities are never rewritten.
 3. Obtain the genuine original five-field environment, including the 32-trace
    baseline. Compare the entire environment with E3 and E4. Load genuine fixed
    PUBLIC inputs, not sealed production inputs or supplied admission objects.
@@ -62,7 +116,7 @@ and static registries.
    cohort generator once. Reproduce full order, 102 attempts / 64 accepted /
    38 rejected, full three-file seal and 1109241-byte input projection. This
    exhaustive solvability work is not replication-policy search.
-6. Compare each of the 16 freshly produced fields in full against the pinned E4
+6. Compare all 16 fields (including the rebuilt historical mapping) in full against the pinned E4
    record. Revalidate new and frozen source, runtime, current operation HEAD,
    original unspent slots, real snapshots and location chains before and after
    expensive stages and at completion. Only then register the private capture.
@@ -76,9 +130,12 @@ is neither called nor relaxed.
 
 ## Certificate and verification contracts
 
-The deterministic proposal follows exactly the twelve top-level fields and all
-nested structures in the C0 design, under the domain suffix
-`/receiver-e4-certificate/v1/certificate`. It uses compact sorted ASCII JSON with
+The deterministic proposal has thirteen top-level fields. Relative to C0,
+`location_correspondence` becomes `historical_location_correspondence` and
+`receiver_identity` is added, under the explicitly revised domain suffix
+`/receiver-e4-certificate/v2/certificate`. `case.device` is explicitly renamed
+`case.historical_device`. All other inherited structures stay
+unchanged. It uses compact sorted ASCII JSON with
 one final newline; the content digest excludes itself and the newline. Duplicate
 keys, nonfinite values, noncanonical encodings, bool/float aliases for counts,
 missing/extra fields and self-consistently rehashed deviations all reject.
@@ -90,7 +147,8 @@ Certificate projection preserves the original study, generation reference,
 input/schedule/seal digests, output/summary/global claim paths and planned
 64/1024/512/256 denominators. Its eleven claim-ceiling fields are false or plain
 integer zero. Publication state and current operation HEAD are not certificate
-fields. Historical source/verification records stay historical, including their
+fields. Actual current device numbers are operation-local receipt fields, not
+persistent certificate fields. Historical source/verification records stay historical, including their
 original meanings and negative scientific results.
 
 `--reconstruct --implementation-revision <full-OID>` returns bare canonical
@@ -127,6 +185,10 @@ dispatch through explicitly MOCK fixtures, partial/completed work accounting,
 fixed reviewed proposal comparison and delivery failures. The unchanged E4 tests
 cover direct mapping ownership, real lower replay/summary wiring and full seal
 comparison. These tests do not count as an actual certifier reconstruction.
+Persistent-identity regressions additionally cover changed boot-local numbers,
+wrong/missing volume UUIDs, path/inode/type/role drift, drift during capture or an
+operation, descriptor cleanup, unchanged historical metadata and detached live
+identity receipts. Mocked reboots are not an observed physical reboot test.
 
 | Design case | C1 coverage / limitation |
 | --- | --- |

@@ -2,8 +2,8 @@
 
 Date: 2026-10-16 JST. Local evidence; not hosted CI or a release.
 
-Status: **CANDIDATE PREPARED AND SAVED-BYTE CHECKS PASSED; FINAL PACKAGE
-VALIDATION AND EXPLICIT EXACT-DIGEST APPROVAL STILL REQUIRED. NO PUBLIC RUN.**
+Status: **CANDIDATE REVIEW AND FULL PACKAGE VALIDATION PASSED;
+EXPLICIT EXACT-DIGEST APPROVAL STILL REQUIRED. NO PUBLIC RUN.**
 
 ## Exact review target
 
@@ -91,6 +91,7 @@ future environment stability, or a search-performance improvement.
 - [Complete preparation operation](../qualifications/countdown_feedback_budget_receiver_e4_public_20261016.preparation.json).
 - [Saved-byte/source/preservation review](../qualifications/countdown_feedback_budget_receiver_e4_public_20261016.preparation-review.json).
 - [Fixed-input/current-parent review](../qualifications/countdown_feedback_budget_receiver_e4_public_20261016.binding-review.json).
+- [Completed package validation and post-validation review](../qualifications/countdown_feedback_budget_receiver_e4_public_20261016.validation.json).
 
 The three JSON review/operation mirrors and candidate are byte-identical to
 their local originals. Raw stdout/stderr, process/start/intent records, inventory
@@ -98,16 +99,37 @@ and review helpers remain under the ignored
 `artifacts/work/feedback-budget-receiver-e4-public-qualification-20261016` directory.
 The tracked references do not substitute for those local raw artifacts.
 
-The producing five-file implementation previously passed the complete validator
-with 1,663 tests, zero skips, at `dcda581` (see the
-[implementation validation report](countdown_feedback_budget_receiver_e4_execution_20261016.md)).
-That is historical implementation validation, not yet this candidate package's
-final validator run. A fresh package validation is the remaining local gate.
+The complete repository validator passed on the clean candidate-package commit
+`09d45db0c63738db20ec3f3f729ea571694a854e`, from
+`2026-10-15T17:43:36.092396+00:00` to
+`2026-10-15T18:01:45.507136+00:00`. Exit status was 0, with no capture
+postcondition errors. The actual stderr records **1,663 tests in 930.804 seconds,
+zero skips, OK**. Compilation and Ruff passed; the complete downstream artifact,
+provenance, design and outside-checkout CLI checks finished, and stdout ends with
+`repository validation: PASS`. This is local validation, not hosted CI.
+
+Post-validation review authenticated the process record and its complete log,
+input-inventory and helper references. All 422 validation-input tracked files
+still matched their captured bytes/modes and that commit's Git blobs; all 417
+pre-existing tracked files, 2,099 retained raw files and retained directory
+closures were unchanged. The candidate and its mirror remained byte-identical;
+the three earlier operation/review mirrors and their saved helper hashes also
+matched. The old review helpers were not modified or rerun. Current output-parent
+binding matched; the original four slots, seven other E4 future slots, and the
+candidate-keyed claim remained absent.
+
+The raw validation-review receipt is 12,828 bytes, SHA-256
+`bb4e314c6da26e5de65965a0fd1451e38e266190e98a06a8a0963b03813fbf82`;
+its tracked mirror above has exactly the same bytes. The subsequent record-only
+commit adds that mirror and updates this report. It does not change the candidate
+or implementation, and is **not** represented as a second full validator run.
+The earlier 1,663-test validation at `dcda581` remains separately recorded in the
+[implementation validation report](countdown_feedback_budget_receiver_e4_execution_20261016.md).
 
 ## Next authority boundary
 
-Only after final package validation, present the exact candidate digest and its
-reviewed commit to Ryō and request explicit approval for one fixed PUBLIC run,
+Final package validation is complete. Present the exact candidate digest and its
+reviewed record-only commit to Ryō and request explicit approval for one fixed PUBLIC run,
 followed by separate fresh-process analysis and whole saved-summary verification.
 The candidate continues to say `REVIEW_AND_EXPLICIT_CONFIRMATION_REQUIRED`,
 `candidate_is_execution_authority=false`, and

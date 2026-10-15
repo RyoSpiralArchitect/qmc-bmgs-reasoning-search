@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import stat
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -137,6 +138,24 @@ class IdentityAndIssuedTests(unittest.TestCase):
 
     def test_static_runtime_guard(self):
         G.guard()
+
+    def test_live_attestation_rejects_cache_before_source_or_evidence_reads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / "runtime.pyc"
+            cache.write_bytes(b"synthetic existing cache")
+            with (
+                patch.object(sys, "pycache_prefix", directory),
+                patch.object(G, "__cached__", str(cache)),
+                patch.object(G.core, "git_head") as head,
+                patch.object(G.R, "snapshot_file") as evidence,
+                patch.object(G.P, "attest") as publisher,
+            ):
+                with self.assertRaisesRegex(Exception, "cache not absent"):
+                    G.attest("f" * 40)
+                head.assert_not_called()
+                evidence.assert_not_called()
+                publisher.assert_not_called()
+            self.assertEqual(cache.read_bytes(), b"synthetic existing cache")
 
     def test_registered_history_cannot_be_supplied(self):
         with self.assertRaises(TypeError):

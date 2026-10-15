@@ -164,6 +164,22 @@ class ShapeAndInterfaceTests(unittest.TestCase):
         self.assertEqual(C.output_for(S.REPLICATION), C.B.OUTPUT)
         self.assertEqual(C.summary_for(S.REPLICATION), C.C.REPLICATION_SUMMARY)
 
+    def test_static_self_test_accepts_existing_cache_without_live_attestation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / "runtime.pyc"
+            cache.write_bytes(b"synthetic existing cache")
+            with patch.object(G, "__cached__", str(cache)):
+                value = C.self_test()
+            self.assertFalse(value["genuine_reconstruction_performed"])
+            self.assertFalse(value["replication_execution_authorized"])
+            self.assertEqual(value["new_public_attempts"], 0)
+            self.assertEqual(cache.read_bytes(), b"synthetic existing cache")
+
+    def test_static_guard_still_rejects_runtime_origin_substitution(self):
+        with patch.object(G, "__file__", str(ROOT / "foreign.py")):
+            with self.assertRaisesRegex(Exception, "runtime source origin"):
+                C.guard()
+
     def test_candidate_roundtrip_both_modes(self):
         for mode in (S.PUBLIC, S.REPLICATION):
             f = fixture(mode)

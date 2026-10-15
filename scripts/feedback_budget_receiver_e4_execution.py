@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
+import importlib.machinery
 import importlib.util
 import os
 from pathlib import Path
@@ -845,7 +846,14 @@ def guard():
         "E4 coordinator fixed configuration changed",
     )
     require(Path(__file__).resolve() == ROOT / SCRIPT, "E4 coordinator origin differs")
-    R.public._origin(G, RUNTIME)
+    # Static invariants also run after compileall in the validation suite.
+    # The live attestation below this boundary still requires absent caches.
+    require(
+        type(G.__spec__.loader) is importlib.machinery.SourceFileLoader
+        and Path(G.__spec__.origin) == ROOT / RUNTIME
+        and Path(G.__file__) == ROOT / RUNTIME,
+        "E4 runtime source origin differs",
+    )
     for module, name, original in _DEPENDENCIES:
         require(
             getattr(module, name) is original,

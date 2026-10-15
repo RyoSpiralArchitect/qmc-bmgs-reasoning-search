@@ -137,6 +137,11 @@ malicious interpreter, host, or storage device lying about durability.
 
 CLI: `--self-test` is static; `--inspect --implementation-revision OID` is
 read-only metadata and current unspent-slot inspection, not numerical admission.
+Static guards check the runtime loader/source origin without requiring an unused
+bytecode cache, so they can run after the repository's compileall check. Every
+live history attestation separately requires the runtime's own cache to be absent
+before source/evidence reads, in addition to the frozen dependency checks. No
+cache is deleted, relocated, or silently accepted for actual operations.
 `--prepare-public`, `--run-public`, `--analyze-public`, and `--verify-public` each
 require their own intended scope and exact mode-specific arguments. Implementation
 approval authorizes only tests with explicit mocks/isolated storage and metadata

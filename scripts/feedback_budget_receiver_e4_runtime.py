@@ -98,10 +98,13 @@ _CONFIGURATION_RAW = canonical(configuration())
 
 
 def attest(revision):
+    require(Path(__file__).resolve() == ROOT / SCRIPT, "E4 runtime origin differs")
+    # Source/cache qualification belongs to live attestation, not static tests.
+    # Fail before reading reviewed evidence; a compiled cache is never admitted.
+    R.public._origin(sys.modules[__name__], SCRIPT)
     revision, head = R.oid(revision), core.git_head(ROOT)
     core.require_ancestor(ROOT, ISSUED_REVIEW, revision)
     core.require_ancestor(ROOT, revision, head)
-    require(Path(__file__).resolve() == ROOT / SCRIPT, "E4 runtime origin differs")
     R.public._origin(P, PUBLISHER)
     publisher = P.attest(PUBLISHER_REVISION)
     require(

@@ -3,7 +3,7 @@
 Date: 2026-10-16 JST. Local result-package review; not hosted CI or a release.
 
 Status: **ALL THREE APPROVED PHASES PASSED; FIXED NUMERICAL SCREEN FALSE.
-RESULT-PACKAGE REPOSITORY VALIDATION PENDING.**
+RESULT-PACKAGE REPOSITORY VALIDATION PASSED: 1,663 TESTS, ZERO SKIPS.**
 
 ## Authority and immutable producing source
 
@@ -118,12 +118,34 @@ generalization or the effectiveness of proposed reward/budget changes.
 - [Exact COMMIT mirror](../qualifications/countdown_feedback_budget_receiver_e4_public_20261015.commit.json).
 - [Diagnostic tables/cases](../qualifications/countdown_feedback_budget_receiver_e4_public_20261016.diagnostics.json).
 - [Executed-notebook receipt](../qualifications/countdown_feedback_budget_receiver_e4_public_20261016.diagnostics-notebook.json).
+- [Completed result-package validation receipt](../qualifications/countdown_feedback_budget_receiver_e4_public_20261016.result-validation.json).
 
-Full repository validation of this added result package is pending. The earlier
-1,663-test PASS at `09d45db` applies to the candidate package, not these new
-documents. Record the new validation input commit separately from any later
-record-only completion commit. Hosted CI, PR update and merge are not claimed
-by this local report.
+Full repository validation ran once against result-package commit
+`1b3b784226259753b115ba7c98f14be65dd95d2e`, from
+2026-10-16 03:42:03.048772 UTC to 04:00:11.117958 UTC. The saved process exited
+0 with no postcondition errors. Actual stderr reports **1,663 tests in
+931.170 seconds, OK, zero skips**; stdout ends with
+`repository validation: PASS`. Compilation, Ruff and the downstream artifact,
+provenance, design and outside-checkout CLI checks passed. This is a new
+result-package validation, distinct from the earlier candidate-package PASS
+at `09d45db`.
+
+The post-validation read-only review authenticated the process, logs, input
+inventory, start/intent and helper hashes. It checked all 431 validation-input
+Git blobs, the 423 pre-operation files including the original 417, 2,099 retained
+historical raw files, 1,027 committed PUBLIC files, 23 preparation records,
+candidate bytes, all seven promoted raw/mirror/Git byte equalities, unchanged
+source closure and ledger records, and the continued absence of the original
+four study slots and both production-candidate paths. The review receipt and
+its tracked mirror are identical: 6,460 bytes, SHA-256
+`330dfa0d4f4ae85a7f0661a2b4e4d2b76b010c2335c1728ad906001d83209a08`.
+
+This report completion and the new validation receipt belong to a later
+record-only commit; they were not present in the full validator's input commit.
+No second full validation or numerical reconstruction is claimed. The operation
+record's validation-pending field remains an unchanged historical snapshot,
+superseded for validation status by the later receipt. Hosted CI, PR update and
+merge are not claimed by this local report.
 
 This is a **64-definition / one-source-multiset PUBLIC connection qualification**.
 It is not evidence of improved search, 64 independent sources, population

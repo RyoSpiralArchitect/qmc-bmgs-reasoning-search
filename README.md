@@ -46,6 +46,10 @@ engineering research repoです。
   64件は局所boundaryが16倍超でした。これを結果後の成功仮説にせず、旧154 task/sourceを
   全除外した12-task開発cohort上で`0,1,2,4,8,16,32,64`だけを動かす384-cell v5を
   outcome-blindにsealしました。通過しても次はfresh confirmationでありlocked-128ではありません。
+- v6の新12問・192セルでは、予算256でscale 0/16とも`0/48`、512で`3/48`対`5/48`。
+  差の差`2/48`、2 taskに跨るpaired rescue、lost exact success 0で固定開発screenを
+  最小基準で通過しました。独立解析・保存summary再検証も通過。小規模なdevelopment
+  signalであり、次は別のsource-disjoint確認設計です。QMC優位やlocked-128認可ではありません。
 
 結果の短い読み方は [D4 result capsule](docs/results/d4_result.md)、
 [fresh channel-ablation capsule](docs/results/channel_ablation_fresh_n256.md)、
@@ -89,7 +93,7 @@ engineering research repoです。
 [dense-scale implementation](docs/countdown_thompson_dense_scale_implementation.md)、
 実行結果の分解と次の修正開発候補は
 [feedback opportunity observation](docs/observations/countdown_thompson_feedback_opportunity_20260904.md)、
-その次の実験設計（未実行）は
+その次の凍結した実験設計は
 [feedback × budget factorial v6](docs/strategy/countdown_thompson_feedback_budget_factorial_v6.md)
 と [design review](docs/reviews/countdown_thompson_feedback_budget_factorial_v6_20260904.md)
 を参照してください。
@@ -98,6 +102,45 @@ engineering research repoです。
 にまとめています。
 公開12問×4seed×4条件を保存・再解析まで通す全192セルの検証は
 [full-shape fixture](docs/countdown_feedback_budget_full_shape.md) を参照してください。
+その先の本実験用の契約・除外境界・192セル候補の組み立ては
+[development contract](docs/countdown_feedback_budget_development_contract.md)
+にまとめています。[新cohortの12問は封印・独立検証済み](docs/countdown_feedback_budget_sealed_cohort_v6.md)
+で、[実行認可候補](docs/preregistrations/countdown_thompson_feedback_budget_v6_execution_authorization_candidate.json)
+も固定し、reviewと明示認可を経た一回限りの192セル実行・独立解析・保存結果検証まで
+完了しました。[開発観察ノート](docs/observations/countdown_feedback_budget_v6_development_20260910.md)
+に全条件・不利なケース・claim境界をまとめています。実行枠は消費済みです。
+次の [v7 source-disjoint確認設計](docs/strategy/countdown_thompson_feedback_budget_confirmation_v7.md)
+は新64問×4seed×4条件の1,024セルを固定し、効果幅`1/24`と改善task割合`1/6`を
+引き継ぎます。整数換算では256組中11組以上の純増・差の差と、64問中11問以上の
+paired rescueが必要です。新cohortは別認可で生成・封印・独立検証を完了し、
+本番実行は固定した候補への別の明示認可を待っています。
+これは固定cohortでの再現screenであり、有意差検定や母集団性能の確認ではありません。
+続く [v7 outcome-blind contract](docs/countdown_feedback_budget_replication_contract.md)
+は旧開発12問も含む8群の除外境界と、別domainの1,024セル候補を組み立てます。
+公開fixtureは同じ入力のtarget違い64定義で、独立な64問題の性能評価ではありません。
+続く [v7 PUBLIC pipeline](docs/countdown_feedback_budget_replication_public_pipeline.md)
+で、固定の公開1,024セルを実行・保存し、全履歴の独立解析と保存結果の一致検証まで
+完了しました。[実動確認・レビュー記録](docs/reviews/countdown_feedback_budget_replication_public_pipeline_20260913.md)
+に証跡と不利な結果を残しています。公開データの数値screenは不通過で、性能向上の
+証拠ではありません。
+続く [v7本番用の入口と一回限りの実行connector](docs/countdown_feedback_budget_replication_execution.md)
+も実装し、その別domainの公開1,024セルで認可消費・実行・独立解析・保存結果の一致検証まで
+完了しました。[今回の検証記録](docs/reviews/countdown_feedback_budget_replication_execution_20260913.md)
+には1,183テストの通過、旧公開経路との全履歴一致、使用済み枠の再実行拒否を残しています。
+[新64入力のcohortを一度生成・封印し、採択順の独立再現まで完了](docs/countdown_feedback_budget_sealed_cohort_v7.md)
+しました。102候補から64問を採択し、38件の除外履歴も保持しています。
+[1,024セルの実行候補](docs/preregistrations/countdown_thompson_feedback_budget_v7_execution_authorization_candidate.json)
+は内容を変えず保存し、封印・実行順・公開証跡との対応をローカルで照合済みです。
+これは入力と候補の確認であり、追試の性能結果ではありません。
+本番の探索は0セル、実行枠は未消費で、この候補への別の明示認可が必要です。
+v6 development domainでの実行→順序固定の解析→一回限りの保存は
+[development-path public adapter](docs/countdown_feedback_budget_development_path.md)
+で公開192セルを使って検証済みです。
+[cohort／認可候補の入口](docs/countdown_feedback_budget_development_admission.md)
+は封印の独立検証とreview用候補まで。
+[一回限りの実行connector](docs/countdown_feedback_budget_execution.md) が
+公開fixtureでの認可消費・実行・独立解析と、review済みcohort候補の入口を接続します。
+実装・公開fixtureの検証・新cohortの認可と実測は別の段階です。
 
 ## Layout
 

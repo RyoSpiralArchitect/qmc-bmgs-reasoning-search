@@ -107,6 +107,46 @@ def _validate(temporary_root: Path) -> None:
     # Catch accidental sibling-import or source-relative assumptions by invoking
     # every CLI module from outside the repository.
     outside = Path("/tmp")
+    run(
+        [
+            sys.executable,
+            "-P",
+            "-B",
+            str(ROOT / "scripts/feedback_budget_development_contract.py"),
+            "--self-test",
+        ],
+        cwd=outside,
+    )
+    run(
+        [
+            sys.executable,
+            "-P",
+            "-B",
+            str(ROOT / "scripts/run_feedback_budget_development_fixture.py"),
+            "--self-test",
+        ],
+        cwd=outside,
+    )
+    run(
+        [
+            sys.executable,
+            "-P",
+            "-B",
+            str(ROOT / "scripts/feedback_budget_development_admission.py"),
+            "--self-test",
+        ],
+        cwd=outside,
+    )
+    run(
+        [
+            sys.executable,
+            "-P",
+            "-B",
+            str(ROOT / "scripts/run_feedback_budget_execution.py"),
+            "--self-test",
+        ],
+        cwd=outside,
+    )
     for module in (
         "qmc_bmgs.policy",
         "qmc_bmgs.anthropic_countdown",

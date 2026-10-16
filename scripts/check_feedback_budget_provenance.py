@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check PR27 receipt ancestry in a committed Git tree, without running search.
+"""Check public receipt ancestry in a committed Git tree, without running search.
 
 This is a merge/retrieval guard, not source/runtime attestation or trace replay.
 Use a complete clone and preserve the producing commits when merging evidence.
@@ -26,6 +26,58 @@ RECEIPTS = {
         ("source", "execution_revision"),
         ("source", "public_qualification_source", "qualification_revision"),
         ("source", "public_qualification_source", "package_source", "runner_revision"),
+    ),
+    "docs/qualifications/countdown_feedback_budget_v6_development_path_20260910.summary.json": (
+        ("source", "execution_revision"),
+        ("source", "public_qualification_source", "qualification_revision"),
+        ("source", "public_qualification_source", "package_source", "runner_revision"),
+    ),
+    "docs/qualifications/countdown_feedback_budget_v6_admission_20260910.json": (
+        ("admission_context", "source", "admission_revision"),
+        ("admission_context", "source", "public_path_source", "execution_revision"),
+        (
+            "admission_context",
+            "source",
+            "public_path_source",
+            "public_qualification_source",
+            "qualification_revision",
+        ),
+        (
+            "admission_context",
+            "source",
+            "public_path_source",
+            "public_qualification_source",
+            "package_source",
+            "runner_revision",
+        ),
+    ),
+    "docs/qualifications/countdown_feedback_budget_v6_connector_20260910.summary.json": (
+        ("environment", "source", "execution_revision"),
+        ("environment", "source", "admission_source", "admission_revision"),
+        (
+            "environment",
+            "source",
+            "admission_source",
+            "public_path_source",
+            "execution_revision",
+        ),
+        (
+            "environment",
+            "source",
+            "admission_source",
+            "public_path_source",
+            "public_qualification_source",
+            "qualification_revision",
+        ),
+        (
+            "environment",
+            "source",
+            "admission_source",
+            "public_path_source",
+            "public_qualification_source",
+            "package_source",
+            "runner_revision",
+        ),
     ),
 }
 

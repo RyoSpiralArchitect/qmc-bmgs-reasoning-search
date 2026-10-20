@@ -56,11 +56,30 @@ review threads before publication; none existed at that inspection.
 
 ## Result package validation
 
-Pending one full repository validation at the forthcoming result-package
-commit. The successful implementation validation and actual all-cell replay
-above are separate checks, not a substitute for that package check. A subsequent
-receipt will record the tested commit, actual test count, logs and postflight
-invariants. No hosted CI success or review approval is asserted.
+Full repository validation ran once at result-package commit
+`9a568b0431c3132e08da6001a84600194c03d0d5`, from 2026-10-19 23:46:40 UTC
+to 2026-10-20 00:13:28 UTC. It exited 0 with no postcondition errors and ended
+with `repository validation: PASS`.
+
+- 1,688 tests in 1379.273 seconds, OK, zero skips.
+- Compile checks, Ruff, artifact/provenance/design checks, CLI self-tests and
+  the final sealed-manifest verification passed.
+- All 450 tracked files and 3,742 distinct protected files, including the 517
+  development output files, remained unchanged. Directory memberships and
+  all six forbidden slots were checked again after completion.
+- Every tracked file matched its tested Git blob. All six promoted records
+  matched their raw bytes and Git blobs. Run/analysis receipt references and
+  analysis stdout versus the saved summary were rechecked without search or
+  generative replay.
+
+The [result validation receipt](../qualifications/countdown_feedback_portfolio_development_20261020.result-validation.json)
+is byte-identical to the local raw review receipt and binds the logs, capture,
+inputs and postflight checks. This completion paragraph and that new receipt
+are a subsequent records-only change; the full suite was not rerun at that
+later commit. The earlier implementation validation at `3748792` and the actual
+all-cell replay remain distinct checks. The execution receipt's pending package
+validation field is preserved as its original snapshot and superseded by this
+later receipt. No hosted CI success or independent review approval is asserted.
 
 Original C5, locked evaluation, provider calls, historical E4 retries, additional
 experiments and merge are outside this completed execution scope.

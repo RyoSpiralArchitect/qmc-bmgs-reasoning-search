@@ -59,13 +59,28 @@ predictions. There is no new default or authorization for additional work.
 
 ## Result-package qualification
 
-Full repository validation of this result package is **pending** at its
-forthcoming fixed commit. Candidate qualification and saved-event checks above
-are not a result-package full-suite PASS. A later completion receipt must bind
-the actual tested commit, exit code, real test count, stdout/stderr hashes and
-all protected content/memberships. A later records-only completion commit must
-be distinguished from the full-suite input commit. Hosted CI and external
-review approval are separate and not asserted here.
+Full repository validation **passed** at result-package input commit
+`2e1ed208cc44d876b573ac48df9a402741364e8b`. It ran once from
+2026-10-21T20:43:07.481851+00:00 to 21:00:33.280746+00:00, exited 0, and
+reported **1,718 tests in 893.775s, OK, zero skips**, followed by
+`repository validation: PASS`. The captured postflight passed with no errors
+and identical before/after invariants. Terminal session 5249 was collected
+with exit 0; intermediate test output was not used to infer completion.
+
+Read-only completion review checked every helper/input/intent/start/log hash,
+all 469 tracked files against Git bytes, 5,329 distinct protected files and
+all fixed directory memberships, 53 plan source references, six same-byte
+raw/mirror pairs and the six still-unused original-study/production slots.
+The [completion receipt](../qualifications/countdown_feedback_diversity_development_20261022.result-validation.json)
+is identical to its retained raw original: 5,264 bytes, SHA-256
+`c438435f84532aecf069d06b6a7695357b0acd30a13e7375f2c0ab4a03156ab2`.
+
+The subsequent records-only commit adds that receipt and changes this
+qualification section; it is not another full-suite execution. Candidate
+qualification, operation commit, result-package full validation and later
+records-only completion are separate stages. The execution record's earlier
+pending status remains an immutable snapshot, closed by this receipt.
+Hosted CI and external review approval are separate and not asserted here.
 
 ## Evidence
 

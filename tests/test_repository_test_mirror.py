@@ -128,6 +128,7 @@ class HistoricalMirrorTests(unittest.TestCase):
         ):
             with (
                 patch.dict(M.os.environ, {}, clear=True),
+                patch.object(M.sys, "path", ["/fixture-source"]),
                 patch.object(
                     M.unittest.TestLoader, "discover", return_value=unittest.TestSuite()
                 ),
@@ -141,6 +142,7 @@ class HistoricalMirrorTests(unittest.TestCase):
                 patch("sys.stdout", new=io.StringIO()),
             ):
                 self.assertEqual(M.main(), 0 if success and not skipped else 1)
+                self.assertEqual(M.sys.path[0], str(M.ROOT))
 
     def test_mirror_reverified_even_when_runner_raises(self):
         with (

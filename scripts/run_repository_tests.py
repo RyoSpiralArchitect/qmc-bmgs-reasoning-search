@@ -162,6 +162,11 @@ def replace_legacy(suite, historical, selected=LEGACY_MODULES):
 
 
 def main():
+    # Match `python -m unittest discover`: a few existing tests import the
+    # repository's scripts namespace. This entry point is invoked with -P, so
+    # declare that trusted candidate root explicitly instead of relying on cwd.
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
     configured = os.environ.get(HISTORICAL_ROOT_ENV)
     mirror = verified_mirror(ROOT, configured) if configured is not None else None
     loader = unittest.TestLoader()

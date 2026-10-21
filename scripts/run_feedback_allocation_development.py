@@ -43,7 +43,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STUDY = "feedback_allocation_development_20261022_a/v1"
 OUTPUT = "artifacts/work/feedback-allocation-development-20261022-a"
 PLAN_FILE = (
-    "docs/preregistrations/countdown_feedback_allocation_development_20261022.v2.plan.json"
+    "docs/preregistrations/countdown_feedback_allocation_development_20261022.v3.plan.json"
 )
 POLICY = "docs/strategy/countdown_feedback_allocation_development_20261022.md"
 SCRIPT = "scripts/run_feedback_allocation_development.py"
@@ -310,7 +310,7 @@ def build_plan():
                 other_469_parent_files_unchanged=True,
             ),
             previous_unexecuted_plan=reference(
-                "docs/preregistrations/countdown_feedback_allocation_development_20261022.plan.json"
+                "docs/preregistrations/countdown_feedback_allocation_development_20261022.v2.plan.json"
             ),
             qualification_environment=dict(
                 command="python scripts/validate.py",

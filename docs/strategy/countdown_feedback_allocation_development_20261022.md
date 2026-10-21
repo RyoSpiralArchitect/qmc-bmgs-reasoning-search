@@ -121,7 +121,7 @@ The preserved source membership and frozen candidate bytes are checked before
 and after operations.
 
 The initial unexecuted plan and its failed qualification remain intact. The
-current freeze is `countdown_feedback_allocation_development_20261022.v2.plan.json`.
+current freeze is `countdown_feedback_allocation_development_20261022.v3.plan.json`.
 Its scientific design is unchanged. The revision adds qualification portability
 and binds 58 source references, including the validator, discovery wrapper and
 eight regression tests. Full collection is 1,752 tests: the original 1,718,

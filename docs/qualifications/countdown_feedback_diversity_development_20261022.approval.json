@@ -1,0 +1,23 @@
+{
+  "status": "EXPLICIT_HUMAN_CONDITIONAL_APPROVAL_RECEIVED",
+  "recorded_at_utc": "2026-10-21T19:56:13+00:00",
+  "approval_timestamp": null,
+  "thread_id": "019f6c04-8b0b-7283-a18b-9db972737cbc",
+  "question_item_id": "[\"request_user_input_async\",\"call_13903a0775b64d199c4ce1446ab10368\",0]",
+  "question": "新しい多様性比較を、全体検証PASSと実装・計画の不変性を条件に1回実行し、別プロセスで全件再解析してPRへまとめてよい？ 対象はcommit 3082cffbd6ad7f7bde7af6a907b9c5597e7fa8ea、計画digest b9277ed5f4d537276dd612861bde6bb3bb322f53afae50b8456713839fefc4a4、32入力群×8seed×2予算×3条件＝1,536セル（2,560枝）。原C5・locked評価・provider・追加実験は含まず、結果に基づく予算配分案まで進める。",
+  "answer": "全体検証PASS後の1回実行・解析を承認",
+  "tested_commit": "3082cffbd6ad7f7bde7af6a907b9c5597e7fa8ea",
+  "operation_commit": "cbc8abc40907097757a39bcd1b29f3aec6562f77",
+  "operation_commit_difference": "Only validation receipt and completion review; implementation and plan unchanged.",
+  "plan_digest": "b9277ed5f4d537276dd612861bde6bb3bb322f53afae50b8456713839fefc4a4",
+  "plan_sha256": "6346e9cfde3c1207ece327dd336b6c9efd1b9d3a661991b87f210647e32418af",
+  "plan_bytes": 51855,
+  "validation_receipt_sha256": "c80c0dc440b9c2ef65da5abc1a79760a98a76e30eb2a8a828b224b2472e6b99c",
+  "permitted": ["one fixed 1536-cell 2560-branch run", "one separate-process complete generative analysis", "records and PR 30 aggregation", "allocation proposal based on results"],
+  "excluded": ["original C5", "locked evaluation", "provider calls", "additional experiments", "retry or resume", "new candidate", "allocation implementation", "merge"],
+  "monitoring": {
+    "question_item_id": "[\"request_user_input_async\",\"call_13903a0775b64d199c4ce1446ab10368\",1]",
+    "question": "全体検証や実験の完了後に、このチャットで記録・解析・PR反映を再開する監視を設定してよい？ 進行中は静かに待ち、実行は上の候補承認がある場合だけ行い、失敗時は再試行せず相談する。",
+    "answer": "完了時に再開する監視を設定する"
+  }
+}

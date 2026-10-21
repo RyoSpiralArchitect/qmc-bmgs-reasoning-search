@@ -43,7 +43,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STUDY = "feedback_allocation_development_20261022_a/v1"
 OUTPUT = "artifacts/work/feedback-allocation-development-20261022-a"
 PLAN_FILE = (
-    "docs/preregistrations/countdown_feedback_allocation_development_20261022.plan.json"
+    "docs/preregistrations/countdown_feedback_allocation_development_20261022.v2.plan.json"
 )
 POLICY = "docs/strategy/countdown_feedback_allocation_development_20261022.md"
 SCRIPT = "scripts/run_feedback_allocation_development.py"
@@ -220,6 +220,9 @@ def source_snapshot():
             PROPOSAL_FILE,
             "tests/test_feedback_allocation.py",
             "tests/test_feedback_allocation_development.py",
+            "scripts/validate.py",
+            "scripts/run_repository_tests.py",
+            "tests/test_repository_test_mirror.py",
         )
     )
     require(
@@ -297,6 +300,27 @@ def build_plan():
                 reference(p)
                 for p in git("ls-tree", "-r", "--name-only", BASE).decode().splitlines()
             ],
+            parent_validation_entrypoint_update=dict(
+                path="scripts/validate.py",
+                original_sha256=hashlib.sha256(
+                    git("show", BASE + ":scripts/validate.py")
+                ).hexdigest(),
+                frozen_candidate=reference("scripts/validate.py"),
+                scope="test_discovery_with_verified_read_only_historical_mirror",
+                other_469_parent_files_unchanged=True,
+            ),
+            previous_unexecuted_plan=reference(
+                "docs/preregistrations/countdown_feedback_allocation_development_20261022.plan.json"
+            ),
+            qualification_environment=dict(
+                command="python scripts/validate.py",
+                historical_root_environment="QMC_BMGS_HISTORICAL_TEST_ROOT",
+                full_collection_count=1752,
+                unchanged_historical_test_modules=8,
+                unchanged_historical_test_count=328,
+                skips_allowed=False,
+                production_admission_changes=False,
+            ),
             maximum_total_work={
                 axis: COUNT
                 * len(SEEDS)

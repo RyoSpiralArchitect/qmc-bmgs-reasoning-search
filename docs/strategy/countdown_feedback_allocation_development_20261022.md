@@ -10,7 +10,7 @@ is not external approval. The merge tree equals `d3b45aaf`.
 
 This implements the separate hypothesis in
 [countdown_feedback_diversity_allocation_proposal_20261022.md](countdown_feedback_diversity_allocation_proposal_20261022.md).
-That exact file and all other merged bytes remain unchanged. The direction
+That exact file and all historical evidence remain unchanged. The direction
 and implementation are approved. The newly frozen exact execution plan still
 requires explicit human approval after qualification.
 
@@ -113,8 +113,34 @@ The fixed output slot is
 `artifacts/work/feedback-allocation-development-20261022-a`.
 `--plan` is read-only and does not generate a cohort or search. It binds all
 current source files, runtime, policy, proposal, exclusions, caps, seeds,
-counts and the complete 470-file merged parent inventory. The preserved
-source membership and parent bytes are checked before and after operations.
+counts and the complete 470-file parent-path inventory at the frozen candidate.
+Of the merged parent's files, 469 remain byte-identical. The sole change is
+`scripts/validate.py`, which invokes the complete test-discovery wrapper below;
+the plan explicitly binds both its original hash and candidate reference.
+The preserved source membership and frozen candidate bytes are checked before
+and after operations.
+
+The initial unexecuted plan and its failed qualification remain intact. The
+current freeze is `countdown_feedback_allocation_development_20261022.v2.plan.json`.
+Its scientific design is unchanged. The revision adds qualification portability
+and binds 58 source references, including the validator, discovery wrapper and
+eight regression tests. Full collection is 1,752 tests: the original 1,718,
+26 allocation tests and eight portability tests.
+
+The eight historical modules (328 tests) have fixed paths embedded in saved
+receipts. In an isolated checkout set `QMC_BMGS_HISTORICAL_TEST_ROOT` to the
+existing canonical checkout named by those receipts. The wrapper first proves
+that every mirrored test and source file equals both the candidate and the
+immutable PR30 merge tree; only the candidate validator entry point may differ.
+It authenticates the original 5,329 protected artifacts and source memberships
+against the prior qualification's hash-bound inventory, then repeats those
+checks after the tests. The historical modules read that verified mirror;
+all other tests run in the isolated candidate. The test identity multiset must
+remain identical. Failures, missing artifacts, changed bytes and skips fail
+qualification. No receipt path, expected digest, admission assertion or old
+test is patched. Fixture tests and static CLI self-tests do not authorize a
+fresh cohort, archive reconstruction or study execution. The mirror is not
+editable by this workflow and is never an alternate admission root.
 
 Before execution, complete operator review and `python scripts/validate.py`
 on the frozen implementation commit. Publish the exact commit, plan digest,

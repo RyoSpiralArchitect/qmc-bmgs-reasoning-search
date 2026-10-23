@@ -1,7 +1,7 @@
 # Allocation development candidate review
 
-Status: implementation/preregistration candidate; **full repository validation
-pending, human exact-plan execution approval absent**. No new planned cohort,
+Status: **full repository validation PASS; exact-plan one-run/analysis approval
+received**. At this qualification-completion record no new planned cohort,
 run or analysis exists. This review is the implementing agent's code/contract
 review and regression testing, not an independent reviewer endorsement.
 
@@ -56,15 +56,26 @@ development, not a failed experiment or reattempt of the planned cohort.
 
 ## Qualification and authority
 
-Ruff passed. The new focused tests passed before candidate freeze. Full
-`scripts/validate.py` is pending at the candidate commit and will be captured
-with before/after source, Git-byte, historical-raw and directory inventories.
-Do not label this candidate fully validated until exit0, full log markers and
-postconditions all agree. Any later completion-only commit is distinct from
-the full-suite input commit.
+Ruff and 37 focused tests passed before candidate freeze. Full
+`scripts/validate.py` ran once at `3221d5f5dd84f70af828ca5671b6bde983d91354`,
+2026-10-23T07:18:31.021875Z to 07:36:21.311070Z. Exit0, 1,755 tests in916.792s,
+OK/skip0 and final `repository validation: PASS`; postconditions errors empty
+and before/after equal. The separate saved-evidence review checked all refs,
+479 tracked Git bytes, 5,339 protected files, directory memberships, 56 source
+refs and seven absent slots. Receipt:
+`docs/qualifications/countdown_feedback_allocation_development_20261023.validation.json`,
+4,441 bytes, SHA-256 `e4e3396cab5b426a8f205073ae4ee71c537f3386bcbf3613262b77fe278316ca`;
+raw qualification receipt is byte-identical. This subsequent completion-only
+commit changes the receipt and this review, not implementation or plan, and did
+not rerun the suite. Local PASS does not assert hosted CI or external approval.
 
-Execution requires Ryō's new explicit approval of the exact commit and plan
-digest after (or conditional on) full PASS and no implementation/plan drift.
-Approval would cover only this one development attempt and one fresh-process
-complete analysis. Original C5, locked evaluation, providers, old E4 reexecution,
-additional ratios/experiments, automatic retry/resume and merge remain excluded.
+Ryō directly answered question item
+`["request_user_input_async","call_b163e0dfb3dd4ace9ca24710a29dbc5c",0]`
+with `全体検証PASS後の1回実行・解析を承認`. That question named the exact
+candidate commit above and plan digest, conditional on full PASS and unchanged
+implementation/plan. It covers only this one development attempt, fresh-process
+complete analysis and result PR. The separate item1 authorized completion
+monitoring. Raw human approval is recorded before execution; the frozen plan's
+`execution_authorized:false` remains its candidate-time snapshot. Original C5,
+locked evaluation, providers, old E4 reexecution, additional ratios/experiments,
+automatic retry/resume and merge remain excluded.

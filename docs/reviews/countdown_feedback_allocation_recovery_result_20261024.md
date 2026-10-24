@@ -57,13 +57,29 @@ and scientific decision, fixed denominators and model caveats are retained.
 
 ## Result-package qualification
 
-Pending: this result package has not yet completed its own full repository
-validation. Freeze its new result commit, capture one full suite with the
-short temporary parent, and inspect actual test count/skip status/final PASS
-plus all evidence invariants. A later completion receipt will record the tested
-input commit. Any subsequent receipt-only commit is not a second full-suite
-run. The operations record's pending state is a preserved time-of-capture
-snapshot and must not be rewritten.
+Completed: one full repository validation ran on result-package commit
+`b01f3770a1065b23c8fa4a0c7e7b352107770517`, from
+2026-10-23T18:12:23.483268Z to18:31:27.974513Z. The actual logs report
+1,775 tests in974.056s, OK, zero skips, exit0, and final
+`repository validation: PASS`. Postflight passed with empty errors and equal
+before/after invariants. The short temporary parent and fresh private runtime
+were preserved; the suite was not restarted.
+
+The [result-validation completion receipt](../qualifications/countdown_feedback_allocation_recovery_20261024.result-validation.json)
+records a separate read-only audit of all process/input/intent/start/helper/log
+hashes,498 tracked Git bytes,12,036 protected files (including11,995 historical
+files),32 directory memberships,8 absences,56 original source references and
+10 same-byte raw/mirror pairs. The prior485 candidate files and480 original
+files remain unchanged. Original analysis completion and restart cause remain
+UNKNOWN; old completion records are still absent. The audit is not another
+suite, scientific replay, experiment or independent-reviewer endorsement.
+
+The subsequent completion commit changes only this pending section and adds
+that receipt. It is a records-only commit, not another full-suite run. The
+operations record's pending state remains a time-of-capture snapshot. Its
+result-review reference resolves against this review's Git bytes at the tested
+`b01f3770a1065b23c8fa4a0c7e7b352107770517` commit, not the later live file;
+the operations record was not rewritten to match the completion edit.
 
 Hosted checks and external review are separate. No CI approval, merge, new
 experiment, C5/locked evaluation, provider execution or default promotion is

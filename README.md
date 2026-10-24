@@ -27,9 +27,6 @@ engineering research repoです。
 - 次の焦点は、**現行探索が同じ条件のgreedy/beam/PUCTに対して価値を持つか**、
   **学習した平均値がpriorと訪問回数依存の摂動を超えて役立つか**です。
   旧canaryと新cohortの成功率を直接比較して、この問いに答えたことにはしません。
-- 次の [search-value診断設計](docs/strategy/countdown_search_value_development_20261024.md)
-  はsingle16・mean-off・greedy・beam・PUCTを新128 sourceで比較する提案です。
-  設計のみで、mean-off実装・新cohort生成・実行はまだ行っていません。
 - 等しいscore上限は等しい総費用ではありません。proposal内部の計算、全7 work軸、
   未使用予算、時間・メモリを分け、費用効率とtyped-DSL transferは未達のgateとして残します。
 

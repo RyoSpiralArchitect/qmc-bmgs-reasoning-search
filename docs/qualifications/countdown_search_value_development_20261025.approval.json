@@ -1,0 +1,19 @@
+{
+  "schema_version": "search_value_exact_candidate_approval/v1",
+  "candidate_commit": "db475199e65666f187782182fef4056917287b5f",
+  "plan_digest": "db7a96cf89355d7dfa379d21573f1ce5967536294190bea3dadbd9b947a907e5",
+  "authority_kind": "exact_candidate_human_approval",
+  "human_question": "候補 commit db475199e65666f187782182fef4056917287b5f、計画digest db7a96cf89355d7dfa379d21573f1ce5967536294190bea3dadbd9b947a907e5 の探索価値比較（128新規source×［single16・mean-off各4seed＋greedy・beam2・PUCT各1回］＝1,408セル、主予算512）を、全体検証PASSと候補不変を条件に1回実行し、別プロセス全件再解析・分析・文書化・結果PRまで進めてよい？ 主比較はsingle16−PUCT固定。原C5・locked評価・provider・追加実験・mergeは含めません。",
+  "human_answer": "全体検証PASS後の1回実行・解析を承認",
+  "scope": {
+    "run_count": 1,
+    "separate_process_analysis_count": 1,
+    "source_count": 128,
+    "cell_count": 1408,
+    "provider_calls": 0,
+    "original_c5": false,
+    "locked_evaluation": false,
+    "automatic_retry": false,
+    "merge": false
+  }
+}

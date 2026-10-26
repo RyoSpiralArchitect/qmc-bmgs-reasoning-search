@@ -46,15 +46,29 @@ deterministic filtered sampling and passive-score/non-counterfactual limits
 are explicit. No equal-total-compute, population-causal, winner/default or
 general anti-learning claim is warranted.
 
-## Result-package validation — pending
+## Result-package validation — complete
 
-The fixed result package has not yet completed its own full repository
-validation. Candidate qualification and saved-event checks are not substitutes.
-After the result commit is fixed, run scripts/validate.py once with a separate
-capture and short temporary parent. A later completion receipt will identify
-the actual suite input commit and its observed logs/preservation checks.
-Any subsequent record-only commit must not be described as another suite run.
-Existing candidate-time and execution pending snapshots stay unchanged.
+The fixed result package at
+`39b95be9219127eb2418f292329f4dda63b97b5f` completed one full repository
+validation from2026-10-26 04:59:44.770160 to05:19:32.825976 UTC
+(13:59:44–14:19:32 JST). The actual unittest log reports1,822 tests
+in1,005.330 seconds, OK and zero skips; stdout ends
+`repository validation: PASS`. The child exited0, postflight passed with
+empty errors, and before/after preservation records are identical.
+
+A separate read-only completion audit verified every saved reference and log,
+all527 tracked Git bytes,515 unchanged candidate files,13,043 protected files,
+43 memberships,8 absent historical slots,56 original/58 plan source refs and
+19 same-byte raw/mirror pairs. Failed-checker references resolve to its retained
+source snapshot. The [completion receipt](../qualifications/countdown_search_value_development_20261025.result-validation.json)
+is a same-byte first promotion of the local audit receipt. This is author
+verification, not an independent reviewer or another scientific replay.
+
+The suite input is39b95be; the following completion-record-only commit changes
+only this section and adds that receipt. The suite was not rerun on the
+record-only commit. Candidate-time and execution pending snapshots remain
+unchanged; the execution record's historical result-review hash is checked
+against39b95be's Git bytes, not this subsequently completed note.
 
 ## Publication boundary
 

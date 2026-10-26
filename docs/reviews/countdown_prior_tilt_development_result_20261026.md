@@ -48,15 +48,35 @@ All negative outcomes, missingness (zero terminals missing), denominators,
 first-hit/censoring and seven work axes remain visible. No population-causal,
 equal-total-compute, generic anti-learning, default or winner claim is made.
 
-## Result-package validation — pending at this snapshot
+## Result-package validation — complete
 
-The result package must be committed, then checked by a distinct, once-only
-full scripts/validate.py capture with fresh private runtime/cache and short
-temporary parent. Candidate qualification is not this result validation.
-A later completion receipt will name its exact suite-input commit and actual
-test/skip counts. Only this section is updated after complete PASS; the candidate
-pending note and execution snapshot remain unchanged. A following record-only
-commit must not be described as the full-suite input.
+The once-only full scripts/validate.py capture tested result-package commit
+`12c66f2c1a0507bb2af7c39776d840b2c5e56e0e`, from 2026-10-26
+16:29:27.274193 to 16:50:34.790841 UTC, with a fresh private runtime/cache
+and short temporary parent. The actual log records 1,864 tests in 1,076.007s,
+OK, zero skips and repository validation: PASS. Exit is 0, postflight is true,
+errors are empty and before/after preservation is identical.
+
+The separate read-only completion audit verified all process/input/intent/start/
+helper/log references, all 548 tracked Git bytes (prior 536 unchanged),
+15,425 protected files, 52 memberships, 8 historical absences, 56 original
+and 60 plan source references, and all 29 same-byte mirror pairs. All 15
+execution records, 2,310 output files and 16 result-review records remain intact.
+The initial completion audit used qualification-style field names for the
+saved-event checker receipt; only that read-only audit was corrected to its
+actual schema, with failed source/stderr retained. No suite, checker, experiment
+or generative analysis was repeated. The old terminal session was unavailable
+at later review; successful completion is established by the bound saved
+process receipt and complete logs, not by process absence.
+
+The [completion receipt](../qualifications/countdown_prior_tilt_development_20261026.result-validation.json)
+is a first same-byte mirror of the raw completion audit. The subsequent
+record-only commit changes this section and adds that receipt; it is not the
+full-suite input. Candidate pending notes, the initial qualification failure
+and the execution snapshot remain unchanged. The execution snapshot's old
+result-review reference resolves to Git bytes at `12c66f2`, not this updated
+file. This is same-agent saved-evidence verification, not external review or
+hosted CI approval.
 
 ## Publication boundary
 

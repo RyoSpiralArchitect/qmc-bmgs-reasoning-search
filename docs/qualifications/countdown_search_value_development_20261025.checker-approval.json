@@ -1,0 +1,23 @@
+{
+  "schema_version": "search_value_saved_check_repair_approval/v1",
+  "authority_kind": "explicit_human_reply_to_scoped_checker_repair",
+  "human_question": "検算器だけ修正し、別ログで検算→文書化→結果検証→PR #36への反映を再開してよい？ 実験・全件再解析はやり直しません。",
+  "human_answer": "もちろん!!",
+  "client_date": "2026-10-26",
+  "client_timezone": "Asia/Tokyo",
+  "scope": {
+    "checker_beam_event_accounting_only": true,
+    "saved_event_check_attempts": 1,
+    "result_documentation": true,
+    "result_qualification": true,
+    "existing_pr": 36,
+    "run": 0,
+    "scientific_replay": 0,
+    "additional_experiment": false,
+    "merge": false,
+    "automatic_retry": false
+  },
+  "prior_failure": "artifacts/work/search-value-development-result-review-20261025/diagnostics.failure.review.json",
+  "failed_source_snapshot": "artifacts/work/search-value-development-result-review-20261025/diagnostics.failed-source.py",
+  "historical_reference_resolution": "The failed process source reference names the pre-fix observation script. Its exact bytes are preserved in diagnostics.failed-source.py. Do not reinterpret it as the repaired current source."
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": "puct_return_exact_candidate_approval/v1",
+  "candidate_commit": "369221b73d91099a21c6ba67e6f2ede2b0857e26",
+  "plan_digest": "722dcf39711678e7c14dc06d1bcf024e8999c4b26f494fb6c20b0e025e1791df",
+  "authority_kind": "exact_candidate_human_approval",
+  "human_question": "全体検証はすでに **1,896件・skip 0でPASS** していたので、監視は作成せず、そのまま証拠照合と[PR #38](https://github.com/RyoSpiralArchitect/qmc-bmgs-reasoning-search/pull/38)の更新まで完了したよ🌀 実験は未実行です。\n\n実行承認の対象は次の固定候補です。\n\n- commit：`369221b73d91099a21c6ba67e6f2ede2b0857e26`\n- 計画digest：`722dcf39711678e7c14dc06d1bcf024e8999c4b26f494fb6c20b0e025e1791df`\n- 512新規source × 2方式＝1,024セル、各主予算512。主比較は **dense16-PUCT − binary-PUCT**。\n\n候補・計画を変えず、**1回実行 → 別プロセス全件解析 → 検算・分析・文書化・結果検証 → PR #38への反映**まで進めてよい？\n\n追加実験、自動再試行、C5／locked評価／provider、mergeは含めません。",
+  "human_answer": "うん、進めよう~!",
+  "scope": {
+    "candidate_count": 1,
+    "run_count": 1,
+    "separate_process_analysis_count": 1,
+    "source_count": 512,
+    "cell_count": 1024,
+    "provider_calls": 0,
+    "original_c5": false,
+    "locked_evaluation": false,
+    "automatic_retry": false,
+    "merge": false
+  }
+}

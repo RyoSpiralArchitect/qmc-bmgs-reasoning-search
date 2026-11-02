@@ -90,7 +90,7 @@ def _validate(temporary_root: Path) -> None:
         print("ruff unavailable: lint check skipped", flush=True)
     else:
         run(["ruff", "check", "."])
-    run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"])
+    run([sys.executable, "-P", "-B", "scripts/run_repository_tests.py"])
     run([sys.executable, "scripts/verify_artifacts.py"])
     run([sys.executable, "-P", "-B", "scripts/check_feedback_budget_provenance.py"])
     run([sys.executable, "-P", "-B", "scripts/check_feedback_budget_design.py"])

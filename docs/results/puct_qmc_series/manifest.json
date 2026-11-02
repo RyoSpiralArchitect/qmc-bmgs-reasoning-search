@@ -1,0 +1,119 @@
+{
+  "studies": {
+    "hybrid": {
+      "date": "20261027",
+      "roots": [
+        524288,
+        524289,
+        524290,
+        524291
+      ],
+      "plan_sha256": "c472c63367e813407e556d849143c656ca3cb71d641bbc0958d885e29c02aaa7",
+      "plan_digest": "c65146b28f3cec39ceae7f956cc536c59c0cee2f300b6e94f5d08fe07045423e",
+      "cohort_sha256": "390e3c453853a6a94aaf291932deef1a6f8816da44266f4ad28a203b2d0cd2b0",
+      "local_summary_sha256": "8b23ef7a84bd9868045256c4dd6015ab6dd887175a1a604018fb9564382f4821",
+      "local_diagnostics_sha256": "f28bdb5c188e3f4232d766c264257af6368f808848732b1be62a5c6299d05ff9",
+      "totals_qmc_iid_puct": [
+        1096,
+        1091,
+        272
+      ],
+      "primary_gain_loss": [
+        22,
+        14
+      ],
+      "primary_mean": [
+        1,
+        256
+      ],
+      "primary_variance": [
+        1,
+        128
+      ],
+      "primary_interval": [
+        -0.00390625,
+        0.01171875
+      ],
+      "primary_readout": "NO_PRACTICAL_UPLIFT_SIGNAL",
+      "qualified_package_tests": 1940,
+      "skips": 0
+    },
+    "root": {
+      "date": "20261029",
+      "roots": [
+        1048576,
+        1048577,
+        1048578,
+        1048579
+      ],
+      "plan_sha256": "516218e330d5ef7ad29366d40136c08ee26611943614101c99ecc8925f2ecfce",
+      "plan_digest": "ecb21dfb8de2067c2783371d9747bec37f4a7d69e65556eae90eb5c5d1170b0b",
+      "cohort_sha256": "980646d3a3affaf7f46b4653017c1fc583955bdfbd6f74a48662bcf325f6768d",
+      "local_summary_sha256": "75750fb7f9f94081cbfee968f6093d1264da13b170d6291884024d0d0e40b2e5",
+      "local_diagnostics_sha256": "fead4cbe902a74b25402fa7d266af45a2729839268a2696c8ed4e9b3fec6958a",
+      "totals_qmc_iid_puct": [
+        1164,
+        1158,
+        286
+      ],
+      "primary_gain_loss": [
+        22,
+        2
+      ],
+      "primary_mean": [
+        5,
+        512
+      ],
+      "primary_variance": [
+        1255,
+        261632
+      ],
+      "primary_interval": [
+        0.0036439333900610714,
+        0.015887316609938928
+      ],
+      "primary_readout": "NO_PRACTICAL_UPLIFT_SIGNAL",
+      "qualified_package_tests": 1992,
+      "skips": 0
+    },
+    "unvisited": {
+      "date": "20261030",
+      "roots": [
+        2097152,
+        2097153,
+        2097154,
+        2097155
+      ],
+      "plan_sha256": "f0219802704e7aaa08045a870d1b28564f732d0eda3c8029bf0ee6e04272e55f",
+      "plan_digest": "77e32d57733a8d573fbeb98d1b97245ff655c86fce5a1192551d4bb7b20d5871",
+      "cohort_sha256": "0d4eaf7e240467e519174cd2025a4684f2adac0403369ac0edd176f938369054",
+      "local_summary_sha256": "8fda88dbd042940387c55053716781dabf75e403f12924a9b82184f3f168b3da",
+      "local_diagnostics_sha256": "ad1478c5e0d58f7f47847bf822d14fd96d8f8fdc8fcc25d47d594f178a398cf7",
+      "totals_qmc_iid_puct": [
+        1122,
+        1120,
+        278
+      ],
+      "primary_gain_loss": [
+        10,
+        0
+      ],
+      "primary_mean": [
+        5,
+        1024
+      ],
+      "primary_variance": [
+        2279,
+        1046528
+      ],
+      "primary_interval": [
+        0.0007581183422437996,
+        0.0090075066577562
+      ],
+      "primary_readout": "NO_PRACTICAL_UPLIFT_SIGNAL",
+      "qualified_package_tests": 2055,
+      "skips": 0
+    }
+  },
+  "outcomes_sha256": "b936e7d6bf1a904c89f7f4f70e9340a3ce4a04d9415889dd37a86c3dc968af96"
+}

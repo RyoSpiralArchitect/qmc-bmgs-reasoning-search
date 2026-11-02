@@ -34,7 +34,42 @@
 KV-cache、candidate refresh、batching、verifier latency、memory boundを含め、
 実際のtest-time compute allocationとして得かを測る。
 
-## Current decision
+## Current decision — 2026-10-24
+
+Correctness and auditable execution are necessary gates, not the research end
+point. After the portfolio, diversity and allocation development series, the
+next priority returns to the search-strength gate: compare the **current**
+single-stream policy with simple baselines on the same fresh sources, proposal,
+readout and explicit work limits. Older canary and newer development percentages
+are not a matched comparison. See the
+[current research map](research_status_20261024.md).
+
+Three focus decisions follow:
+
+1. Pause further ratio tuning and adaptive/shared-state scheduling. Behavioral
+   diversity produced complementary successes but did not establish an advantage
+   over full continuation; 384/128 gained 34 and lost 51 of 2,048 paired blocks
+   across 256 source clusters. Do not replace the negative primary with a
+   favorable secondary contrast.
+2. Separate the learned selection mean from the proposal prior and visit-driven
+   exploration schedule. A mean-off diagnostic must leave visits, material keys,
+   return updates and work accounting intact, and change only mean use in
+   selection. Scale 0 is not that control. An imprecise difference must not be
+   called proof that learning has no value.
+3. Keep score-budget competitiveness, actual total cost and transfer as separate
+   gates. The seven ledgers and proposal-internal diagnostics are useful, but
+   do not by themselves establish equal total compute. Typed-DSL transfer remains
+   a later no-retuning test, not an accomplished result.
+
+These are research priorities, not authorization to execute a new experiment,
+change a sealed plan, run C5/locked evaluation, contact a provider, or promote a
+default. The original methods, manifests and result records are preserved.
+
+## Historical decisions — D4 to the Countdown substrate
+
+The following chronology retains the decisions made at those stages. Future
+tense and experiment-specific permission statements below are historical, not
+current execution authority. The dated decision above governs current focus.
 
 D4ではcombined Sobol engineがcoverageを強く均一化した一方、successはIIDより低い。
 次にembeddingを複雑化すると原因が混ざるため、まずuniform sourceの作用点を分離する。

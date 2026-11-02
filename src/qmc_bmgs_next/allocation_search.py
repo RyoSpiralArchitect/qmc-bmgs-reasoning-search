@@ -1,4 +1,4 @@
-"""Fixed-allocation, isolated diversity channels for Countdown inference.
+"""Budget-matched, isolated fixed-allocation channels for Countdown inference.
 
 This is an additive development API, not an E4/C5 execution adapter. Branches
 reuse the unchanged Track A engine through its public API. No posterior, cache,
@@ -30,9 +30,6 @@ from qmc_bmgs.substrate.trace import (
 )
 
 
-# Reuse the reviewed stream construction and verified readout unchanged.
-from qmc_bmgs_next.diversity_search import _reduce_channels, branch_seed
-
 SCHEMA = "qmc-bmgs-feedback-allocation/v1"
 ARMS = ("single16", "equal16", "weighted16")
 _CHANNELS = {
@@ -41,9 +38,25 @@ _CHANNELS = {
     "weighted16": (("primary", 16), ("secondary", 16)),
 }
 _SEED_INDICES = {"single16": (0,), "equal16": (0, 1), "weighted16": (0, 1)}
+_PRIMARY_FRACTIONS = {"single16": (1, 1), "equal16": (1, 2), "weighted16": (3, 4)}
 
 
-_WEIGHTS = {"single16": (1,), "equal16": (1, 1), "weighted16": (3, 1)}
+def branch_seed(root_seed: int, index: int) -> int:
+    """Domain-separated, plan-stable stream keys, not independent observations."""
+    if type(root_seed) is not int or root_seed < 0:
+        raise ValueError("nonnegative plain root seed required")
+    if type(index) is not int or index not in (0, 1):
+        raise ValueError("branch index must be plain zero or one")
+    return int(
+        sha256_json(
+            {
+                "domain": "feedback-diversity-stream/v1",
+                "root_seed": root_seed,
+                "branch_index": index,
+            }
+        )[:16],
+        16,
+    )
 
 
 @dataclass(frozen=True)
@@ -63,8 +76,8 @@ class AllocationSearchSpec:
             "channels": [
                 {"name": name, "scale": scale} for name, scale in _CHANNELS[self.arm]
             ],
-            "allocation": "fixed_weights_floor_primary_remainder_to_last/v1",
-            "allocation_weights": list(_WEIGHTS[self.arm]),
+            "allocation": "fixed_axis_fraction_remainder_to_secondary/v1",
+            "primary_fraction": list(_PRIMARY_FRACTIONS[self.arm]),
             "shared_posterior": False,
             "shared_cache": False,
             "reallocate_unspent_work": False,
@@ -115,24 +128,23 @@ def channel_plan(
     if budget_profile.primary_axis != "legal_action_scores":
         raise ValueError("legal-action-score primary axis required")
     channels = _CHANNELS[spec.arm]
-    weights = _WEIGHTS[spec.arm]
-    total_weight = sum(weights)
+    count = len(channels)
+    numerator, denominator = _PRIMARY_FRACTIONS[spec.arm]
+    total_scores = budget_profile.budget.legal_action_scores
+    primary_scores = total_scores * numerator // denominator
+    if primary_scores < 1 or (count == 2 and total_scores - primary_scores < 1):
+        raise ValueError("primary budget cannot allocate one unit to each channel")
     global_limits = budget_profile.budget.to_dict()
     plans = []
-    allocated = {axis: 0 for axis in TRACK_A_WORK_AXES}
     for index, (name, scale) in enumerate(channels):
         limits = {
             axis: (
-                limit - allocated[axis]
-                if index == len(channels) - 1
-                else limit * weights[index] // total_weight
+                limit * numerator // denominator
+                if index == 0
+                else limit - limit * numerator // denominator
             )
             for axis, limit in global_limits.items()
         }
-        if limits["legal_action_scores"] < 1:
-            raise ValueError("primary budget cannot allocate one unit to each channel")
-        for axis in allocated:
-            allocated[axis] += limits[axis]
         # The profile is determined by its limits, not the arm label, so the
         # channel has the same engine identity as a matched standalone run.
         # This deliberately uses the existing feedback-channel profile naming.
@@ -155,6 +167,141 @@ def channel_plan(
         for axis in TRACK_A_WORK_AXES
     )
     return tuple(plans)
+
+
+def _diagnostics(channels):
+    rows, sequences, first_sequences = [], [], []
+    for channel in channels:
+        events = channel["search_record"]["events"]
+        charged = {axis: 0 for axis in TRACK_A_WORK_AXES}
+        first_exact = None
+        choices, first_choices = [], []
+        first_terminal = False
+        for event in events:
+            charge = event.get("charge")
+            if charge:
+                for axis in charged:
+                    charged[axis] += charge["delta"][axis]
+                if charged != charge["usage_after"]:
+                    raise TraceValidationError("branch charge accumulation mismatch")
+            if event["kind"] == "selection_committed":
+                choice = {
+                    k: event["payload"][k]
+                    for k in ("state", "action", "trajectory_index", "depth")
+                }
+                choices.append(choice)
+                if not first_terminal:
+                    first_choices.append(choice)
+            if event["kind"] == "terminal_verified":
+                first_terminal = True
+                if event["payload"]["verification"]["success"] and first_exact is None:
+                    first_exact = dict(charged)
+        finish = events[-1]["payload"]["summary"]
+        if charged != finish["ledger_usage"]:
+            raise TraceValidationError("branch final charge mismatch")
+        sequences.append(choices)
+        first_sequences.append(first_choices)
+        rows.append(
+            dict(
+                name=channel["name"],
+                exploration_seed=channel["exploration_seed"],
+                success=finish["success_any"],
+                terminal_count=finish["terminal_count"],
+                first_exact_work=first_exact,
+                choice_count=len(choices),
+                choice_sequence_digest=sha256_json(choices),
+                first_trajectory_digest=sha256_json(first_choices),
+            )
+        )
+    prefix = None
+    if len(sequences) == 2:
+        prefix = 0
+        for left, right in zip(*sequences):
+            if left != right:
+                break
+            prefix += 1
+    return dict(
+        branches=rows,
+        same_action_sequence=(sequences[0] == sequences[1] if len(rows) == 2 else None),
+        same_first_trajectory=(
+            first_sequences[0] == first_sequences[1] if len(rows) == 2 else None
+        ),
+        common_action_prefix_length=prefix,
+        complementary_success=(
+            rows[0]["success"] != rows[1]["success"] if len(rows) == 2 else None
+        ),
+    )
+
+
+def _reduce_channels(channels: list[dict], global_profile: TrackABudgetProfile):
+    usage = {axis: 0 for axis in TRACK_A_WORK_AXES}
+    terminals = []
+    valid = True
+    terminal_count = 0
+    primary_success = None
+    for index, channel in enumerate(channels):
+        record = channel["search_record"]
+        summary = record["events"][-1]["payload"]["summary"]
+        for axis in usage:
+            usage[axis] += summary["ledger_usage"][axis]
+        valid = valid and summary["budget_valid"]
+        terminal_count += summary["terminal_count"]
+        if index == 0:
+            primary_success = summary["success_any"]
+        for event in record["events"]:
+            if event["kind"] != "terminal_verified":
+                continue
+            p = event["payload"]
+            v = p["verification"]
+            if type(v["final_value"]) is not int or not v["source_use_exact"]:
+                raise TraceValidationError("incomplete terminal cannot be read out")
+            terminals.append(
+                {
+                    "channel_index": index,
+                    "channel_name": channel["name"],
+                    "observation_index": p["observation_index"],
+                    "success": v["success"],
+                    "absolute_error": abs(v["final_value"] - v["target"]),
+                    "verification": v,
+                    "actions": p["actions"],
+                }
+            )
+    limits = global_profile.budget.to_dict()
+    if any(usage[axis] > limits[axis] for axis in usage):
+        raise TraceValidationError("combined work exceeds the shared budget")
+    exact = [row for row in terminals if row["success"]]
+    readout = (
+        exact[0]
+        if exact
+        else min(
+            terminals,
+            key=lambda row: (
+                row["absolute_error"],
+                row["channel_index"],
+                row["observation_index"],
+            ),
+            default=None,
+        )
+    )
+    # No new verifier call is used for answer selection: these witnesses have
+    # already been charged and verified within the underlying search.
+    return {
+        "success_any": bool(exact),
+        "minimum_terminal_error": (
+            min(row["absolute_error"] for row in terminals) if terminals else None
+        ),
+        "terminal_count": terminal_count,
+        "exact_terminal_count": len(exact),
+        "readout": readout,
+        "readout_extra_verifier_calls": 0,
+        "ledger_usage": usage,
+        "unspent_work": {axis: limits[axis] - usage[axis] for axis in usage},
+        "budget_valid": valid,
+        "primary_allocated_budget_success": primary_success,
+        "diversity": _diagnostics(channels),
+        "protects_full_budget_baseline": False,
+        "provider_calls": 0,
+    }
 
 
 def _assemble(task, spec, budget_profile, exploration_seed, proposal, channels):
@@ -234,12 +381,12 @@ def replay_allocation_search_bytes(
         "deterministic_digest",
     }
     if type(parsed) is not dict or set(parsed) != fields:
-        raise TraceValidationError("closed allocation record required")
+        raise TraceValidationError("closed diversity record required")
     if canonical_trace_bytes(parsed) != raw:
-        raise TraceValidationError("canonical allocation bytes required")
+        raise TraceValidationError("canonical diversity bytes required")
     core = {k: v for k, v in parsed.items() if k != "deterministic_digest"}
     if sha256_json(core) != parsed["deterministic_digest"]:
-        raise TraceValidationError("allocation record digest mismatch")
+        raise TraceValidationError("diversity record digest mismatch")
     expected = {
         "schema_version": SCHEMA,
         "task": task.to_dict(),
@@ -251,7 +398,7 @@ def replay_allocation_search_bytes(
     if canonical_trace_bytes({k: parsed[k] for k in expected}) != canonical_trace_bytes(
         expected
     ):
-        raise TraceValidationError("allocation inputs do not match reviewed inputs")
+        raise TraceValidationError("diversity inputs do not match reviewed inputs")
     plan = channel_plan(spec, budget_profile)
     if type(parsed["channels"]) is not list or len(parsed["channels"]) != len(plan):
         raise TraceValidationError("incomplete diversity channel set")
@@ -301,5 +448,5 @@ def replay_allocation_search_bytes(
         task, spec, budget_profile, exploration_seed, proposal, channels
     )
     if reproduced.canonical_bytes != raw:
-        raise TraceValidationError("allocation summary does not match complete replay")
+        raise TraceValidationError("diversity summary does not match complete replay")
     return raw

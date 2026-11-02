@@ -8,7 +8,39 @@ engineering research repoです。
 固定した計算予算で探索成功率が高いか、計算の使い方が良いか、探索挙動として
 面白いかを検証し、実際に強いreasoning-time searchへ収束させることです。
 
-## Current read
+## Current read — 2026-10-24
+
+現在地の入口は [研究の現在地と未達の比較](docs/research_status_20261024.md) です。
+実験の正確な再現と、探索アルゴリズムの優位は別の到達点として扱います。
+
+- 現在の開発対象はprovider-free Countdownのcanonical DAG探索です。初期の
+  token-prefix/QMC/semantic-strata実装とは層を分けて説明します。
+- 現行single16は、greedy-rollout proposal、IIDの次元正規化摂動、終端報酬の
+  edge平均を使う探索です。厳密なBayesian posteriorや、後続state価値を用いた
+  Bellman bootstrapとは主張しません。[機構の対応表](docs/algorithm.md)
+- 新256 source × 固定8 seedの配分比較では、総score cap 512でsingle16は
+  212/2,048、equal16は185/2,048、weighted16は195/2,048でした。唯一のprimary
+  weighted16−single16はgain 34 / loss 51 / net −17で、固定判定は
+  `NO_PRACTICAL_UPLIFT_SIGNAL`。winnerとscientific decisionはnullのままです。
+- 別streamによる相補成功は確認できましたが、切り捨てた継続成功を補えませんでした。
+  等分・3:1配分を新defaultにせず、配分比率の追加調整をいったん止めます。
+- 次の焦点は、**現行探索が同じ条件のgreedy/beam/PUCTに対して価値を持つか**、
+  **学習した平均値がpriorと訪問回数依存の摂動を超えて役立つか**です。
+  旧canaryと新cohortの成功率を直接比較して、この問いに答えたことにはしません。
+- 等しいscore上限は等しい総費用ではありません。proposal内部の計算、全7 work軸、
+  未使用予算、時間・メモリを分け、費用効率とtyped-DSL transferは未達のgateとして残します。
+
+[配分比較と負の結果の内訳](docs/observations/countdown_feedback_allocation_recovery_20261024.md)、
+[結果パッケージ検証](docs/reviews/countdown_feedback_allocation_recovery_result_20261024.md)
+を参照してください。元の解析中断はUNKNOWNのまま保存し、承認された別attemptの
+全件replayで結果を得ました。新しい実験、C5/locked評価、provider呼び出し、
+実装変更やdefault昇格を、この文書更新が認可することはありません。
+
+## Historical path through v6/v7
+
+以下は各段階での観察と、その時点での次の判断を残した経緯です。
+「次」「認可待ち」などは当時の記録であり、現在の実行指示ではありません。
+現在の優先順位は上のdated summaryを参照してください。
 
 - D3ではoracle-aligned semantic strataのpositive controlが成立しました。
 - D4ではcombined Sobol engineがcoverageを約10倍均一化し、同じLM-node capへ

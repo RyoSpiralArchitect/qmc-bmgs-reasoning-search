@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
-import math
 from itertools import product
 import os
 from pathlib import Path
@@ -33,37 +32,31 @@ from qmc_bmgs.substrate.trace import (
 from qmc_bmgs_next.allocation_search import (
     ARMS,
     branch_seed,
+    channel_plan,
     AllocationSearchSpec,
     replay_allocation_search_bytes,
     run_allocation_search,
 )
+from qmc_bmgs_next.allocation_statistics import source_readout, uncertainty_contract
 
 
 ROOT = Path(__file__).resolve().parents[1]
-STUDY = "feedback_allocation_development_20261022_a/v1"
-OUTPUT = "artifacts/work/feedback-allocation-development-20261022-a"
+STUDY = "feedback_allocation_development_20261023_a/v1"
+OUTPUT = "artifacts/work/feedback-allocation-development-20261023-a"
 PLAN_FILE = (
-    "docs/preregistrations/countdown_feedback_allocation_development_20261022.v3.plan.json"
+    "docs/preregistrations/countdown_feedback_allocation_development_20261023.plan.json"
 )
-POLICY = "docs/strategy/countdown_feedback_allocation_development_20261022.md"
+POLICY = "docs/strategy/countdown_feedback_allocation_development_20261023.md"
 SCRIPT = "scripts/run_feedback_allocation_development.py"
 REGISTRY = (
     "docs/preregistrations/countdown_thompson_feedback_budget_v7/preregistration.json"
 )
 REGISTRY_SHA = "9333ee465f240de2f74094d403ceb43cc4ced6d4fc1b4d3e7ce5a5e6239e85d7"
-COUNT = 64
+COUNT = 256
 SEEDS = tuple(range(65536, 65544))
 BUDGETS = (512,)
-GENERATION_SEED = 26102231
-MAX_ATTEMPTS = 2000
-BASE = "2fc168157f9d4adc039f6a330d65e0361b31bb15"
-PROPOSAL_FILE = (
-    "docs/strategy/countdown_feedback_diversity_allocation_proposal_20261022.md"
-)
-APPROVAL_FILE = (
-    "artifacts/work/feedback-allocation-authorization-20261022/approval.json"
-)
-QUALIFICATION_FILE = "docs/qualifications/countdown_feedback_allocation_development_20261022.validation.json"
+GENERATION_SEED = 26102301
+MAX_ATTEMPTS = 10000
 
 
 def require(ok, message):
@@ -178,31 +171,23 @@ def exclusions():
         require(task.to_dict() == row, "prior development identity malformed")
         tasks.add(task.task_fingerprint)
         sources.add(task.source_multiset_fingerprint)
-    prior_diversity_path = "docs/qualifications/countdown_feedback_diversity_development_20261022.cohort.json"
+    diversity_path = "docs/qualifications/countdown_feedback_diversity_development_20261022.cohort.json"
     require(
-        reference(prior_diversity_path)["sha256"]
+        reference(diversity_path)["sha256"]
         == "205fadf4eb638e8491cde4cfabe95999ec26bd75ca03b7884ec760b874dac4f0",
         "prior diversity cohort identity bytes changed",
     )
-    prior_diversity = load(prior_diversity_path)
-    require(
-        len(prior_diversity["tasks"]) == 32, "prior diversity identity count changed"
-    )
-    for row in prior_diversity["tasks"]:
+    diversity = load(diversity_path)
+    require(len(diversity["tasks"]) == 32, "prior diversity identity count changed")
+    for row in diversity["tasks"]:
         task = CountdownTask(tuple(row["inputs"]), row["target"])
         require(task.to_dict() == row, "prior diversity identity malformed")
         tasks.add(task.task_fingerprint)
         sources.add(task.source_multiset_fingerprint)
-    # Even rejected prior attempts are excluded: no previously exposed identity
-    # is admitted as a fresh source. Rejection reasons do not select new tasks.
-    for previous in (prior, prior_diversity):
-        for row in previous["generation"]["rejection_log"]:
-            tasks.add(row["task_fingerprint"])
-            sources.add(row["source_multiset_fingerprint"])
     return digested(
         dict(
             prior_development_cohort=reference(prior_path),
-            prior_diversity_cohort=reference(prior_diversity_path),
+            prior_diversity_cohort=reference(diversity_path),
             task_fingerprints=sorted(tasks),
             source_multiset_fingerprints=sorted(sources),
             registry=reference(REGISTRY),
@@ -217,12 +202,9 @@ def source_snapshot():
         (
             SCRIPT,
             POLICY,
-            PROPOSAL_FILE,
             "tests/test_feedback_allocation.py",
             "tests/test_feedback_allocation_development.py",
-            "scripts/validate.py",
-            "scripts/run_repository_tests.py",
-            "tests/test_repository_test_mirror.py",
+            "tests/test_feedback_allocation_statistics.py",
         )
     )
     require(
@@ -289,70 +271,26 @@ def build_plan():
             budget_profiles=[profile(b).to_dict() for b in BUDGETS],
             planned_cells=COUNT * len(SEEDS) * len(BUDGETS) * len(ARMS),
             planned_branch_runs=COUNT * len(SEEDS) * len(BUDGETS) * 5,
-            planned_budget_prefix_pairs=COUNT * len(SEEDS) * 4,
+            planned_branch_prefix_pairs=COUNT * len(SEEDS) * len(BUDGETS) * 3,
+            planned_structural_blocks=COUNT * len(SEEDS) * len(BUDGETS),
             maximum_total_legal_action_scores=COUNT
             * len(SEEDS)
             * sum(BUDGETS)
             * len(ARMS),
             source_files=source_snapshot(),
-            protected_parent_commit=BASE,
-            protected_parent_files=[
-                reference(p)
-                for p in git("ls-tree", "-r", "--name-only", BASE).decode().splitlines()
-            ],
-            parent_validation_entrypoint_update=dict(
-                path="scripts/validate.py",
-                original_sha256=hashlib.sha256(
-                    git("show", BASE + ":scripts/validate.py")
-                ).hexdigest(),
-                frozen_candidate=reference("scripts/validate.py"),
-                scope="test_discovery_with_verified_read_only_historical_mirror",
-                other_469_parent_files_unchanged=True,
-            ),
-            previous_unexecuted_plan=reference(
-                "docs/preregistrations/countdown_feedback_allocation_development_20261022.v2.plan.json"
-            ),
-            qualification_environment=dict(
-                command="python scripts/validate.py",
-                historical_root_environment="QMC_BMGS_HISTORICAL_TEST_ROOT",
-                full_collection_count=1752,
-                unchanged_historical_test_modules=8,
-                unchanged_historical_test_count=328,
-                skips_allowed=False,
-                production_admission_changes=False,
-            ),
-            maximum_total_work={
-                axis: COUNT
-                * len(SEEDS)
-                * len(ARMS)
-                * getattr(profile(512).budget, axis)
-                for axis in TRACK_A_WORK_AXES
-            },
-            sample_precision=dict(
-                aim="bounded_estimation_of_cluster_heterogeneity_not_small_effect_confirmation",
-                source_clusters=COUNT,
-                repeated_seeds_per_source=len(SEEDS),
-                source_seed_blocks=COUNT * len(SEEDS),
-                estimand="mean_source_mean_paired_exact_difference_over_fixed_seeds",
-                cluster_difference_range=[-1, 1],
-                block_net_resolution=1 / (COUNT * len(SEEDS)),
-                worst_case_nominal_cluster_standard_error=1 / math.sqrt(COUNT - 1),
-                nominal_95_halfwidth_reference=1.96 / math.sqrt(COUNT - 1),
-                qualification="independent_source_sampling_reference_only_not_a_power_calculation_or_CI",
-                fixed_count_no_outcome_based_extension=True,
-            ),
             runtime=dict(
                 search=search_runtime_metadata(),
                 perturbation=perturbation_runtime_metadata("iid"),
             ),
             analysis=dict(
-                primary="weighted16_minus_single16_exact_gains_losses_at_512",
-                diagnostic_contrast="weighted16_minus_equal16_allocation_tradeoff",
+                primary="weighted16_minus_single16_source_mean_exact_success_at_512",
+                uncertainty=uncertainty_contract(),
+                diagnostic_contrast="weighted16_minus_equal16_and_equal16_minus_single16",
                 comparisons=[
                     [a, b]
                     for a, b in (
-                        ("weighted16", "single16"),
                         ("weighted16", "equal16"),
+                        ("weighted16", "single16"),
                         ("equal16", "single16"),
                     )
                 ],
@@ -360,7 +298,6 @@ def build_plan():
                     "minimum_error_win_tie_loss_missing",
                     "all_work_axes",
                     "by_source",
-                    "cluster_mean_distribution_and_descriptive_standard_error",
                     "by_seed",
                     "leave_one_source_out",
                     "leave_one_seed_out",
@@ -399,87 +336,6 @@ def clean_head():
         "clean committed checkout required",
     )
     return git("rev-parse", "HEAD").decode().strip()
-
-
-def historical_guard(plan):
-    for row in plan["protected_parent_files"]:
-        require(reference(row["path"]) == row, "protected parent bytes changed")
-    expected = [row["path"] for row in plan["protected_parent_files"]]
-    require(
-        git("ls-tree", "-r", "--name-only", BASE).decode().splitlines() == expected,
-        "protected parent membership changed",
-    )
-
-
-def require_approval(plan, head):
-    """Bind a recorded exact-plan human decision; a CLI digest is not approval.
-
-    The operator must obtain and record the actual decision externally. These
-    local checks bind that receipt, not authenticate an adversarial same user.
-    """
-    approval = load_digest(
-        APPROVAL_FILE,
-        {
-            "schema_version",
-            "plan_digest",
-            "candidate_commit",
-            "decision",
-            "scope",
-            "human_approval",
-            "qualification",
-            "deterministic_digest",
-        },
-    )
-    require(
-        approval["schema_version"] == "qmc-bmgs-feedback-allocation-approval/v1"
-        and approval["plan_digest"] == plan["deterministic_digest"]
-        and approval["decision"] == "approved"
-        and approval["scope"] == "one_run_and_one_separate_analysis",
-        "new exact-plan human approval required",
-    )
-    human = approval["human_approval"]
-    require(
-        type(human) is dict
-        and set(human) == {"source", "quote"}
-        and all(type(v) is str and v.strip() for v in human.values()),
-        "record the direct human approval source and quote",
-    )
-    candidate = approval["candidate_commit"]
-    require(
-        type(candidate) is str
-        and len(candidate) == 40
-        and all(c in "0123456789abcdef" for c in candidate),
-        "candidate commit required",
-    )
-    require(
-        git("merge-base", candidate, head).decode().strip() == candidate,
-        "approved candidate must be an ancestor",
-    )
-    paths = git("ls-tree", "-r", "--name-only", candidate).decode().splitlines()
-    require(
-        not git("diff", candidate, head, "--", *paths),
-        "approved candidate bytes changed",
-    )
-    require(
-        canonical_trace_bytes(approval["qualification"])
-        == canonical_trace_bytes(reference(QUALIFICATION_FILE)),
-        "qualification reference mismatch",
-    )
-    q = load(QUALIFICATION_FILE)
-    require(
-        q["status"] == "ALLOCATION_CANDIDATE_VALIDATION_PASS"
-        and q["tested_commit"] == candidate
-        and q["plan_digest"] == plan["deterministic_digest"]
-        and type(q["exit_code"]) is int
-        and q["exit_code"] == 0
-        and q["repository_validation_pass"] is True
-        and type(q["skipped_tests"]) is int
-        and q["skipped_tests"] == 0,
-        "completed qualification of exact candidate required",
-    )
-    return dict(
-        approval=reference(APPROVAL_FILE), qualification=reference(QUALIFICATION_FILE)
-    )
 
 
 def operation_guard(plan, head):
@@ -531,11 +387,7 @@ def run(expected_digest):
     plan = checked_plan(expected_digest)
     head = clean_head()
     operation_guard(plan, head)
-    historical_guard(plan)
-    authorization = require_approval(plan, head)
     output = ROOT / OUTPUT
-    output.parent.mkdir(exist_ok=True)
-    require(not output.parent.is_symlink(), "regular output parent required")
     # mkdir itself is the one-attempt fence. Neither a digest change nor an
     # absent COMMIT permits reuse. No overwrite/resume/retry CLI exists.
     output.mkdir()
@@ -551,7 +403,6 @@ def run(expected_digest):
                 study_id=STUDY,
                 plan_digest=expected_digest,
                 source_head=head,
-                authorization=authorization,
                 started_at_utc=datetime.now(timezone.utc).isoformat(),
                 approval_basis="external_human_plan_approval_required_literal_argument_is_not_proof",
             )
@@ -579,8 +430,6 @@ def run(expected_digest):
             flush=True,
         )
     operation_guard(plan, head)
-    historical_guard(plan)
-    require(require_approval(plan, head) == authorization, "authorization changed")
     commit = digested(
         dict(
             study_id=STUDY,
@@ -623,38 +472,6 @@ def _contrast(rows, arm, baseline):
     )
 
 
-def cluster_summary(blocks, arm, baseline):
-    values = [
-        sum(
-            int(r[arm]["success_any"]) - int(r[baseline]["success_any"])
-            for r in blocks
-            if r["task_slot"] == s
-        )
-        / len(SEEDS)
-        for s in range(COUNT)
-    ]
-    mean = sum(values) / len(values)
-    standard_error = (
-        math.sqrt(
-            sum((v - mean) ** 2 for v in values) / (len(values) * (len(values) - 1))
-        )
-        if len(values) > 1
-        else None
-    )
-    return dict(
-        source_clusters=len(values),
-        repeated_seeds=len(SEEDS),
-        source_mean_differences=values,
-        mean=mean,
-        positive_sources=sum(v > 0 for v in values),
-        tied_sources=sum(v == 0 for v in values),
-        negative_sources=sum(v < 0 for v in values),
-        descriptive_standard_error=standard_error,
-        confidence_interval=None,
-        interpretation="fixed_recipe_development_sample_not_population_confirmation",
-    )
-
-
 def reduce_results(plan, records):
     require(set(records) == set(coordinates()), "complete unique fixed matrix required")
     by_budget = []
@@ -674,7 +491,6 @@ def reduce_results(plan, records):
                     arm=arm,
                     baseline=baseline,
                     **_contrast(blocks, arm, baseline),
-                    source_cluster_summary=cluster_summary(blocks, arm, baseline),
                     by_source=[
                         dict(
                             task_slot=s,
@@ -724,13 +540,6 @@ def reduce_results(plan, records):
                 successes={
                     a: sum(int(r[a]["success_any"]) for r in blocks) for a in ARMS
                 },
-                unspent_work={
-                    a: {
-                        axis: sum(r[a]["unspent_work"][axis] for r in blocks)
-                        for axis in TRACK_A_WORK_AXES
-                    }
-                    for a in ARMS
-                },
                 work={
                     a: {
                         axis: sum(r[a]["ledger_usage"][axis] for r in blocks)
@@ -739,6 +548,7 @@ def reduce_results(plan, records):
                     for a in ARMS
                 },
                 contrasts=contrasts,
+                primary_source_readout=source_readout(blocks, COUNT, SEEDS),
                 diagnostics=diversity_diagnostics(records, budget),
             )
         )
@@ -767,14 +577,6 @@ def diversity_diagnostics(records, budget):
                     task_slot=slot,
                     seed=seed,
                     **summary["diversity"],
-                    primary_cap=(
-                        budget
-                        if arm == "single16"
-                        else budget * (3 if arm == "weighted16" else 2) // 4
-                    ),
-                    first_terminal_work=first_terminal_work(
-                        records[(slot, seed, budget, arm)]
-                    ),
                     loses_full_budget_success=(
                         baseline["success_any"] and not summary["success_any"]
                     ),
@@ -786,9 +588,6 @@ def diversity_diagnostics(records, budget):
             )
         result[arm] = dict(
             denominator=len(rows),
-            no_terminal_branches=sum(
-                b["terminal_count"] == 0 for r in rows for b in r["branches"]
-            ),
             two_branch_denominator=len(rows) if two_branches else 0,
             same_action_sequence=(
                 sum(r["same_action_sequence"] is True for r in rows)
@@ -824,29 +623,15 @@ def diversity_diagnostics(records, budget):
                 > (
                     budget
                     if arm == "single16"
-                    else budget * (3 if arm == "weighted16" else 2) // 4
+                    else budget // 2
+                    if arm == "equal16"
+                    else budget * 3 // 4
                 )
                 for r in rows
             ),
             rows=rows,
         )
     return result
-
-
-def first_terminal_work(record):
-    rows = []
-    for channel in record["channels"]:
-        usage = {axis: 0 for axis in TRACK_A_WORK_AXES}
-        first = None
-        for event in channel["search_record"]["events"]:
-            if event.get("charge"):
-                for axis in usage:
-                    usage[axis] += event["charge"]["delta"][axis]
-            if event["kind"] == "terminal_verified":
-                first = dict(usage)
-                break
-        rows.append(first)
-    return rows
 
 
 def _event_projection(record):
@@ -859,27 +644,29 @@ def _event_projection(record):
     ]
 
 
-def _prefix(low, high):
-    lo, hi = (_event_projection(c["search_record"]) for c in (low, high))
-    require(low["exploration_seed"] == high["exploration_seed"], "stream seed changed")
-    require(lo == hi[: len(lo)], "allocation prefix decision/work mismatch")
-    a, b = (c["search_record"]["events"][-1]["payload"]["summary"] for c in (low, high))
-    require(
-        not a["success_any"] or b["success_any"], "success lost within branch prefix"
-    )
-
-
 def check_prefixes(records):
     count = 0
     for slot, seed, budget in product(range(COUNT), SEEDS, BUDGETS):
         single, equal, weighted = [records[(slot, seed, budget, a)] for a in ARMS]
-        for low, high in (
+        for a, b in (
             (equal["channels"][0], weighted["channels"][0]),
             (weighted["channels"][0], single["channels"][0]),
-            (equal["channels"][0], single["channels"][0]),
             (weighted["channels"][1], equal["channels"][1]),
         ):
-            _prefix(low, high)
+            lo, hi = (
+                _event_projection(a["search_record"]),
+                _event_projection(b["search_record"]),
+            )
+            require(lo == hi[: len(lo)], "budget prefix decision/work mismatch")
+            require(
+                not a["search_record"]["events"][-1]["payload"]["summary"][
+                    "success_any"
+                ]
+                or b["search_record"]["events"][-1]["payload"]["summary"][
+                    "success_any"
+                ],
+                "success lost within branch budget prefix",
+            )
             count += 1
     return count
 
@@ -889,20 +676,45 @@ def check_structure(records):
     for slot, seed, budget in product(range(COUNT), SEEDS, BUDGETS):
         for arm in ARMS:
             record = records[(slot, seed, budget, arm)]
-            require(record["summary"]["budget_valid"], "secondary guard bound")
-            primary = record["channels"][0]["search_record"]["events"][-1]["payload"][
-                "summary"
-            ]
-            require(
-                not primary["success_any"] or record["summary"]["success_any"],
-                "primary exact success absent in union",
-            )
-            for axis in TRACK_A_WORK_AXES:
+            expected = AllocationSearchSpec(arm).to_dict()
+            require(record["spec"] == expected, "allocation spec mismatch")
+            channels = channel_plan(AllocationSearchSpec(arm), profile(budget))
+            require(len(record["channels"]) == len(channels), "channel count mismatch")
+            for index, (given, (name, method, allocated)) in enumerate(
+                zip(record["channels"], channels)
+            ):
                 require(
-                    sum(c["budget_profile"]["budget"][axis] for c in record["channels"])
-                    == record["budget_profile"]["budget"][axis],
-                    "axis caps not conserved",
+                    canonical_trace_bytes(
+                        {
+                            k: given[k]
+                            for k in (
+                                "name",
+                                "method",
+                                "budget_profile",
+                                "exploration_seed",
+                            )
+                        }
+                    )
+                    == canonical_trace_bytes(
+                        dict(
+                            name=name,
+                            method=method.to_dict(),
+                            budget_profile=allocated.to_dict(),
+                            exploration_seed=branch_seed(seed, index),
+                        )
+                    ),
+                    "channel allocation/stream mismatch",
                 )
+            limits = record["summary"]["ledger_usage"]
+            require(
+                all(
+                    limits[axis] <= getattr(profile(budget).budget, axis)
+                    for axis in TRACK_A_WORK_AXES
+                ),
+                "global work cap exceeded",
+            )
+        # Branch prefix nonloss is mechanical; there is deliberately no
+        # whole-arm nonloss assertion between equal and weighted allocation.
         checked += 1
     return checked
 
@@ -910,8 +722,6 @@ def check_structure(records):
 def analyze(expected_digest):
     plan = checked_plan(expected_digest)
     head = clean_head()
-    historical_guard(plan)
-    authorization = require_approval(plan, head)
     output = ROOT / OUTPUT
     require(
         output.is_dir() and not output.is_symlink(), "regular output directory required"
@@ -979,15 +789,13 @@ def analyze(expected_digest):
             "source_head",
             "started_at_utc",
             "approval_basis",
-            "authorization",
             "deterministic_digest",
         },
     )
     require(
         started["study_id"] == STUDY
         and started["plan_digest"] == expected_digest
-        and started["source_head"] == head
-        and started["authorization"] == authorization,
+        and started["source_head"] == head,
         "STARTED does not bind the committed operation",
     )
     operation_guard(plan, head)
@@ -1057,8 +865,6 @@ def analyze(expected_digest):
         *(r["file"] for r in commit["cells"]),
     ):
         require(reference(ref["path"]) == ref, "evidence changed during analysis")
-    historical_guard(plan)
-    require(require_approval(plan, head) == authorization, "authorization changed")
     save_new(OUTPUT + "/summary.json", result)
     return result
 

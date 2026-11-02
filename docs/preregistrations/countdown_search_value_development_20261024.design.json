@@ -1,0 +1,149 @@
+{
+  "schema": "qmc-bmgs-search-value-development-design/v1",
+  "status": "DESIGN_ONLY_NOT_EXECUTABLE",
+  "date": "2026-10-24",
+  "implemented": false,
+  "cohort_generated": false,
+  "execution_authorized": false,
+  "candidate_commit": null,
+  "runtime_digest": null,
+  "executable_plan_digest": null,
+  "source_reference_commit": "70e27cf8352f2285bd0272dcb0008c5cf53edca7",
+  "purpose": "Current single16 competitiveness against fixed PUCT, with selection-mean diagnostic; not another allocation experiment.",
+  "methods": [
+    {
+      "id": "single16",
+      "rows_per_source": 4,
+      "implementation": "existing",
+      "source": "iid",
+      "prior_bonus": 1,
+      "posterior_sd_scale": 1,
+      "dimension_normalized": true,
+      "terminal_value_scale": 16,
+      "greedy_anchor_trajectory_count": 0,
+      "selection_mean_coefficient": 1
+    },
+    {
+      "id": "selection-mean-off",
+      "rows_per_source": 4,
+      "implementation": "proposed_not_implemented",
+      "source": "iid",
+      "prior_bonus": 1,
+      "posterior_sd_scale": 1,
+      "dimension_normalized": true,
+      "terminal_value_scale": 16,
+      "greedy_anchor_trajectory_count": 0,
+      "selection_mean_coefficient": 0,
+      "visits_means_m2_update_rules": "unchanged",
+      "other_learning_removed": false
+    },
+    {
+      "id": "greedy",
+      "rows_per_source": 1,
+      "implementation": "existing",
+      "selected_source": "none",
+      "exploration_seed": 0
+    },
+    {
+      "id": "beam2",
+      "rows_per_source": 1,
+      "implementation": "existing",
+      "beam_width": 2,
+      "selected_source": "none",
+      "exploration_seed": 0
+    },
+    {
+      "id": "puct",
+      "rows_per_source": 1,
+      "implementation": "existing",
+      "c_puct": 1,
+      "terminal_return": "binary_exact",
+      "root_noise": false,
+      "selected_source": "none",
+      "exploration_seed": 0
+    }
+  ],
+  "proposal": "greedy_rollout_target_error/v1",
+  "cohort": {
+    "sources": 128,
+    "input_count": 6,
+    "input_min": 1,
+    "input_max": 10,
+    "target_min": 100,
+    "target_max": 999,
+    "generator_seed": 26102401,
+    "max_attempts": 10000,
+    "root_seeds": [
+      131072,
+      131073,
+      131074,
+      131075
+    ],
+    "branch_index": 0,
+    "stream_derivation": "feedback-diversity-stream/v1",
+    "eligibility": "first source-unique solvable tasks outside all authenticated historical, fixture and reserved identity exclusions",
+    "exclusions_digest": null,
+    "search_outcome_or_hardness_selection": false,
+    "not_original_locked_evaluation": true
+  },
+  "cell_count": 1408,
+  "branch_count": 1408,
+  "primary_axis": "legal_action_scores",
+  "per_cell_caps": {
+    "proposal_state_evaluations": 100000,
+    "proposal_action_scores": 100000,
+    "legal_action_scores": 512,
+    "generated_perturbation_coordinates": 100000,
+    "edge_selections": 100000,
+    "transitions": 100000,
+    "verifier_calls": 100000
+  },
+  "maximum_primary_work": 720896,
+  "primary": {
+    "contrast": "single16-minus-puct",
+    "unit": "source",
+    "n_sources": 128,
+    "source_difference": "mean_four_fixed_seeds(single16 exact success) - one_deterministic_puct_exact_success",
+    "sample_variance_denominator": 127,
+    "interval": "mean +/- 2 * source_sd / sqrt(n_sources)",
+    "interval_type": "model_based_approximate_not_guaranteed_coverage",
+    "practical_uplift": 0.02,
+    "maximum_half_width": 0.05,
+    "minimum_sources_for_interval": 64,
+    "zero_variance": "null_interval_UNRESOLVED",
+    "incomplete_or_invalid_matrix": "INCOMPLETE_OR_INVALID_no_complete_study_readout",
+    "decision_order": [
+      "incomplete_or_invalid",
+      "fewer_than_64_or_zero_variance_UNRESOLVED",
+      "half_width_gt_0.05_IMPRECISE",
+      "lower_gt_0.02_PROMISING_FOR_FRESH_CONFIRMATION",
+      "upper_lte_0.02_NO_PRACTICAL_UPLIFT_SIGNAL",
+      "otherwise_UNRESOLVED"
+    ],
+    "power_guarantee": false
+  },
+  "diagnostic_contrasts": [
+    "single16-minus-selection-mean-off",
+    "single16-minus-greedy",
+    "single16-minus-beam2"
+  ],
+  "diagnostic_claim_limit": "descriptive; no replacement primary, equivalence, universal absence or default promotion",
+  "frozen_attempt_rerun": false,
+  "automatic_retry": false,
+  "automatic_resume": false,
+  "provider_calls": false,
+  "original_c5": false,
+  "locked_evaluation": false,
+  "new_allocation_ratios": false,
+  "adaptive_scheduler": false,
+  "equal_total_compute_claim": false,
+  "proposal_internal_work": "diagnostic; complete systems cost gate remains open",
+  "winner": null,
+  "scientific_decision": null,
+  "later_execution_gates": [
+    "versioned additive implementation and fixtures",
+    "authenticated identity exclusions and exact source/runtime/method/analysis/attempt manifests",
+    "full candidate qualification and review",
+    "separate exact-candidate human execution authority"
+  ]
+}

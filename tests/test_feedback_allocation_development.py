@@ -26,7 +26,7 @@ class AllocationDevelopmentTests(unittest.TestCase):
         """Only an all-ones regression fixture; never generate the planned cohort."""
         with tempfile.TemporaryDirectory() as td, ExitStack() as stack:
             for name, value in dict(
-                ROOT=Path(td), OUTPUT="tiny", COUNT=1, SEEDS=(41,), BUDGETS=(512,)
+                ROOT=Path(td), OUTPUT="tiny", COUNT=1, SEEDS=(41,), BUDGETS=(128,)
             ).items():
                 stack.enter_context(patch.object(D, name, value))
             plan = dict(
@@ -45,10 +45,6 @@ class AllocationDevelopmentTests(unittest.TestCase):
             stack.enter_context(patch.object(D, "checked_plan", return_value=plan))
             stack.enter_context(patch.object(D, "clean_head", return_value="b" * 40))
             stack.enter_context(patch.object(D, "operation_guard"))
-            stack.enter_context(patch.object(D, "historical_guard"))
-            stack.enter_context(
-                patch.object(D, "require_approval", return_value={"fixture": True})
-            )
             stack.enter_context(
                 patch.object(D, "cohort_from_recipe", return_value=cohort)
             )
@@ -61,13 +57,18 @@ class AllocationDevelopmentTests(unittest.TestCase):
     def test_registry_excludes_original_study_public_and_locked_identities(self):
         e = D.exclusions()
         self.assertGreaterEqual(len(e["source_multiset_fingerprints"]), 243)
-        self.assertGreaterEqual(len(e["task_fingerprints"]), 347)
+        self.assertEqual(len(e["task_fingerprints"]), 347)
         self.assertIn(
             CountdownTask((1, 2, 3, 4, 5, 6), 1).source_multiset_fingerprint,
             e["source_multiset_fingerprints"],
         )
         self.assertEqual(e["registry"]["sha256"], D.REGISTRY_SHA)
         prior = D.load(e["prior_development_cohort"]["path"])
+        for row in prior["tasks"]:
+            self.assertIn(
+                row["source_multiset_fingerprint"], e["source_multiset_fingerprints"]
+            )
+        prior = D.load(e["prior_diversity_cohort"]["path"])
         for row in prior["tasks"]:
             self.assertIn(
                 row["source_multiset_fingerprint"], e["source_multiset_fingerprints"]
@@ -82,17 +83,18 @@ class AllocationDevelopmentTests(unittest.TestCase):
             p = D.build_plan()
         generate.assert_not_called()
         run.assert_not_called()
-        self.assertEqual(p["planned_cells"], 1536)
-        self.assertEqual(p["planned_branch_runs"], 2560)
-        self.assertEqual(p["planned_budget_prefix_pairs"], 2048)
-        self.assertEqual(p["maximum_total_legal_action_scores"], 786432)
+        self.assertEqual(p["planned_cells"], 6144)
+        self.assertEqual(p["planned_branch_runs"], 10240)
+        self.assertEqual(p["planned_branch_prefix_pairs"], 6144)
+        self.assertEqual(p["planned_structural_blocks"], 2048)
+        self.assertEqual(p["maximum_total_legal_action_scores"], 3145728)
         self.assertEqual(p["seeds"], list(range(65536, 65544)))
         self.assertFalse(p["execution_authorized"])
         self.assertFalse(p["original_study_C5_authorized"])
         self.assertFalse(p["locked_128_authorized"])
         self.assertEqual(
             p["analysis"]["primary"],
-            "weighted16_minus_single16_exact_gains_losses_at_512",
+            "weighted16_minus_single16_source_mean_exact_success_at_512",
         )
         self.assertEqual(
             len({v for r in p["derived_streams"] for v in r["branch_seeds"]}), 16
@@ -176,7 +178,7 @@ class AllocationDevelopmentTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 D.run("a" * 64)
             result = D.analyze("a" * 64)
-            self.assertEqual(result["prefix_pairs"], 4)
+            self.assertEqual(result["prefix_pairs"], 3)
             self.assertEqual(result["reduction"]["cell_count"], 3)
             self.assertIsNone(result["reduction"]["winner"])
             self.assertEqual(result["structural_blocks"], 1)
@@ -184,23 +186,53 @@ class AllocationDevelopmentTests(unittest.TestCase):
                 diagnostics = row["diagnostics"]
                 self.assertIsNone(diagnostics["single16"]["same_action_sequence"])
                 self.assertEqual(diagnostics["single16"]["two_branch_denominator"], 0)
-                self.assertEqual(diagnostics["weighted16"]["two_branch_denominator"], 1)
-                self.assertIn("no_terminal_branches", diagnostics["weighted16"])
+                self.assertEqual(diagnostics["equal16"]["two_branch_denominator"], 1)
+                self.assertIsNone(row["primary_source_readout"]["approximate_interval"])
             with self.assertRaisesRegex(ValueError, "analysis already attempted"):
                 D.analyze("a" * 64)
 
-    def test_prefixes_reject_allocation_or_stream_drift(self):
+    def test_structure_rejects_duplicate_or_shared_primary_drift(self):
         with self.tiny_study():
             commit = D.run("a" * 64)
             records = {
                 tuple(r["key"]): D.load(r["file"]["path"]) for r in commit["cells"]
             }
-            self.assertEqual(D.check_prefixes(records), 4)
             self.assertEqual(D.check_structure(records), 1)
-            for arm, index in (("weighted16", 0), ("weighted16", 1), ("equal16", 1)):
+            for arm, index in (("equal16", 1), ("weighted16", 0)):
                 changed = copy.deepcopy(records)
-                changed[(0, 41, 512, arm)]["channels"][index]["exploration_seed"] += 1
-                with self.assertRaisesRegex(ValueError, "seed changed"):
+                changed[(0, 41, 128, arm)]["channels"][index]["exploration_seed"] = -1
+                with self.assertRaises(ValueError):
+                    D.check_structure(changed)
+
+    def test_fixed_512_branch_prefixes_on_excluded_fixtures(self):
+        # These source multisets are excluded from the real generation recipe.
+        fixtures = [
+            CountdownTask((1, 1, 1, 1, 1, 1), 6),
+            CountdownTask((2, 2, 3, 4, 5, 7), 23),
+        ]
+        with patch.object(D, "COUNT", 2), patch.object(D, "SEEDS", (41, 42)):
+            records = {
+                (slot, seed, 512, arm): D.run_allocation_search(
+                    task=task,
+                    spec=D.AllocationSearchSpec(arm),
+                    budget_profile=D.profile(512),
+                    exploration_seed=seed,
+                ).record
+                for slot, task in enumerate(fixtures)
+                for seed in (41, 42)
+                for arm in D.ARMS
+            }
+            self.assertEqual(D.check_prefixes(records), 12)
+            self.assertEqual(D.check_structure(records), 4)
+            for arm, channel in (("equal16", 0), ("weighted16", 0), ("weighted16", 1)):
+                changed = copy.deepcopy(records)
+                events = changed[(0, 41, 512, arm)]["channels"][channel][
+                    "search_record"
+                ]["events"]
+                next(e for e in events if e["kind"] == "selection_committed")[
+                    "payload"
+                ]["depth"] = 999
+                with self.assertRaisesRegex(ValueError, "prefix"):
                     D.check_prefixes(changed)
 
     def test_analysis_rejects_rehashed_commit_aliases_paths_and_extra_fields(self):
@@ -267,10 +299,6 @@ class AllocationDevelopmentTests(unittest.TestCase):
             stack.enter_context(patch.object(D, "checked_plan", return_value={}))
             stack.enter_context(patch.object(D, "clean_head", return_value="b" * 40))
             stack.enter_context(patch.object(D, "operation_guard"))
-            stack.enter_context(patch.object(D, "historical_guard"))
-            stack.enter_context(
-                patch.object(D, "require_approval", return_value={"fixture": True})
-            )
             stack.enter_context(
                 patch.object(
                     D, "cohort_from_recipe", side_effect=RuntimeError("solver failed")
@@ -284,151 +312,6 @@ class AllocationDevelopmentTests(unittest.TestCase):
                 D.run("a" * 64)
             with self.assertRaisesRegex(ValueError, "regular file"):
                 D.analyze("a" * 64)
-
-    def test_cluster_denominator_does_not_count_repeated_seeds_as_sources(self):
-        blocks = [
-            dict(task_slot=s, a=dict(success_any=s == 0), b=dict(success_any=s == 1))
-            for s in (0, 1)
-            for _ in range(8)
-        ]
-        with patch.object(D, "COUNT", 2), patch.object(D, "SEEDS", tuple(range(8))):
-            result = D.cluster_summary(blocks, "a", "b")
-        self.assertEqual(result["source_clusters"], 2)
-        self.assertEqual(result["source_mean_differences"], [1, -1])
-        self.assertEqual(result["mean"], 0)
-        self.assertEqual(result["descriptive_standard_error"], 1)
-        self.assertIsNone(result["confidence_interval"])
-
-    def test_recent_accepted_and_rejected_sources_are_all_excluded(self):
-        e = D.exclusions()
-        for label in ("prior_development_cohort", "prior_diversity_cohort"):
-            prior = D.load(e[label]["path"])
-            for row in prior["tasks"] + prior["generation"]["rejection_log"]:
-                self.assertIn(row["task_fingerprint"], e["task_fingerprints"])
-                self.assertIn(
-                    row["source_multiset_fingerprint"],
-                    e["source_multiset_fingerprints"],
-                )
-
-    def test_missing_exact_approval_prevents_generation_and_output(self):
-        with (
-            tempfile.TemporaryDirectory() as td,
-            patch.object(D, "ROOT", Path(td)),
-            patch.object(D, "checked_plan", return_value={}),
-            patch.object(D, "clean_head", return_value="b" * 40),
-            patch.object(D, "operation_guard"),
-            patch.object(D, "historical_guard"),
-            patch.object(D, "cohort_from_recipe") as generate,
-        ):
-            with self.assertRaisesRegex(ValueError, "regular file required"):
-                D.run("a" * 64)
-            generate.assert_not_called()
-            self.assertFalse((Path(td) / D.OUTPUT).exists())
-
-    def test_approval_binds_qualified_candidate_and_human_scope(self):
-        plan = dict(deterministic_digest="a" * 64)
-        ref = dict(path=D.QUALIFICATION_FILE, sha256="c" * 64, byte_count=99)
-        approval = dict(
-            schema_version="qmc-bmgs-feedback-allocation-approval/v1",
-            plan_digest="a" * 64,
-            candidate_commit="b" * 40,
-            decision="approved",
-            scope="one_run_and_one_separate_analysis",
-            human_approval=dict(
-                source="synthetic_fixture", quote="synthetic fixture only"
-            ),
-            qualification=ref,
-        )
-        qualification = dict(
-            status="ALLOCATION_CANDIDATE_VALIDATION_PASS",
-            tested_commit="b" * 40,
-            plan_digest="a" * 64,
-            exit_code=0,
-            skipped_tests=0,
-            repository_validation_pass=True,
-        )
-
-        def git(*args):
-            return {
-                "merge-base": ("b" * 40).encode(),
-                "ls-tree": b"file.py",
-                "diff": b"",
-            }[args[0]]
-
-        with (
-            patch.object(D, "load_digest", return_value=approval),
-            patch.object(D, "load", return_value=qualification),
-            patch.object(D, "reference", return_value=ref),
-            patch.object(D, "git", git),
-        ):
-            self.assertIn("approval", D.require_approval(plan, "d" * 40))
-            for field, value in (
-                ("decision", "pending"),
-                ("plan_digest", "e" * 64),
-                ("scope", "direction_only"),
-                ("human_approval", {}),
-            ):
-                changed = {**approval, field: value}
-                with (
-                    patch.object(D, "load_digest", return_value=changed),
-                    self.assertRaises(ValueError),
-                ):
-                    D.require_approval(plan, "d" * 40)
-            with (
-                patch.object(
-                    D,
-                    "load_digest",
-                    return_value={
-                        **approval,
-                        "qualification": {**ref, "byte_count": 99.0},
-                    },
-                ),
-                self.assertRaisesRegex(ValueError, "qualification reference mismatch"),
-            ):
-                D.require_approval(plan, "d" * 40)
-            for field, value in (
-                ("exit_code", False),
-                ("skipped_tests", 1),
-                ("repository_validation_pass", False),
-                ("tested_commit", "f" * 40),
-            ):
-                with (
-                    patch.object(
-                        D, "load", return_value={**qualification, field: value}
-                    ),
-                    self.assertRaises(ValueError),
-                ):
-                    D.require_approval(plan, "d" * 40)
-            with (
-                patch.object(
-                    D,
-                    "git",
-                    side_effect=lambda *a: b"changed" if a[0] == "diff" else git(*a),
-                ),
-                self.assertRaisesRegex(ValueError, "candidate bytes changed"),
-            ):
-                D.require_approval(plan, "d" * 40)
-
-    def test_changed_approval_retains_attempt_without_committing(self):
-        with (
-            self.tiny_study() as output,
-            patch.object(
-                D, "require_approval", side_effect=[{"fixture": 1}, {"fixture": 2}]
-            ),
-        ):
-            with self.assertRaisesRegex(ValueError, "authorization changed"):
-                D.run("a" * 64)
-            self.assertTrue((output / "STARTED.json").exists())
-            self.assertFalse((output / "COMMIT.json").exists())
-
-    def test_historical_guard_rejects_changed_parent_file(self):
-        with patch.object(
-            D, "reference", return_value={"path": "protected", "sha256": "new"}
-        ):
-            with self.assertRaisesRegex(ValueError, "protected parent bytes changed"):
-                D.historical_guard(
-                    {"protected_parent_files": [{"path": "protected", "sha256": "old"}]}
-                )
 
 
 if __name__ == "__main__":

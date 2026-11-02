@@ -46,6 +46,10 @@ The public export includes research code, synthetic problem definitions, frozen 
 
 ### Public checkout / 公開版での検証
 
+**Integrated local validation passed: 2,071 tests, zero skips.** This run used
+the authenticated historical fixtures. [Exact revision, checks and earlier failures](../reviews/main_integration_20261103.md).
+統合版では当時の原本も照合して全件通過しました。以下は、その前に公開ファイルだけで確認した範囲です。
+
 | Check | Result in the separate public checkout |
 | --- | --- |
 | [Public outcome verifier](../../scripts/verify_puct_qmc_results.py) | All 3 primary results reproduced from 1,536 source rows (13,824 outcomes) |

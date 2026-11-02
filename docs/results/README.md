@@ -16,6 +16,18 @@ The question was *where*, if anywhere, bounded variation in the exploration bonu
 
 **All three: `NO_PRACTICAL_UPLIFT_SIGNAL`.** The upper endpoint stayed below the prespecified +2-percentage-point threshold. In the last study the ten gains were spread across seven problems; the other 505 had no change in their average. Zero observed losses is not a guarantee. QMC exceeded IID by just two trials on that cohort; the secondary QMC–IID interval includes zero.
 
+**Scope of “disjoint”.** The three rows above are mutually source-disjoint.
+The separately preserved [Oct 22 allocation cohort](feedback_allocation_history.md)
+was not listed as an exclusion cohort in their frozen plans. A retrospective
+identity check found **7 / 11 / 10** shared six-number input multisets with
+that 64-source cohort, respectively, and **zero identical tasks** (inputs plus
+target) in all three comparisons. This does not change the within-study paired
+results; it rules out a claim of disjointness from the entire archive.
+
+3研究の問題セットは互いに重なりませんが、過去の研究すべてと入力が異なる
+わけではありません。10月22日の64問には、目標値は違っても同じ6個の数を
+使った問題がありました。凍結済みの計画や結果を遡って変更してはいません。
+
 **判定はいずれも「実用上の改善シグナルなし」です。** 直近の2研究では差の区間が正の側にありますが、小さな差があることと、実用上の基準を超えることは別です。勝者や既定の探索方針は選んでいません。
 
 ### How to read the numbers / 分母と判定
@@ -44,6 +56,11 @@ All failing groups belong to the earlier feedback-budget receiver/reattestation 
 
 公開データから主結果は再計算でき、公開研究用のテストも通ります。一方、研究を行った元の端末・場所まで含めて照合する全体検証は、別の場所に用意した公開版では通りません。元の3研究のローカル検証合格と、公開版の全体検証失敗は、対象が違うため両方を記録しています。
 
+For an integrated checkout with access to the original fixtures, see the
+[authenticated full-suite procedure](feedback_allocation_history.md#checking-the-integrated-tree--統合後の検証).
+It reconciles the complete test collection without making a failed historical
+check optional. 公開データだけで行う確認と、当時の原本も使う全体検証は区別します。
+
 ## Earlier work / これまでの実験をたどる
 
 | Question / 問い | Evidence / 記録 |
@@ -52,7 +69,7 @@ All failing groups belong to the earlier feedback-budget receiver/reattestation 
 | Does splitting exploration and feedback help? / 探索と評価を分けるとどうか | [Two-phase pilot](two_phase_n64.md) → [validation](two_phase_validation_n128.md) · [credit assignment](credit_assignment_n128.md) |
 | Frozen proposals versus a live provider / 固定した候補とモデル呼び出しの違い | [Thompson source comparison](../observations/countdown_thompson_source_n128_20260724.md) · [prior/noise calibration](../observations/countdown_calibration_grid_n128_20260726.md) · [canary v2](../observations/countdown_track_a_canary_v2_20260810.md) |
 | How did feedback, scale and budget interact? / フィードバックと予算の関係 | [v3/v4 diagnostics](countdown_thompson_diagnostic_v1/README.md) · [v5 dense scale](countdown_thompson_dense_scale_v5/README.md) · [v6 development](../observations/countdown_feedback_budget_v6_development_20260910.md) · [v7 retained verification record](../qualifications/countdown_feedback_budget_v7_reattest_20260921.verification.json) |
-| Can more searches compensate for their cost? / 複数探索と予算配分 | [Portfolio](../observations/countdown_feedback_portfolio_development_20261020.md) → [diversity](../observations/countdown_feedback_diversity_development_20261022.md) → [allocation recovery](../observations/countdown_feedback_allocation_recovery_20261024.md) |
+| Can more searches compensate for their cost? / 複数探索と予算配分 | [Portfolio](../observations/countdown_feedback_portfolio_development_20261020.md) → [diversity](../observations/countdown_feedback_diversity_development_20261022.md) → [both allocation studies: Oct 22 and Oct 24](feedback_allocation_history.md) |
 | Why return to binary PUCT? / 二値報酬のPUCTに戻った理由 | [Single16 vs PUCT](../observations/countdown_search_value_development_20261025.md) · [prior tilt](../observations/countdown_prior_tilt_development_20261026.md) · [dense vs binary PUCT: 0 gains, 82 losses](../observations/countdown_puct_return_development_20261027.md) |
 
 For the complete dated roadmap, legacy commands and original links, see the [previous front README at its immutable public revision](https://github.com/RyoSpiralArchitect/qmc-bmgs-reasoning-search/blob/e3729fe506a62d0c4b711da5cdfa2e83be0975f4/README.md). Historical pending, failed and unknown states are retained as recorded; they are not current authorizations. 旧READMEの計画や未確定事項は当時の記録として読んでください。

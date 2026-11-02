@@ -113,6 +113,9 @@ class HistoricalMirrorTests(unittest.TestCase):
 
     def test_protected_bytes_length_and_mode_are_bound(self):
         with self.fixture() as (candidate, _, __):
+            # Model the saved mode explicitly; a private caller may use umask 077.
+            fixture = candidate / "scripts/source.py"
+            fixture.chmod(0o644)
             ref = dict(
                 path="scripts/source.py",
                 byte_count=10,
@@ -130,6 +133,9 @@ class HistoricalMirrorTests(unittest.TestCase):
                     self.assertRaisesRegex(ValueError, "historical fixture"),
                 ):
                     M.verified_file(candidate, {**ref, key: value})
+            fixture.chmod(0o600)
+            with self.assertRaisesRegex(ValueError, "historical fixture mode differs"):
+                M.verified_file(candidate, ref)
 
     def mirror_suite(self, root, extra=""):
         (root / "tests").mkdir()

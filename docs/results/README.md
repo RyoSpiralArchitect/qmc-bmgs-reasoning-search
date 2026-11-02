@@ -32,6 +32,18 @@ For each study a separate process regenerated the cohort and every one of the 4,
 
 The public export includes research code, synthetic problem definitions, frozen plan JSON, observations, checker source and the nine final binary outcomes per source. The manifest binds plans, cohorts and local analysis outputs by SHA-256. Raw event streams, machine records and private approval text are **not** distributed. The original runners remain tied to their frozen environments and authorizations; use the [public verifier](../../scripts/verify_puct_qmc_results.py) to reproduce the published primary results without rerunning a study.
 
+### Public checkout / 公開版での検証
+
+| Check | Result in the separate public checkout |
+| --- | --- |
+| [Public outcome verifier](../../scripts/verify_puct_qmc_results.py) | All 3 primary results reproduced from 1,536 source rows (13,824 outcomes) |
+| PUCT research tests / public-export boundary tests | 191/191 and 4/4 passed, no skips; Ruff passed |
+| Full repository suite on public commit `d998586` | **Not passed.** unittest reported 1,880 tests, 29 failures and 22 errors; the validator exited 1. Some class setups failed, so discovery did not run every case. |
+
+All failing groups belong to the earlier feedback-budget receiver/reattestation work, not to the new PUCT tests. The earlier checks compare saved absolute locations, coordinator identities and local-only artifacts with the original execution environment; a distinct checkout does not recreate it. For example, one check rejects a different lexical path and another cannot find a historical start record. We did not distribute the private records, skip the old checks or rerun a scientific experiment to make them pass.
+
+公開データから主結果は再計算でき、公開研究用のテストも通ります。一方、研究を行った元の端末・場所まで含めて照合する全体検証は、別の場所に用意した公開版では通りません。元の3研究のローカル検証合格と、公開版の全体検証失敗は、対象が違うため両方を記録しています。
+
 ## Earlier work / これまでの実験をたどる
 
 | Question / 問い | Evidence / 記録 |

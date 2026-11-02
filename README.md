@@ -22,8 +22,11 @@ Python 3.10以降で利用できます。次のコマンドはローカルで動
 python -m pip install -e '.[dev]'
 python -m qmc_bmgs.benchmarks.countdown --self-test
 python scripts/verify_puct_qmc_results.py
-python scripts/validate.py
+python -m unittest discover -s tests -p 'test_puct*.py'
+python -m unittest discover -s tests -p 'test_public_puct_outcomes.py'
 ```
+
+These are the public research checks. The [full-suite status](docs/results/README.md#public-checkout--公開版での検証) explains why historical environment checks fail in a relocated checkout. 上の手順は公開ファイルで再現できます。過去の実行環境そのものの照合とは別です。
 
 | Explore / 読み進める | Where / リンク |
 | --- | --- |

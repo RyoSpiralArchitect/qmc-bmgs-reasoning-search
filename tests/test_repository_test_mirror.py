@@ -54,6 +54,51 @@ class HistoricalMirrorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "frozen source"):
                 M.verify_tree(candidate, historical, entries)
 
+    @contextmanager
+    def guide_fixture(self):
+        with self.fixture() as (candidate, historical, entries):
+            old, new = [], []
+            for name in M.GUIDES:
+                initial, edited = ("old " + name).encode(), ("new " + name).encode()
+                old.append(M.git_blob(initial))
+                new.append(M.git_blob(edited))
+                entries.append(("100644", "blob", old[-1], name))
+                for root, value in ((historical, initial), (candidate, edited)):
+                    (root / name).parent.mkdir(exist_ok=True)
+                    (root / name).write_bytes(value)
+            yield candidate, historical, entries, {tuple(old), tuple(new)}
+
+    def test_reviewed_guides_are_opt_in_and_must_form_one_exact_set(self):
+        with self.guide_fixture() as (candidate, historical, entries, approved):
+            with self.assertRaisesRegex(ValueError, "frozen source"):
+                M.verify_tree(candidate, historical, entries)
+            M.verify_tree(candidate, historical, entries, guide_sets=approved)
+            name = M.GUIDES[0]
+            (candidate / name).write_bytes((historical / name).read_bytes())
+            with self.assertRaisesRegex(ValueError, "unreviewed narrative"):
+                M.verify_tree(candidate, historical, entries, guide_sets=approved)
+
+    def test_guides_do_not_allow_unreviewed_bytes_in_either_checkout(self):
+        for side in (0, 1):
+            with self.guide_fixture() as fixture:
+                candidate, historical, entries, approved = fixture
+                (fixture[side] / M.GUIDES[-1]).write_bytes(b"unknown")
+                with self.assertRaisesRegex(ValueError, "unreviewed narrative"):
+                    M.verify_tree(candidate, historical, entries, guide_sets=approved)
+
+    def test_guides_do_not_exempt_executable_source_or_missing_guides(self):
+        with self.guide_fixture() as (candidate, historical, entries, approved):
+            (candidate / "scripts/source.py").write_bytes(b"changed")
+            with self.assertRaisesRegex(ValueError, "frozen source"):
+                M.verify_tree(candidate, historical, entries, guide_sets=approved)
+            with self.assertRaisesRegex(ValueError, "incomplete guide set"):
+                M.verify_tree(candidate, historical, entries[:-1], guide_sets=approved)
+
+    def test_profile_without_authenticated_root_is_rejected(self):
+        with patch.dict(M.os.environ, {M.GUIDE_PROFILE_ENV: M.GUIDE_PROFILE}, clear=True):
+            with self.assertRaisesRegex(ValueError, "requires the authenticated"):
+                M.main()
+
     def test_alias_escape_and_nonregular_fixtures_rejected(self):
         with self.fixture() as (candidate, _, __):
             (candidate / "alias").symlink_to(candidate / "scripts")

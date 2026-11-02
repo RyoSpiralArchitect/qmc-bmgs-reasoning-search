@@ -22,7 +22,18 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 HISTORICAL_ROOT_ENV = "QMC_BMGS_HISTORICAL_TEST_ROOT"
+GUIDE_PROFILE_ENV = "QMC_BMGS_HISTORICAL_TEST_GUIDES"
+GUIDE_PROFILE = "published-guides-20261103"
 BASE = "2fc168157f9d4adc039f6a330d65e0361b31bb15"
+# The eight historical modules do not read these three narrative guides.
+# Keep the original strict mirror unchanged unless this closed profile is
+# requested. Accept only whole guide sets from these immutable public trees.
+GUIDES = ("README.md", "docs/algorithm.md", "docs/engineering_north_star.md")
+GUIDE_REVISIONS = (
+    BASE,
+    "0b0381bfc861673a8555c4a6169c24c4f239e91c",  # main after PR37
+    "4967660e03cbcef680022b7e17629af8931bab74",  # public bilingual guide
+)
 RESULT = "docs/qualifications/countdown_feedback_diversity_development_20261022.result-validation.json"
 ORIGINAL = "docs/preregistrations/countdown_thompson_feedback_budget_v7_execution_authorization_candidate.json"
 LEGACY_MODULES = frozenset(
@@ -70,8 +81,17 @@ def verified_file(root, reference):
     return raw
 
 
-def verify_tree(candidate, historical, entries):
+def git_blob(raw):
+    return hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+
+
+def verify_tree(candidate, historical, entries, *, guide_sets=None):
     """Both copies must equal the immutable merge tree, not just each other."""
+    if guide_sets is not None:
+        require(set(GUIDES) <= {row[3] for row in entries}, "incomplete guide set")
+        for root in (candidate, historical):
+            observed = tuple(git_blob(regular(root, path)) for path in GUIDES)
+            require(observed in guide_sets, "unreviewed narrative guide set")
     for mode, kind, oid, path in entries:
         require(
             kind == "blob" and mode in {"100644", "100755"}, "regular Git blob required"
@@ -81,10 +101,12 @@ def verify_tree(candidate, historical, entries):
             # change. It is not imported by any of the eight historical modules.
             if root == candidate and path == "scripts/validate.py":
                 continue
+            if guide_sets is not None and path in GUIDES:
+                # All three actual files in this checkout were verified jointly.
+                continue
             raw = regular(root, path)
-            blob = b"blob " + str(len(raw)).encode() + b"\0" + raw
             require(
-                hashlib.sha1(blob).hexdigest() == oid,
+                git_blob(raw) == oid,
                 f"frozen source or evidence differs: {root / path}",
             )
 
@@ -100,7 +122,21 @@ def verified_mirror(candidate, configured):
     for row in raw_tree.rstrip(b"\0").split(b"\0"):
         header, name = row.decode().split("\t", 1)
         entries.append((*header.split(), name))
-    verify_tree(candidate, historical, entries)
+    profile = os.environ.get(GUIDE_PROFILE_ENV)
+    require(profile in (None, GUIDE_PROFILE), "unknown historical guide profile")
+    guide_sets = None
+    if profile == GUIDE_PROFILE:
+        guide_sets = {
+            tuple(
+                subprocess.check_output(
+                    ["git", "rev-parse", "--verify", f"{revision}:{path}"],
+                    cwd=candidate, text=True,
+                ).strip()
+                for path in GUIDES
+            )
+            for revision in GUIDE_REVISIONS
+        }
+    verify_tree(candidate, historical, entries, guide_sets=guide_sets)
     # This path is historical evidence, not a user-selectable admission root.
     original = json.loads(regular(candidate, ORIGINAL))
     require(
@@ -168,6 +204,10 @@ def main():
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
     configured = os.environ.get(HISTORICAL_ROOT_ENV)
+    require(
+        configured is not None or GUIDE_PROFILE_ENV not in os.environ,
+        "a guide profile requires the authenticated historical root",
+    )
     mirror = verified_mirror(ROOT, configured) if configured is not None else None
     loader = unittest.TestLoader()
     suite = loader.discover(str(ROOT / "tests"))
@@ -175,8 +215,9 @@ def main():
     if mirror:
         historical, tracked, protected = mirror
         suite = replace_legacy(suite, historical)
+        guides = os.environ.get(GUIDE_PROFILE_ENV, "original guides")
         print(
-            f"Verified historical mirror: {historical}; {tracked} frozen tracked files, "
+            f"Verified historical mirror: {historical}; {tracked} tracked entries ({guides}), "
             f"{protected} protected artifacts, {len(LEGACY_MODULES)} unchanged test modules",
             flush=True,
         )
